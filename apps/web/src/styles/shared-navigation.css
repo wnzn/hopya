@@ -1,0 +1,117 @@
+.shared-navigation {
+  min-height: 0;
+}
+
+.shared-navigation .workspace-picker {
+  margin-top: 0;
+}
+
+.sidebar-structure {
+  display: block;
+}
+
+.tree-row > a {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--sidebar-ink);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.tree-row > a:hover,
+.tree-row > a.selected {
+  background: #ffffff12;
+  color: var(--sidebar-bright);
+}
+
+.tree-row > a span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-glyph {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.shared-navigation .tree-row > button.tree-toggle:first-child {
+  flex: 0 0 26px;
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  min-height: 32px;
+  padding: 0;
+  line-height: 1;
+}
+
+.shared-navigation .tree-toggle svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 120ms ease;
+}
+
+.shared-navigation .tree-toggle svg.tree-toggle-expanded {
+  transform: rotate(90deg);
+}
+
+.tree-toggle-spacer {
+  flex: 0 0 26px;
+  width: 26px;
+}
+
+.all-tasks {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.breadcrumb li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumb li + li::before {
+  content: "/";
+  margin-right: 8px;
+  color: var(--ink-faint);
+}
+
+.breadcrumb a {
+  color: var(--ink-soft);
+}
+
+.shell-has-shared-breadcrumbs .main-content > .page-top:not(.shared-page-top) {
+  display: none;
+}

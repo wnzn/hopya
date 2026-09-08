@@ -1,0 +1,42 @@
+{
+  "name": "@hopya/web",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build && node -e \"require('node:fs').copyFileSync('src/landing.json', 'dist/server/landing.json')\"",
+    "start": "node dist/server/entry.mjs",
+    "typecheck": "ASTRO_TELEMETRY_DISABLED=1 astro check",
+    "test": "tsx --test src/lib/*.test.ts",
+    "test:browser": "playwright test --project=chromium",
+    "test:browser:all": "playwright test",
+    "test:live": "tsx tests/live-smoke.ts"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.1.5",
+    "@astrojs/react": "^6.0.5",
+    "@tiptap/core": "^3.31.3",
+    "@tiptap/extension-link": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
+    "astro": "^7.3.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "~1.58.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "playwright-core": "~1.58.2",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3"
+  }
+}

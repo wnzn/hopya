@@ -1,0 +1,90 @@
+name: hopya
+
+x-app: &app
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  logging:
+    driver: local
+    options: {max-size: 10m, max-file: "3"}
+
+services:
+  api:
+    <<: *app
+    image: hopya-api:local
+    build:
+      context: .
+      target: api
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      API_PORT: "3333"
+      TRUST_PROXY_HOPS: "1"
+      DATA_DIR: /data
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      APP_KEY: ${APP_KEY:?Set APP_KEY in .env}
+      SETUP_TOKEN: ${SETUP_TOKEN:?Set SETUP_TOKEN in .env}
+      LANDING_ENABLED: ${LANDING_ENABLED:-true}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-filesystem}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_AUTO_PROVISION: ${OIDC_AUTO_PROVISION:-false}
+      OIDC_ALLOW_INSECURE_HTTP: ${OIDC_ALLOW_INSECURE_HTTP:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-2048}
+    volumes:
+      - data:/data
+
+  web:
+    <<: *app
+    image: hopya-web:local
+    build:
+      context: .
+      target: web
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4321"
+      INTERNAL_API_URL: http://api:3333
+      ASTRO_TELEMETRY_DISABLED: "1"
+      LANDING_ENABLED: ${LANDING_ENABLED:-true}
+
+  proxy:
+    <<: *app
+    image: nginxinc/nginx-unprivileged:stable-alpine@sha256:9b87ad3dd9f431c733f19dfb278c7eb3dba9dca381942c79818bb42f1a566a83
+    entrypoint: [nginx]
+    command: [-g, "daemon off;"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./ops/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/health]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  data:

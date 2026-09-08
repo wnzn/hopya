@@ -1,0 +1,21 @@
+[
+  {
+    "title": "Sample: Plan the launch",
+    "description": "Example task showing the import columns",
+    "status": "todo",
+    "priority": "high",
+    "startDate": "2026-09-10",
+    "dueDate": "2026-09-17",
+    "tags": "launch;planning",
+    "assignee": "sam@example.test"
+  },
+  {
+    "title": "Sample: Write release notes",
+    "description": "Second example row with a custom field",
+    "status": "backlog",
+    "priority": "medium",
+    "tags": "docs",
+    "assignee": "",
+    "custom:Effort": 3
+  }
+]

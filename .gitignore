@@ -1,0 +1,44 @@
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+.astro/
+.adonisjs/
+coverage/
+.cache/
+*.tsbuildinfo
+
+# Local configuration and tooling
+.env
+.env.*
+*.env
+!.env.example
+.idea/
+.vscode/
+.openchamber/
+.opencode/
+.DS_Store
+TODO.md
+
+# Data, backups, and credentials
+data/
+backups/
+.hopya-load-*/
+*.sqlite*
+*.db
+*.db-*
+*.dump
+*.bak
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+compose.restore.yaml
+
+# Test and runtime artifacts
+playwright-report/
+test-results/
+blob-report/
+*.log
+npm-debug.log*

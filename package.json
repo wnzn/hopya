@@ -1,0 +1,27 @@
+{
+  "name": "hopya",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted task management with workspaces, hierarchy, five views and optional AI/SSO/S3.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": ["apps/*"],
+  "engines": { "node": ">=24.0.0" },
+  "allowScripts": { "better-sqlite3": true, "esbuild": true, "sharp": true },
+  "overrides": { "@modelcontextprotocol/sdk": { "zod": "3.25.76" } },
+  "scripts": {
+    "init:env": "node --experimental-strip-types ops/init-env.ts",
+    "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n api,web \"npm run dev -w @hopya/api\" \"npm run dev -w @hopya/web\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:ops",
+    "typecheck:ops": "tsc -p ops/tsconfig.json",
+    "test": "npm run test --workspaces --if-present && npm run test:ops",
+    "test:ops": "tsx --test ops/*.test.ts",
+    "test:browser": "npm run test:browser -w @hopya/web",
+    "test:browser:all": "npm run test:browser:all -w @hopya/web",
+    "test:browser:container": "docker run --rm --init --user \"$(id -u):$(id -g)\" --shm-size=1g --cap-drop=ALL --security-opt=no-new-privileges -e HOME=/tmp -e HOPYA_BROWSER_PORT=44321 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d npm run test:browser:all -w @hopya/web",
+    "test:deployment": "tsx ops/deployment-check.ts",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": { "concurrently": "^9.2.1", "typescript": "~5.9.3", "tsx": "^4.20.0", "@types/node": "^24.0.0" }
+}

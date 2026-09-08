@@ -1,0 +1,44 @@
+.admin-status .status-detail-card {
+  grid-column: span 2;
+}
+
+.admin-status-details {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: 11rem;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--wash-line);
+  border-radius: 6px;
+  background: var(--wash);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  scrollbar-color: var(--ink-faint) var(--wash);
+}
+
+.admin-status-details:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.admin-status-details code {
+  color: var(--signal-text);
+  font: inherit;
+}
+
+@media (max-width: 760px) {
+  .admin-status .status-detail-card {
+    grid-column: 1 / -1;
+  }
+
+  .admin-status-details {
+    max-height: 9rem;
+  }
+}

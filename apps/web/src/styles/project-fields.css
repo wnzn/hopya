@@ -1,0 +1,174 @@
+.project-fields { min-width: 0; }
+.project-fields fieldset { min-width: 0; }
+.project-configuration { gap: 28px; }
+.project-field-picker > legend {
+  padding: 0;
+  margin-bottom: 7px;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -.25px;
+}
+.project-fields-copy {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.project-field-group {
+  display: grid;
+  gap: 10px;
+}
+.project-field-group h3 { margin: 0; }
+.project-field-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: 8px;
+}
+.project-field-options label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 9px 11px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.project-field-options label:hover { border-color: var(--field-line); }
+.project-field-options label:has(input:checked) {
+  border-color: var(--signal-wash-line);
+  background: var(--signal-wash);
+}
+.project-field-options input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+}
+.project-field-options label > span { min-width: 0; line-height: 1.35; }
+.project-field-options small { display: block; color: var(--ink-soft); font-weight: 400; }
+.project-fields-apply { align-self: flex-start; min-width: 130px; }
+.project-field-create { padding-top: 26px; border-top: 1px solid var(--line); }
+.project-field-templates { display: flex; flex-wrap: wrap; gap: .5rem; }
+.project-field-templates button { white-space: normal; }
+
+.fields-manager { min-width: 0; }
+.fields-manager-workspace { width: min(100%, 300px); }
+.fields-manager-layout {
+  display: grid;
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  margin-top: 28px;
+}
+.fields-manager-layout > * { min-width: 0; }
+.fields-manager-layout > .settings-section {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.fields-manager-layout .section-intro {
+  padding: 18px 20px 15px;
+  border-bottom: 1px solid var(--line);
+  background: var(--wash);
+}
+.fields-manager-layout .section-intro h2 { margin: 0 0 4px; font-size: 15px; }
+.fields-manager-layout .section-intro p { margin: 0; line-height: 1.5; }
+.fields-manager-panel-body { padding: 20px; }
+.fields-manager-target-panel {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+.fields-manager-target-panel .fields-manager-panel-body { gap: 14px; }
+.fields-manager-tree { list-style: none; margin: 0; padding: 0; }
+.fields-manager-tree ul { list-style: none; margin: 0; padding-left: 16px; }
+.fields-manager-row { display: flex; gap: 5px; align-items: center; margin-bottom: 5px; }
+.fields-manager-toggle {
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  box-shadow: none;
+}
+.fields-manager-target {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-height: 42px;
+  padding: 7px 10px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.fields-manager-target:hover { background: var(--wash); border-color: var(--line); }
+.fields-manager-target > span:first-child { color: var(--ink-soft); }
+.fields-manager-target-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.fields-manager-target-text > span { font-weight: 550; }
+.fields-manager-path { display: block; overflow-wrap: anywhere; font-size: 10px; font-weight: 400; }
+.fields-manager-target.selected {
+  border-color: var(--signal-wash-line);
+  background: var(--signal-wash);
+  color: var(--ink);
+}
+.fields-manager-current {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--signal-wash-line);
+  border-radius: 8px;
+  background: var(--signal-wash);
+}
+.fields-manager-current-glyph {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--signal-text);
+}
+.fields-manager-current div { min-width: 0; display: grid; gap: 3px; }
+.fields-manager-current small { color: var(--ink-soft); text-transform: uppercase; letter-spacing: .07em; }
+.fields-manager-current strong { overflow-wrap: anywhere; font-size: 13px; }
+.fields-manager-empty {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 28px;
+  color: var(--ink-soft);
+  text-align: center;
+}
+.fields-manager-empty > span { font-size: 28px; color: var(--signal-text); }
+.fields-manager-empty p { max-width: 38ch; margin: 0; line-height: 1.7; }
+
+@media (max-width: 52rem) {
+  .fields-manager-layout { grid-template-columns: minmax(0, 1fr); }
+  .fields-manager-target-panel {
+    position: static;
+    max-height: min(420px, 52dvh);
+  }
+  .project-fields-apply { align-self: stretch; }
+}

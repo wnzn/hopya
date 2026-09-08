@@ -1,0 +1,61 @@
+---
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Operator-editable landing template. Edit apps/web/src/landing.json (copied
+// to dist/server/landing.json at build time) to change its plain-text content.
+const templatePath = resolve(dirname(fileURLToPath(import.meta.url)), '../landing.json');
+let landing = {
+  title: 'A home for your work',
+  tagline: 'A private, self-hosted place to organize projects and tasks.',
+  callToAction: 'Open Hopya',
+  footerNote: 'Your work, on your server.',
+};
+try {
+  landing = { ...landing, ...JSON.parse(readFileSync(templatePath, 'utf8')) };
+} catch {
+  // Keep the built-in defaults when the template is unreadable or invalid.
+}
+Astro.response.headers.set('Cache-Control', 'no-store');
+let landingEnabled = process.env.LANDING_ENABLED !== 'false';
+if (landingEnabled) {
+  try {
+    const response = await fetch(`${process.env.INTERNAL_API_URL || 'http://127.0.0.1:3333'}/api/v1/config`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok) landingEnabled = (await response.json()).landingEnabled !== false;
+  } catch {
+    // Keep the environment default when the API is temporarily unavailable.
+  }
+}
+if (!landingEnabled) return Astro.redirect('/login');
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={landing.tagline} />
+    <title>{landing.title} | Hopya</title>
+  </head>
+  <body>
+    <a href="#main">Skip to content</a>
+    <header>
+      <a href="/" aria-label="Hopya home">Hopya</a>
+      <nav aria-label="Main"><a href="/login">Sign in</a><a href="/app">Open workspace</a></nav>
+    </header>
+    <main id="main" tabindex="-1">
+      <h1>{landing.title}</h1>
+      <p>{landing.tagline}</p>
+      <p><a href="/login">{landing.callToAction}</a></p>
+    </main>
+    <footer><p>{landing.footerNote}</p><span>By <a href="https://wnzn.dev" rel="noopener noreferrer">WNZN</a></span><a href="/app">Go to your workspace</a></footer>
+  </body>
+</html>
+<style>
+  body { max-width: 60rem; margin-inline: auto; padding: 1rem; }
+  header, nav, footer { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; justify-content: space-between; }
+  header, main, footer { padding-block: 1rem; }
+  main { max-width: 42rem; }
+</style>

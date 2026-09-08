@@ -1,0 +1,284 @@
+/* Table view ("grid"): distinct from the list view — stronger header band,
+   vertical cell separators, denser rows. Uses shared tokens so dark mode works. */
+.task-table.task-table--grid {
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--wash-line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.task-table.task-table--grid table { min-width: 100%; border-collapse: separate; border-spacing: 0; }
+.task-table.task-table--grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--wash);
+  border-bottom: 1px solid var(--wash-line);
+  box-shadow: inset 1px 0 0 var(--line);
+  padding: 8px 28px 8px 12px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.task-table.task-table--grid td {
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 1px 0 0 var(--line);
+  padding: 6px 12px;
+  vertical-align: middle;
+  color: var(--ink);
+}
+.task-table.task-table--grid thead tr:first-child th:first-child { box-shadow: none; }
+.task-table.task-table--grid tbody td:first-child,
+.task-table.task-table--grid tfoot td:first-child { box-shadow: none; }
+.task-table.task-table--grid tbody tr:hover td { background: var(--wash); }
+.task-table.task-table--grid .task-column-name { display: block; overflow-wrap: anywhere; }
+.task-table.task-table--grid .task-column-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.task-table.task-table--grid .task-column-move { display: inline-flex; flex: 0 0 auto; }
+.task-table.task-table--grid .task-column-move button {
+  min-height: 20px;
+  min-width: 20px;
+  width: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.task-table.task-table--grid .task-column-dragging { opacity: 0.4; }
+.task-table.task-table--grid .task-column-drop {
+  box-shadow: inset 2px 0 0 var(--focus);
+}
+.task-table.task-table--grid .task-add-cell { padding: 0; box-shadow: none; }
+.task-table.task-table--grid .task-add-task {
+  width: 100%;
+  min-height: 36px;
+  text-align: left;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 6px 12px;
+  font-weight: 500;
+}
+.task-table.task-table--grid .task-add-task:hover, .task-table.task-table--grid .task-add-task:focus-visible {
+  color: var(--ink);
+  background: var(--soft);
+}
+.task-table.task-table--grid .task-add-task:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.task-table.task-table--grid .task-add-task span { font-size: 16px; line-height: 1; margin-right: 4px; }
+
+.task-table.task-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.task-table table { min-width: 100%; border-collapse: collapse; }
+.task-table th { position: relative; padding: 16px 28px 16px 12px; }
+.task-table td { padding: 12px; vertical-align: middle; }
+.task-table th, .task-table td { overflow-wrap: anywhere; white-space: normal; }
+.task-table button { min-height: 40px; min-width: 40px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.task-table .task-title { min-width: 0; width: 100%; text-align: left; }
+.task-table .task-cell-edit { width: 100%; text-align: left; padding: 8px; color: var(--ink); background: transparent; border-color: transparent; font-weight: 400; align-items: center; }
+.task-table .task-cell-edit:hover, .task-table .task-cell-edit:focus-visible { border-color: var(--line); background: var(--soft); }
+.task-table .task-name-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-table .task-cell-content { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-table .task-cell-content > .task-cell-edit { flex: 1; width: auto; min-width: 0; }
+.task-table .task-name-cell .task-title { flex: 1; }
+.task-table .task-subtask-icon { flex: 0 0 16px; color: var(--ink-soft); }
+.task-table .task-title-edit { order: 10; flex: 0 0 40px; width: 40px; margin-left: auto; display: grid; place-items: center; }
+.task-table .task-cell-content > .task-title-edit {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  aspect-ratio: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, background-color 120ms, border-color 120ms;
+}
+.task-table .task-name-cell:hover > .task-title-edit,
+.task-table .task-name-cell:focus-within > .task-title-edit {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .task-table .task-cell-content > .task-title-edit { opacity: 1; pointer-events: auto; }
+}
+.task-table .task-column-resize {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  border-right: 2px solid var(--line);
+}
+.task-table .task-column-resize:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
+.task-table .task-cell-editor { display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; min-height: 40px; }
+.task-table .task-cell-editor input, .task-table .task-cell-editor select, .task-table .task-cell-editor textarea { width: 100%; min-width: 0; min-height: 40px; padding: 6px; }
+.task-table .task-cell-editor ul { list-style: none; padding: 0; margin: 0; }
+.task-table .task-cell-editor li { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.task-table .task-cell-editor li span { white-space: pre-wrap; }
+.task-table .task-tag-editor-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-table .task-tag-editor-list li { align-items: center; margin: 0; padding: 3px 4px 3px 8px; border-radius: 999px; background: var(--wash); }
+.task-table .task-tag-editor-list li button { min-height: 28px; min-width: 28px; padding: 2px 6px; font-size: 10px; }
+.task-table .task-tag-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.task-table .task-tag-add button { min-width: 54px; }
+.task-table td[data-subtask-depth] { padding-left: calc(12px + var(--subtask-depth, 0) * 16px); }
+.task-table.task-table--grid td[data-subtask-depth] { padding-left: calc(6px + var(--subtask-depth, 0) * 16px); }
+.task-table .task-name-cell .count { flex: 0 0 auto; }
+.task-table td[data-column="description"] .count { margin-left: 8px; }
+.task-table .task-description-preview {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-table .task-cell-editor [role="alert"] { color: var(--danger); }
+.task-table .task-cell-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-table .task-sort { position: relative; display: block; }
+.task-table .task-sort-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  color: var(--ink);
+  background: transparent;
+  border-color: transparent;
+  text-align: left;
+}
+.task-table .task-sort-trigger:hover,
+.task-table .task-sort-trigger:focus-visible { background: var(--soft); border-color: var(--line); }
+.task-sort-menu {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  width: max-content;
+  min-width: 170px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+.task-sort-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 9px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+.task-sort-menu button:hover:not(:disabled),
+.task-sort-menu button:focus-visible { background: var(--soft); }
+.task-sort-menu button[aria-checked="true"] { color: var(--signal-text); font-weight: 700; }
+
+/* List headers are one complete sort target rather than a button inset inside
+   a padded cell. The restrained grid keeps wide, horizontally-scrolled lists
+   legible without making every task look boxed in. */
+.task-table:not(.task-table--grid) table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.task-table:not(.task-table--grid) th {
+  padding: 0;
+  background: var(--wash);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--wash-line);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  line-height: 1.25;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.task-table:not(.task-table--grid) th:last-child,
+.task-table:not(.task-table--grid) td:last-child { border-right: 0; }
+.task-table:not(.task-table--grid) td {
+  padding: 6px 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.task-table:not(.task-table--grid) tbody tr:last-child td { border-bottom: 0; }
+.task-table:not(.task-table--grid) tbody tr:hover td { background: var(--wash); }
+.task-table:not(.task-table--grid) td.task-cell-selected {
+  position: relative;
+  background: var(--signal-wash);
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
+.task-table:not(.task-table--grid) td.task-cell-selected .task-cell-edit {
+  background: transparent;
+  border-color: transparent;
+  outline: 0;
+}
+.task-table:not(.task-table--grid) .task-sort,
+.task-table:not(.task-table--grid) .task-sort-trigger { height: 100%; }
+.task-table:not(.task-table--grid) .task-sort-trigger {
+  min-height: 46px;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+.task-table:not(.task-table--grid) .task-sort-trigger:hover,
+.task-table:not(.task-table--grid) .task-sort-trigger:focus-visible {
+  color: var(--ink);
+  background: var(--soft);
+  border-color: transparent;
+}
+.task-table:not(.task-table--grid) .task-sort-trigger:active { background: var(--signal-wash); }
+.task-table:not(.task-table--grid) .task-sort-trigger:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.task-table:not(.task-table--grid) th[aria-sort="ascending"],
+.task-table:not(.task-table--grid) th[aria-sort="descending"] {
+  color: var(--ink);
+  background: var(--signal-wash);
+}
+.task-table:not(.task-table--grid) .task-cell-edit { padding: 7px 8px; }
+.task-table:not(.task-table--grid) tbody tr:last-child td {
+  border-bottom: 1px solid var(--line);
+}
+.task-table:not(.task-table--grid) td[data-subtask-depth] {
+  padding-left: calc(8px + var(--subtask-depth, 0) * 16px);
+}
+.task-table:not(.task-table--grid) .task-select-column,
+.task-table:not(.task-table--grid) .task-select-cell {
+  width: 44px;
+  padding: 0;
+  text-align: center;
+  vertical-align: middle;
+}
+.task-table .task-select-column input,
+.task-table .task-select-cell input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--signal);
+}
+.task-table:not(.task-table--grid) tr.task-row-selected td { background: var(--signal-wash); }

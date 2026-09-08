@@ -1,0 +1,48 @@
+---
+import '../styles/global.css';
+interface Props { title: string }
+const { title } = Astro.props;
+Astro.response.headers.set('Cache-Control', 'no-store');
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <script is:inline>
+      (() => {
+        const root = document.documentElement;
+        const media = window.matchMedia('(prefers-color-scheme: dark)');
+        const valid = (value) => value === 'light' || value === 'dark';
+        let preference = null;
+        try {
+          const stored = localStorage.getItem('hopya-theme');
+          if (valid(stored)) preference = stored;
+        } catch {}
+        const apply = () => {
+          const scheme = preference || (media.matches ? 'dark' : 'light');
+          if (preference) root.dataset.theme = preference;
+          else delete root.dataset.theme;
+          root.style.colorScheme = scheme;
+          document.querySelector('meta[name="color-scheme"]').content = scheme;
+          window.dispatchEvent(new Event('hopya-theme-change'));
+        };
+        apply();
+        media.addEventListener('change', () => { if (!preference) apply(); });
+        window.addEventListener('hopya-theme-preference', (event) => {
+          if (event.detail !== null && !valid(event.detail)) return;
+          preference = event.detail;
+          try {
+            if (preference) localStorage.setItem('hopya-theme', preference);
+            else localStorage.removeItem('hopya-theme');
+          } catch {}
+          apply();
+        });
+      })();
+    </script>
+    <meta name="description" content="Hopya: self-hosted task management. Private and yours." />
+    <title>{title} | Hopya</title>
+  </head>
+  <body><a class="skip-link" href="#main">Skip to content</a><slot /><noscript><p class="notice">JavaScript is required for the interactive workspace. Enable it to sign in and manage tasks.</p></noscript></body>
+</html>
