@@ -119,7 +119,7 @@ When the operator has configured local mail delivery, **Forgot your password?** 
 
 In **Personal access tokens**, give a token a recognizable name, create it and put the one-time value into your script or MCP client's private environment. It acts as you with your current workspace permissions. Never share it in chat, commit it or put it in a URL. If lost, create a replacement; it cannot be shown again. Choose **Revoke** to stop clients using that token immediately.
 
-The [README](../README.md#api-and-mcp) has MCP launch settings. Your MCP client, not an ordinary terminal conversation, launches the stdio process. MCP is read-only unless the operator sets `HOPYA_MCP_ALLOW_WRITES=true` for that process. Even then, the client must request human confirmation for each write; enabling tools does not approve their use. See the [integration guide](integrations.md).
+The [README](../README.md#api-and-mcp) has MCP launch settings. Your MCP client, not an ordinary terminal conversation, launches the stdio process. Alternatively, a site administrator can enable MCP SSE in **Settings > Site settings** and clients can connect to `/api/v1/mcp/sse` with a personal bearer token header. MCP is read-only unless the operator sets `HOPYA_MCP_ALLOW_WRITES=true` for the relevant process. Even then, the client must request human confirmation for each write; enabling tools does not approve their use. See the [integration guide](integrations.md).
 
 ## Attachments And AI
 

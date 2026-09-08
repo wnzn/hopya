@@ -52,6 +52,25 @@ export default function SiteSettingsSection() {
       setBusy(false);
     }
   }
+  async function toggleMcpSse() {
+    if (!settings) return;
+    const next = !settings.mcpSseEnabled;
+    if (!window.confirm(next
+      ? "Enable the authenticated MCP SSE endpoint for this instance?"
+      : "Disable MCP SSE and disconnect all active MCP clients?")) return;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const updated = await api<{ mcpSseEnabled: boolean }>("/site/settings", "PATCH", { mcpSseEnabled: next });
+      setSettings((current) => current ? { ...current, mcpSseEnabled: updated.mcpSseEnabled } : current);
+      setSuccess(next ? "MCP SSE enabled." : "MCP SSE disabled and active sessions closed.");
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function uploadLogo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -107,7 +126,7 @@ export default function SiteSettingsSection() {
       <div className="section-intro">
         <h2 id="site-settings-heading">Site settings</h2>
         <p>
-          Landing page visibility and instance branding. Changes apply to this
+          Landing page visibility, integrations and instance branding. Changes apply to this
           instance only.
         </p>
       </div>
@@ -122,6 +141,19 @@ export default function SiteSettingsSection() {
           <p className="muted">Site settings are unavailable.</p>
         ) : (
           <>
+            <div className="setting-row">
+              <div>
+                <strong>MCP SSE endpoint</strong>
+                <small className="muted">
+                  {settings.mcpSseEnabled
+                    ? "Enabled at /api/v1/mcp/sse. Clients must send a personal bearer token."
+                    : "Disabled by default. Enable it only when remote MCP clients need access."}
+                </small>
+              </div>
+              <button disabled={busy} onClick={() => void toggleMcpSse()}>
+                {settings.mcpSseEnabled ? "Disable MCP SSE" : "Enable MCP SSE"}
+              </button>
+            </div>
             <div className="setting-row">
               <div>
                 <strong>Landing page</strong>

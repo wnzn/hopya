@@ -3,11 +3,13 @@ import { Effect } from 'effect'
 import { registerStorage, collectStorageGarbage } from './storage.js'
 import { registerSso } from './sso.js'
 import { registerAgent } from './agent.js'
+import { registerMcpSse } from './mcp_sse.js'
 
 export default function registerIntegrations(router: Router): void {
   registerStorage(router)
   registerSso(router)
   registerAgent(router)
+  registerMcpSse(router)
   // Bounded hourly cleanup on the single supported API replica. No raw storage
   // errors are logged; the admin status page exposes the current pending count.
   let collecting = false

@@ -5,6 +5,7 @@ import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { integrationServer } from './storage-sso-fixture.js'
 
 test('agent provider adapters, bounded untrusted output and workspace authorization', { timeout: 60000 }, async (t) => {
@@ -148,6 +149,33 @@ test('official MCP client negotiates stdio; read-only default, opt-in mutations 
   api.db.prepare('DELETE FROM tokens WHERE userId=?').run(owner.id)
   assert.equal((await writer.callTool({ name: 'get_item', arguments: { workspaceId: task.wid, itemId: task.id } })).isError, true)
   assert.equal((await readonly.callTool({ name: 'list_items', arguments: { workspaceId: task.wid, cursor: pageOne.nextCursor } })).isError, true)
+})
+
+test('MCP SSE is admin-controlled, bearer-only and workspace-scoped', { timeout: 30000 }, async (t) => {
+  const api = await integrationServer(t)
+  const admin = api.user(true)
+  const member = api.user()
+  const outsider = api.user()
+  const task = await api.item(member.token)
+  assert.equal((await fetch(`${api.base}/api/v1/mcp/sse`, { headers: { authorization: `Bearer ${member.token}` } })).status, 404)
+  assert.equal((await api.request('/site/settings', { method: 'PATCH', token: member.token, body: { mcpSseEnabled: true } })).status, 403)
+  const enabled = await api.request('/site/settings', { method: 'PATCH', token: admin.token, body: { mcpSseEnabled: true } })
+  assert.equal(enabled.status, 200, await enabled.clone().text())
+  assert.equal((await fetch(`${api.base}/api/v1/mcp/sse`)).status, 401, 'browser cookies and anonymous requests cannot authenticate MCP')
+
+  const client = new Client({ name: 'hopya-sse-test', version: '1.0' })
+  const transport = new SSEClientTransport(new URL(`${api.base}/api/v1/mcp/sse`), { requestInit: { headers: { authorization: `Bearer ${member.token}` } } })
+  t.after(() => client.close())
+  await client.connect(transport)
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ['get_item', 'get_workspace', 'list_items', 'list_workspaces'])
+  assert.ok(JSON.stringify(await client.callTool({ name: 'list_workspaces', arguments: {} })).includes(task.wid))
+  const foreign = await client.callTool({ name: 'list_items', arguments: { workspaceId: (await api.item(outsider.token)).wid } })
+  assert.equal(foreign.isError, true)
+
+  api.db.prepare('DELETE FROM tokens WHERE userId=?').run(member.id)
+  await assert.rejects(() => client.callTool({ name: 'get_item', arguments: { workspaceId: task.wid, itemId: task.id } }))
+  const disabled = await api.request('/site/settings', { method: 'PATCH', token: admin.token, body: { mcpSseEnabled: false } })
+  assert.equal(disabled.status, 200)
 })
 
 test('MCP cancels oversized multibyte responses before buffering the entire upstream body', { timeout: 30000 }, async (t) => {

@@ -167,8 +167,9 @@ test('webhooks and automations manage CRUD, permissions, delivery and site setti
   // outsider IS admin in this fixture; use a non-admin account instead.
   const plain = api.user(false)
   assert.equal((await api.request('/site/settings', { token: plain.token })).status, 403)
-  const settings = await (await api.request('/site/settings', { token: owner.token })).json() as { landingDisabled: boolean; logo: unknown }
+  const settings = await (await api.request('/site/settings', { token: owner.token })).json() as { landingDisabled: boolean; mcpSseEnabled: boolean; logo: unknown }
   assert.equal(settings.landingDisabled, false)
+  assert.equal(settings.mcpSseEnabled, false)
   assert.equal((await api.request('/site/settings', { method: 'PATCH', token: plain.token, body: { landingDisabled: true } })).status, 403)
   const patched = await (await api.request('/site/settings', { method: 'PATCH', token: owner.token, body: { landingDisabled: true } })).json() as { landingDisabled: boolean }
   assert.equal(patched.landingDisabled, true)

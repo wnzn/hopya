@@ -87,6 +87,7 @@ export type AutomationRun = {
 };
 export type SiteSettings = {
   landingDisabled: boolean;
+  mcpSseEnabled: boolean;
   logo: { updatedAt: string; url: string } | null;
 };
 export type OidcIdentity = {

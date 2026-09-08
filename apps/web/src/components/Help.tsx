@@ -330,7 +330,12 @@ export default function Help() {
                   </li>
                   <li>
                     <strong>Site settings</strong> (admins) cover the instance
-                    logo and the public landing page.
+                    logo, public landing page, and the disabled-by-default MCP
+                    SSE endpoint. MCP clients connect to
+                    <code> /api/v1/mcp/sse</code> with a personal token in the
+                    <code> Authorization: Bearer</code> header. Disabling it
+                    disconnects active clients; site administration does not
+                    grant access to workspace data.
                   </li>
                   <li>
                     <strong>Landing page content:</strong> edit{" "}

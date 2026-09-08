@@ -140,7 +140,7 @@ The GitHub Actions workflow runs dependency auditing, checks, compiled applicati
 
 The REST API is available under `/api/v1`. Create a personal token in **Settings** and send it as `Authorization: Bearer <token>`. See the [REST reference](docs/api.md).
 
-MCP uses a local stdio process rather than a public HTTP endpoint:
+MCP supports a local stdio process:
 
 ```text
 Command: node
@@ -152,6 +152,8 @@ Environment:
 ```
 
 MCP is read-only by default. `HOPYA_MCP_ALLOW_WRITES=true` exposes mutation tools, but the MCP client must still obtain explicit human approval for each write.
+
+Site administrators may also enable the disabled-by-default SSE transport in **Settings > Site settings**. Connect an SSE-compatible MCP client to `https://your-hopya.example/api/v1/mcp/sse` and configure `Authorization: Bearer <personal token>` as a header. Never place the token in the URL. Disabling SSE immediately closes active sessions; sessions otherwise expire after 30 minutes. Both transports expose the same tools and enforce the token owner's current workspace permissions.
 
 ## Documentation
 

@@ -2,6 +2,8 @@
 
 The base path is `/api/v1`. Successful responses are direct JSON arrays or objects. Failures use `{ "error": "message" }`. Resource identifiers are UUIDs; configurable status IDs are bounded safe strings. Date-only values use `YYYY-MM-DD`; server timestamps use UTC ISO-8601. Unknown mutation fields are rejected. See [architecture](architecture.md) for the complete endpoint inventory and [integrations](integrations.md) for attachments, OIDC, AI and MCP.
 
+`GET /mcp/sse` opens the administrator-enabled MCP SSE stream; `POST /mcp/messages?sessionId=...` carries client messages. Both require a personal token in the `Authorization: Bearer` header and reject cookie-only authentication. The endpoint returns 404 while disabled. Sessions are user-bound, expire after 30 minutes, and are limited to four per user and 32 per instance. MCP payloads use the MCP protocol rather than the ordinary REST response envelope.
+
 ## Authentication
 
 Create a personal token in Settings after signing in. It is revealed once, hashed at rest, expires after 90 days and can be revoked immediately. Tokens inherit their account's current workspace permissions; there are no independent per-token scopes. Use a dedicated restricted account for automation. Do not expose tokens in URLs, client code, shell history or logs.

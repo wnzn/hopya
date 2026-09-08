@@ -84,6 +84,8 @@ Changing storage backends is not a data migration. Transfer and verify existing 
 
 Set both `SMTP_URL` and `SMTP_FROM` to enable local password recovery. Use a verified TLS SMTP relay and an authorized sender. Reset links expire after 30 minutes and revoke existing Hopya sessions and API tokens when consumed.
 
+The MCP SSE endpoint is disabled until a site administrator enables it. If exposed through a reverse proxy, preserve streaming responses without buffering, keep `Authorization` headers on both GET and POST, enforce HTTPS, and apply proxy connection limits and timeouts compatible with Hopya's 30-minute session lifetime. Do not add tokens to URLs or proxy access logs.
+
 Test delivery, sender authorization, spam handling, expiry, and recovery with your actual mail provider. Hopya never logs or displays reset tokens as a fallback.
 
 ## OIDC And AI

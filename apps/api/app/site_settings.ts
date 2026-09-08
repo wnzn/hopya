@@ -9,6 +9,7 @@ import { requireAdmin } from './accounts.js'
 import { dataDir } from './settings.js'
 import { HttpError, type User } from './types.js'
 import { authenticate } from './security.js'
+import { closeMcpSseSessions } from './integrations/mcp_sse.js'
 
 const brandDirectory = join(dataDir, 'branding')
 const logoName = 'logo'
@@ -85,19 +86,23 @@ export function registerSiteSettings(router: Router): void {
       requireAdmin(ctx)
       return {
         landingDisabled: getSetting('landingDisabled') === '1',
+        mcpSseEnabled: getSetting('mcpSseEnabled') === '1',
         logo: logoMeta() ? { updatedAt: getSetting('logoUpdatedAt') ?? '', url: `/api/v1/site/logo?v=${encodeURIComponent(getSetting('logoUpdatedAt') ?? '')}` } : null,
       }
     })
-    router.patch('/site/settings', (ctx) => {
+    router.patch('/site/settings', async (ctx) => {
       const admin: User = requireAdmin(ctx)
-      const data = z.object({ landingDisabled: z.boolean().optional() }).strict().parse(ctx.request.body())
-      return db.transaction(() => {
+      const data = z.object({ landingDisabled: z.boolean().optional(), mcpSseEnabled: z.boolean().optional() }).strict().refine((value) => Object.keys(value).length > 0).parse(ctx.request.body())
+      const result = db.transaction(() => {
         if (data.landingDisabled !== undefined) {
           setSetting('landingDisabled', data.landingDisabled ? '1' : null)
-          audit(admin.id, null, 'site.settings.update', null, { landingDisabled: data.landingDisabled })
         }
-        return { landingDisabled: getSetting('landingDisabled') === '1' }
+        if (data.mcpSseEnabled !== undefined) setSetting('mcpSseEnabled', data.mcpSseEnabled ? '1' : null)
+        audit(admin.id, null, 'site.settings.update', null, data)
+        return { landingDisabled: getSetting('landingDisabled') === '1', mcpSseEnabled: getSetting('mcpSseEnabled') === '1' }
       })()
+      if (data.mcpSseEnabled === false) await closeMcpSseSessions()
+      return result
     })
     router.put('/site/logo', async (ctx) => {
       const admin: User = requireAdmin(ctx)
