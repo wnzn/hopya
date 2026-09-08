@@ -266,13 +266,26 @@ try {
   env.LANDING_ENABLED = 'false'
   await compose('up', '-d', '--no-build', '--force-recreate', '--wait', 'api', 'web')
   let redirected = false
+  let apiRefreshed = false
   for (let attempt = 0; attempt < 30; attempt++) {
-    const response = await fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
-    if (response.status === 302 && response.headers.get('location') === '/login') { redirected = true; break }
+    try {
+      const [response, configResponse] = await Promise.all([
+        fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) }),
+        fetch(`${origin}/api/v1/config`, { signal: AbortSignal.timeout(5000) }),
+      ])
+      redirected ||= response.status === 302 && response.headers.get('location') === '/login'
+      if (configResponse.status === 200) {
+        const config = await configResponse.json() as { landingEnabled?: boolean }
+        apiRefreshed ||= config.landingEnabled === false
+      }
+      if (redirected && apiRefreshed) break
+    } catch {
+      // Recreated upstream sockets can close while Nginx refreshes Docker DNS.
+    }
     await new Promise(resolve => setTimeout(resolve, 1000))
   }
   assert.ok(redirected, 'Runtime landing redirect missing after recreation')
-  assert.equal((await (await request('/config')).json()).landingEnabled, false)
+  assert.ok(apiRefreshed, 'Runtime API config missing after recreation')
   console.log('Verified runtime landing toggle and proxy upstream DNS refresh without rebuilding')
 
   phase = 'cold archive and restore'
