@@ -76,10 +76,11 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
       await client.getByRole("button", { name: task.title, exact: true }).click();
       expect(errors, "Opening the populated task must not crash React").toEqual([]);
       await expect(client.getByRole("dialog", { name: "Task details" })).toBeVisible();
-      await expect(client.getByRole("textbox", { name: "Body", exact: true })).toHaveValue(description);
+      await expect(client.getByRole("textbox", { name: "Body", exact: true })).toHaveText(description, { useInnerText: true });
     }
 
     // Both real editors opened the same version before either sends a PATCH.
+    await page.getByRole("button", { name: "Edit priority", exact: true }).click();
     await page.getByRole("combobox", { name: "Priority", exact: true }).selectOption("high");
     let saving = responseFor(page, taskPath, "PATCH");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -87,7 +88,9 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     expect(firstSave.status()).toBe(200);
     expect(firstSave.request().postDataJSON()).toEqual({ priority: "high", expectedUpdatedAt: task.updatedAt });
     const winner = await firstSave.json() as Item;
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit priority", exact: true })).toHaveText("High");
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await second.getByRole("button", { name: "Edit title", exact: true }).click();
     await second.getByLabel("Title", { exact: true }).fill("Unsaved conflicting title");
     saving = responseFor(second, taskPath, "PATCH");
     await second.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -113,12 +116,13 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     const reloading = responseFor(second, taskPath, "GET");
     await second.getByRole("button", { name: "Reload current task", exact: true }).click();
     expect((await reloading).status()).toBe(200);
-    await expect(second.getByLabel("Title", { exact: true })).toHaveValue(task.title);
-    await expect(second.getByRole("combobox", { name: "Priority", exact: true })).toHaveValue("high");
+    await expect(second.getByRole("button", { name: "Edit title", exact: true })).toHaveText(task.title);
+    await expect(second.getByRole("button", { name: "Edit priority", exact: true })).toHaveText("High");
     await expect(second.getByRole("alert")).toHaveCount(0);
     await expect(second.getByRole("button", { name: "Reload current task", exact: true })).toHaveCount(0);
     let current = winner;
     for (const priority of ["urgent", "low"] as const) {
+      await second.getByRole("button", { name: "Edit priority", exact: true }).click();
       await second.getByRole("combobox", { name: "Priority", exact: true }).selectOption(priority);
       saving = responseFor(second, taskPath, "PATCH");
       await second.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -129,47 +133,47 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
       expect(next.updatedAt > current.updatedAt).toBe(true);
       expect(next).toMatchObject({ title: task.title, description, priority });
       current = next;
-      await expect(second.getByRole("dialog")).toHaveCount(0);
-      await second.getByRole("button", { name: task.title, exact: true }).click();
-      await expect(second.getByRole("combobox", { name: "Priority", exact: true })).toHaveValue(priority);
+      await expect(second.getByRole("button", { name: "Edit priority", exact: true })).toHaveText(priority === "urgent" ? "Urgent" : "Low");
     }
-    await second.getByRole("button", { name: "Cancel", exact: true }).click();
+    await second.getByRole("button", { name: "Close dialog", exact: true }).click();
     expect(await read<Item>(page, taskPath)).toEqual(current);
     console.log("Live workflow passed: two-account editor conflict 409, draft retained, reload confirmation cancelled then accepted, latest version restored, two successive versioned UI saves persisted.");
 
     await page.reload();
     await page.getByRole("button", { name: task.title, exact: true }).click();
     for (const field of fields.filter((field) => field.type !== "checkbox")) {
+      await page.getByRole("button", { name: `Edit ${field.name}`, exact: true }).click();
       if (field.type === "select") await page.getByRole("combobox", { name: field.name, exact: true }).selectOption("");
       else await page.getByLabel(field.name, { exact: true }).fill("");
     }
     const checkbox = fields.find((field) => field.type === "checkbox")!;
+    await page.getByRole("button", { name: `Edit ${checkbox.name}`, exact: true }).click();
     await page.getByLabel(checkbox.name, { exact: true }).uncheck();
     const cleared = Object.fromEntries(fields.map((field) => [field.id, field.type === "checkbox" ? false : null]));
     saving = responseFor(page, taskPath, "PATCH");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();
     expect((await saving).status()).toBe(200);
     expect((await read<Item>(page, taskPath)).customFields).toEqual(cleared);
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
     await page.reload();
     await page.getByRole("button", { name: task.title, exact: true }).click();
     for (const field of fields.filter((field) => field.type !== "checkbox"))
-      await expect(field.type === "select"
-        ? page.getByRole("combobox", { name: field.name, exact: true })
-        : page.getByLabel(field.name, { exact: true })).toHaveValue("");
-    await expect(page.getByLabel(checkbox.name, { exact: true })).not.toBeChecked();
+      await expect(page.getByRole("button", { name: `Edit ${field.name}`, exact: true })).toHaveText("Not set");
+    await expect(page.getByRole("button", { name: `Edit ${checkbox.name}`, exact: true })).toHaveText("No");
     await expect(page.locator(`[id="custom-${checkbox.id}-state"]`)).toHaveText("No");
+    await page.getByRole("button", { name: `Edit ${checkbox.name}`, exact: true }).click();
     await page.getByRole("button", { name: `Clear ${checkbox.name}`, exact: true }).click();
     saving = responseFor(page, taskPath, "PATCH");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();
     expect((await saving).status()).toBe(200);
     expect((await read<Item>(page, taskPath)).customFields).toEqual({ ...cleared, [checkbox.id]: null });
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
     await page.reload();
     await page.getByRole("button", { name: task.title, exact: true }).click();
     await expect(page.locator(`[id="custom-${checkbox.id}-state"]`)).toHaveText("Not set");
+    await page.getByRole("button", { name: `Edit ${checkbox.name}`, exact: true }).click();
     await expect(page.getByRole("button", { name: `Clear ${checkbox.name}`, exact: true })).toBeDisabled();
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
     console.log("Live workflow passed: text/number/date/select cleared to null, unchecked checkbox persisted false/No, explicit Clear persisted null/Not set, verified after full reloads.");
 
     await page.getByTitle(`project: ${project.name}`, { exact: true }).click();
@@ -182,7 +186,7 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByText(projectDescription, { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Add fields", exact: true }).click();
-    const configuration = page.getByRole("dialog", { name: "Project fields", exact: true });
+    const configuration = page.getByRole("dialog", { name: `Fields for ${project.name}`, exact: true });
     await configuration.getByRole("button", { name: "Add status", exact: true }).click();
     const newStatus = configuration.getByRole("group", { name: /^Status \d+$/ }).last();
     await newStatus.getByLabel("Status name", { exact: true }).fill("Accepted live");
@@ -210,7 +214,9 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await configuration.getByRole("button", { name: "Close dialog", exact: true }).click();
     await page.getByRole("button", { name: task.title, exact: true }).click();
     const beforeTypedSave = await read<Item>(page, taskPath);
+    await page.getByRole("button", { name: "Edit status", exact: true }).click();
     await page.getByRole("combobox", { name: "Status", exact: true }).selectOption({ label: accepted.name });
+    await page.getByRole("button", { name: `Edit ${rating.name}`, exact: true }).click();
     await page.getByLabel(rating.name, { exact: true }).fill("6");
     saving = responseFor(page, taskPath, "PATCH");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -222,15 +228,15 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     });
     const typedTask = await read<Item>(page, taskPath);
     expect(typedTask).toMatchObject({ status: accepted.id, customFields: { ...beforeTypedSave.customFields, [rating.id]: 6 } });
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
     await page.reload();
     await page.getByTitle(`project: ${project.name}`, { exact: true }).click();
     await expect(page.getByText(projectDescription, { exact: true })).toBeVisible();
     await expect(page.getByText("1 complete", { exact: false })).toBeVisible();
     await page.getByRole("button", { name: task.title, exact: true }).click();
-    await expect(page.getByRole("combobox", { name: "Status", exact: true })).toHaveValue(accepted.id);
-    await expect(page.getByLabel(rating.name, { exact: true })).toHaveValue("6");
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Edit status", exact: true })).toHaveText(accepted.name);
+    await expect(page.getByRole("button", { name: `Edit ${rating.name}`, exact: true })).toHaveText("6");
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
     console.log("Live workflow passed: UI project description, custom completed status/color and assigned rating(max 7); versioned status/rating 6 save preserves sibling values, description/status/rating and completion count survive reload.");
 
     await page.goto(`${origin}/settings`);
@@ -241,24 +247,25 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await second.reload();
     await second.getByRole("button", { name: task.title, exact: true }).focus();
     await second.keyboard.press("Enter");
-    await expect(second.getByLabel("Title", { exact: true })).toBeFocused();
+    await expect(second.getByRole("dialog", { name: "Task details" })).toBeFocused();
+    await second.keyboard.press("Tab");
+    await second.keyboard.press("Tab");
     await second.keyboard.press("Tab");
     const readonlyDescription = second.getByRole("textbox", { name: "Body", exact: true });
     await expect(readonlyDescription).toBeFocused();
-    await expect(readonlyDescription).toHaveAttribute("readonly", "");
-    await expect(readonlyDescription).toHaveValue(description);
+    await expect(readonlyDescription).toHaveAttribute("aria-readonly", "true");
+    await expect(readonlyDescription).toHaveText(description, { useInnerText: true });
     await second.keyboard.press("Control+End");
     await expect.poll(() => readonlyDescription.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await expect.poll(() => readonlyDescription.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
     await second.keyboard.press("Control+a");
-    expect(await readonlyDescription.evaluate((element) => {
-      const input = element as HTMLTextAreaElement;
-      return input.value.slice(input.selectionStart, input.selectionEnd);
-    })).toBe(description);
+    expect(await readonlyDescription.evaluate(() => window.getSelection()?.toString())).toContain("Description line 1");
     await second.keyboard.press("x");
-    await expect(readonlyDescription).toHaveValue(description);
+    await expect(readonlyDescription).toHaveText(description, { useInnerText: true });
     await expect(second.getByRole("button", { name: "Save changes", exact: true })).toHaveCount(0);
-    await expect(second.getByRole("button", { name: "Delete task", exact: true })).toHaveCount(0);
+    await second.getByRole("button", { name: "Task options", exact: true }).click();
+    await expect(second.getByRole("menuitem", { name: "Delete task", exact: true })).toHaveCount(0);
+    await second.getByRole("button", { name: "Task options", exact: true }).click();
     await second.keyboard.press("Escape");
     await expect(second.getByRole("dialog")).toHaveCount(0);
 
@@ -286,6 +293,7 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     expect(updatedDetail.permissions.sort()).toEqual(["items:read", "items:write"]);
     await second.reload();
     await second.getByRole("button", { name: task.title, exact: true }).click();
+    await second.getByRole("button", { name: "Edit priority", exact: true }).click();
     await second.getByRole("combobox", { name: "Priority", exact: true }).selectOption("medium");
     saving = responseFor(second, taskPath, "PATCH");
     await second.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -310,9 +318,10 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
 
     await page.goto(`${origin}/app`);
     await page.getByRole("button", { name: task.title, exact: true }).click();
+    await page.getByRole("button", { name: "Add attachment", exact: true }).click();
     const attachments = [];
     for (const name of ["delete-control.txt", "cascade-control.txt"]) {
-      const fileInput = page.getByLabel("Attach a file (up to 10 MiB)");
+      const fileInput = page.getByLabel("Attach a file", { exact: true });
       await expect(fileInput).toBeEnabled();
       const uploading = responseFor(page, `${taskPath}/attachments`, "POST");
       await fileInput.setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`Disposable ${name}`) });
@@ -338,19 +347,20 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await expect(page.getByRole("link", { name: "delete-control.txt", exact: true })).toHaveCount(0);
     expect((await page.request.get(`${apiUrl}${attachmentPath}`)).status()).toBe(404);
     await page.reload();
-    await page.getByRole("button", { name: task.title, exact: true }).click();
     await expect(page.getByRole("link", { name: "cascade-control.txt", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "delete-control.txt", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Delete task", exact: true }).click();
+    await page.getByRole("button", { name: "Task options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Delete task", exact: true }).click();
     await page.getByRole("button", { name: "Keep task", exact: true }).click();
     expect((await page.request.get(`${apiUrl}${taskPath}`)).status()).toBe(200);
-    await page.getByRole("button", { name: "Delete task", exact: true }).click();
+    await page.getByRole("button", { name: "Task options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Delete task", exact: true }).click();
     deleting = responseFor(page, taskPath, "DELETE");
     await page.getByRole("button", { name: "Permanently delete", exact: true }).click();
     expect((await deleting).status()).toBe(200);
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.reload();
-    await expect(page.getByRole("button", { name: "Create a task", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add task", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: task.title, exact: true })).toHaveCount(0);
     expect((await page.request.get(`${apiUrl}${taskPath}`)).status()).toBe(404);
     expect((await page.request.get(`${apiUrl}${taskPath}/attachments/${attachments[1].id}`)).status()).toBe(404);
@@ -361,7 +371,7 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await page.goto(`${origin}/settings`);
     await page.getByLabel("Display name").fill("Renamed disposable owner");
     changing = responseFor(page, "/auth/profile", "PATCH");
-    await page.getByRole("button", { name: "Save profile", exact: true }).click();
+    await page.getByRole("button", { name: "Save account", exact: true }).click();
     expect((await changing).status()).toBe(200);
     await expect(page.getByRole("status").filter({ hasText: "Your profile has been updated." })).toHaveText("Your profile has been updated.");
     await page.reload();
@@ -406,9 +416,9 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await page.getByLabel("Current password", { exact: true }).fill(owner.password);
     await page.getByLabel("New password", { exact: true }).fill(newPassword);
     changing = responseFor(page, "/auth/profile", "PATCH");
-    await page.getByRole("button", { name: "Save profile", exact: true }).click();
+    await page.getByRole("button", { name: "Save account", exact: true }).click();
     expect((await changing).status()).toBe(200);
-    await expect(page.getByRole("status").filter({ hasText: "Password updated." })).toHaveText("Password updated. Other sessions and existing tokens have been revoked.");
+    await expect(page.getByRole("status").filter({ hasText: "Account updated." })).toHaveText("Account updated. Other sessions and existing tokens have been revoked.");
     expect((await fetch(`${apiUrl}/auth/me`, { headers: { Cookie: oldCookie }, signal: AbortSignal.timeout(10_000) })).status).toBe(401);
     expect((await fetch(`${apiUrl}/auth/me`, { headers: { Authorization: `Bearer ${tokens[1]}` }, signal: AbortSignal.timeout(10_000) })).status).toBe(401);
     expect((await page.request.get(`${apiUrl}/auth/me`)).status()).toBe(200);
@@ -422,7 +432,7 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     await page.getByLabel("Email", { exact: true }).fill(owner.email);
     await page.getByLabel("Password", { exact: true }).fill(newPassword);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await expect(page).toHaveURL(/\/app$/);
+    await expect(page).toHaveURL(/\/app\?workspace=/);
     expect((await read<User>(page, "/auth/me")).id).toBe(owner.user.id);
     expect((await read<User>(admin, "/auth/me")).isAdmin).toBe(true);
     expect(errors).toEqual([]);

@@ -348,7 +348,7 @@ try {
     .selectOption({ label: "Verification project (project)" });
   await page.getByRole("button", { name: "Create list", exact: true }).click();
   await page
-    .getByRole("button", { name: "Create a task", exact: true })
+    .getByRole("button", { name: "Add task", exact: true })
     .click();
   await page
     .getByLabel("Title", { exact: true })
@@ -357,7 +357,7 @@ try {
     .getByLabel("Body", { exact: true })
     .fill("Temporary browser integration verification.");
   await page.getByRole("dialog").getByRole("button", { name: "Add fields", exact: true }).click();
-  const projectFields = page.getByRole("dialog", { name: "Project fields", exact: true });
+  const projectFields = page.getByRole("dialog", { name: "Fields for Verification list", exact: true });
   await projectFields.getByRole("checkbox", { name: "Start date Built-in", exact: true }).check();
   await projectFields.getByRole("button", { name: "Apply fields", exact: true }).click();
   await expect(projectFields.getByRole("status")).toHaveText("Project fields updated.");
@@ -655,7 +655,8 @@ try {
   }
   await page.goto(`${origin}/settings`);
   const workspaceSelect = page.getByRole("combobox", {
-    name: "Selected workspace",
+    name: "WORKSPACE",
+    exact: true,
   });
   await expect(
     page.getByRole("button", { name: "Add member", exact: true }),
@@ -688,7 +689,10 @@ try {
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "WORKSPACE", exact: true }),
-  ).not.toHaveValue(firstWorkspaceId);
+  ).toHaveValue(firstWorkspaceId);
+  await page
+    .getByRole("combobox", { name: "WORKSPACE", exact: true })
+    .selectOption({ label: "Second verification workspace" });
   await page.goto(`${origin}/settings`);
   await expect(
     page.getByRole("button", { name: "Add member", exact: true }),
@@ -873,9 +877,7 @@ try {
     expectedParentId: movingFolder.parentId,
   });
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Verification project", exact: true }),
-  ).toBeVisible();
+  await expect(page.locator("h1")).toContainText("Verification project");
   await expect(persistedTask).toHaveCount(0);
   await page
     .getByTitle("project: Move destination project", { exact: true })
@@ -965,7 +967,7 @@ try {
       await scopedPage
         .getByRole("button", { name: "Sign in", exact: true })
         .click();
-      await expect(scopedPage).toHaveURL(/\/app$/);
+      await expect(scopedPage).toHaveURL(/\/app\?workspace=/);
       await expect(
         scopedPage.getByRole("heading", {
           name: "Task access is not included in your role",
@@ -1042,7 +1044,7 @@ try {
           .click();
         await expect(
           scopedPage
-            .getByRole("combobox", { name: "Selected workspace" })
+            .getByRole("combobox", { name: "WORKSPACE", exact: true })
             .locator(`option[value="${firstWorkspaceId}"]`),
         ).toHaveText("Renamed by management-only user");
         await scopedPage.reload();

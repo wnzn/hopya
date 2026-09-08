@@ -221,7 +221,9 @@ try {
     const beforeMobile = await (await request(itemPath)).json()
     await page.getByRole('button', { name: item.title, exact: true }).click()
     const mobileDescription = 'Persisted from the 390px mobile task editor'
-    await page.getByRole('textbox', { name: 'Body', exact: true }).fill(mobileDescription)
+    const bodyEditor = page.getByRole('textbox', { name: 'Body', exact: true })
+    await bodyEditor.click()
+    await bodyEditor.fill(mobileDescription)
     const mobileSave = page.waitForResponse((response: { url(): string; request(): { method(): string }; status(): number }) => response.url().endsWith(itemPath) && response.request().method() === 'PATCH' && response.status() === 200)
     await page.getByRole('button', { name: 'Save changes', exact: true }).click()
     await mobileSave
@@ -230,9 +232,9 @@ try {
     assert.notEqual(afterMobile.updatedAt, beforeMobile.updatedAt)
     phase = 'mobile task reload persistence'
     await page.reload()
-    await page.getByRole('button', { name: item.title, exact: true }).click()
+    await page.getByRole('dialog', { name: 'Task details' }).waitFor()
     phase = 'mobile persisted description'
-    await expect(page.getByRole('dialog', { name: 'Task details' }).getByRole('textbox', { name: 'Body', exact: true })).toHaveValue(mobileDescription)
+    await expect(page.getByRole('dialog', { name: 'Task details' }).getByRole('textbox', { name: 'Body', exact: true })).toHaveText(mobileDescription, { useInnerText: true })
     await page.keyboard.press('Escape')
     phase = 'mobile document bounds'
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Mobile document overflow')

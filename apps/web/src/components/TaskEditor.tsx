@@ -1531,9 +1531,13 @@ export default function TaskEditor({
                       {renderCustomEditor(field)}
                       {(field.type === "date" || field.type === "datetime") && typeof draft.customFields[field.id] === "string" && <small>{formatFieldDate(draft.customFields[field.id] as string, field.settings?.dateFormat ?? dateFormat, field.type === "datetime")}</small>}
                       {field.type === "checkbox" && (
-                        <small id={`custom-${field.id}-state`}>
-                          {draft.customFields[field.id] == null ? "Not set" : draft.customFields[field.id] ? "Yes" : "No"}
-                        </small>
+                        <>
+                          <small id={`custom-${field.id}-state`}>
+                            {draft.customFields[field.id] == null ? "Not set" : draft.customFields[field.id] ? "Yes" : "No"}
+                          </small>
+                          <button type="button" aria-label={`Clear ${field.name}`} disabled={draft.customFields[field.id] == null}
+                            onClick={() => change("customFields", { ...draft.customFields, [field.id]: null })}>Clear</button>
+                        </>
                       )}
                       {renderInlineActions()}
                     </div>
