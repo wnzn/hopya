@@ -86,6 +86,8 @@ Set both `SMTP_URL` and `SMTP_FROM` to enable local password recovery. Use a ver
 
 The MCP SSE endpoint is disabled until a site administrator enables it. If exposed through a reverse proxy, preserve streaming responses without buffering, keep `Authorization` headers on both GET and POST, enforce HTTPS, and apply proxy connection limits and timeouts compatible with Hopya's 30-minute session lifetime. Do not add tokens to URLs or proxy access logs.
 
+Compose passes `HOPYA_MCP_ALLOW_WRITES` to the API with a `false` default. Set it to `true` in `.env` and recreate the API only when every connected MCP host enforces explicit human approval for each mutation. SSE enablement remains a persisted administrator setting, not an environment override.
+
 Test delivery, sender authorization, spam handling, expiry, and recovery with your actual mail provider. Hopya never logs or displays reset tokens as a fallback.
 
 ## OIDC And AI

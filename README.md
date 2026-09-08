@@ -151,7 +151,7 @@ Environment:
   HOPYA_API_TOKEN=<personal token>
 ```
 
-MCP is read-only by default. `HOPYA_MCP_ALLOW_WRITES=true` exposes mutation tools, but the MCP client must still obtain explicit human approval for each write.
+MCP is read-only by default. For Docker Compose, set `HOPYA_MCP_ALLOW_WRITES=true` in `.env` and recreate the API service to expose mutation tools; the MCP client must still obtain explicit human approval for each write.
 
 Site administrators may also enable the disabled-by-default SSE transport in **Settings > Site settings**. Connect an SSE-compatible MCP client to `https://your-hopya.example/api/v1/mcp/sse` and configure `Authorization: Bearer <personal token>` as a header. Never place the token in the URL. Disabling SSE immediately closes active sessions; sessions otherwise expire after 30 minutes. Both transports expose the same tools and enforce the token owner's current workspace permissions.
 
