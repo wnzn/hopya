@@ -213,7 +213,7 @@ try {
     await statusControl.press('ArrowDown')
     await page.keyboard.press('Enter')
     await updated
-    assert.equal((await (await request(itemPath)).json()).status, 'in_progress')
+    assert.equal((await (await request(itemPath)).json()).status, 'backlog')
     phase = 'mobile task editor save'
     await page.setViewportSize({ width: 390, height: 844 })
     await page.getByRole('tab', { name: 'List', exact: true }).click()
@@ -221,7 +221,7 @@ try {
     const beforeMobile = await (await request(itemPath)).json()
     await page.getByRole('button', { name: item.title, exact: true }).click()
     const mobileDescription = 'Persisted from the 390px mobile task editor'
-    await page.getByRole('textbox', { name: 'Description', exact: true }).fill(mobileDescription)
+    await page.getByRole('textbox', { name: 'Body', exact: true }).fill(mobileDescription)
     const mobileSave = page.waitForResponse((response: { url(): string; request(): { method(): string }; status(): number }) => response.url().endsWith(itemPath) && response.request().method() === 'PATCH' && response.status() === 200)
     await page.getByRole('button', { name: 'Save changes', exact: true }).click()
     await mobileSave
@@ -232,7 +232,7 @@ try {
     await page.reload()
     await page.getByRole('button', { name: item.title, exact: true }).click()
     phase = 'mobile persisted description'
-    await expect(page.getByRole('dialog', { name: 'Task details' }).getByRole('textbox', { name: 'Description', exact: true })).toHaveValue(mobileDescription)
+    await expect(page.getByRole('dialog', { name: 'Task details' }).getByRole('textbox', { name: 'Body', exact: true })).toHaveValue(mobileDescription)
     await page.keyboard.press('Escape')
     phase = 'mobile document bounds'
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Mobile document overflow')

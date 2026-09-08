@@ -326,7 +326,7 @@ try {
     .getByRole("button", { name: "Create workspace", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "Create a project", exact: true })
+    .getByRole("button", { name: "Add project, folder, or list", exact: true })
     .click();
   await page
     .getByRole("dialog")
@@ -354,7 +354,7 @@ try {
     .getByLabel("Title", { exact: true })
     .fill("Verify real REST persistence");
   await page
-    .getByLabel("Description", { exact: true })
+    .getByLabel("Body", { exact: true })
     .fill("Temporary browser integration verification.");
   await page.getByRole("dialog").getByRole("button", { name: "Add fields", exact: true }).click();
   const projectFields = page.getByRole("dialog", { name: "Project fields", exact: true });
