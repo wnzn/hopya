@@ -134,7 +134,7 @@ The normal check runs TypeScript validation, API/unit tests, and production buil
 npm run test:browser
 ```
 
-The GitHub Actions workflow runs dependency auditing, checks, compiled application tests, browser tests, and isolated Docker deployment verification.
+The GitHub Actions workflow runs dependency auditing, checks, compiled API tests, and isolated non-browser Docker deployment verification. Browser tests remain available for deliberate local runs.
 
 ## API And MCP
 

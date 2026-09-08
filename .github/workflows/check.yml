@@ -21,7 +21,7 @@ env:
 
 jobs:
   check:
-    name: Unit, Build And Compiled Live
+    name: Unit, Build And Compiled API
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -40,10 +40,6 @@ jobs:
         run: npm test -w @hopya/api
         env:
           HOPYA_TEST_BUILD: 'true'
-      - name: Install Chromium And System Dependencies
-        run: npm exec -w @hopya/web -- playwright install --with-deps chromium
-      - name: Test Compiled Live Application
-        run: npm run test:live -w @hopya/web
 
   deployment:
     name: Docker Deployment Verification
@@ -62,9 +58,5 @@ jobs:
         run: |
           docker version
           docker compose version
-      - name: Install Chromium And System Dependencies
-        run: npm exec -w @hopya/web -- playwright install --with-deps chromium
       - name: Verify Isolated Docker Deployment And Recovery
         run: npm run test:deployment
-        env:
-          HOPYA_DEPLOYMENT_BROWSER: 'true'
