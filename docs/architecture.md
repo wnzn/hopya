@@ -1,6 +1,6 @@
 # Architecture And Integration Contract
 
-Hopya is a self-hosted, single-instance task management application. Node 24 runs AdonisJS 7 and Astro. React islands render the interactive workspace. SQLite in WAL mode persists relational data. Optional S3 or filesystem storage holds private attachments. No background cloud connection is required.
+Hopya is a self-hosted, single-instance task management application. Node 24 runs AdonisJS 7 and Astro. React islands render the interactive workspace. SQLite in WAL mode currently persists application data. Lucid owns schema migrations and has SQLite and Postgres migration connections, but the application query layer remains SQLite-only until it is moved from direct `better-sqlite3` calls to Lucid. Optional S3 or filesystem storage holds private attachments. No background cloud connection is required.
 
 Adonis encryption is configured explicitly with the legacy driver and the existing `APP_KEY`, preserving signed cookies issued by the previous Adonis 6 runtime. Cookies still only identify random session tokens; database expiry, revocation and account checks remain authoritative. The framework upgrade does not change the SQLite schema or rotate operator secrets.
 

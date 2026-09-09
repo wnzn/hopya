@@ -4,29 +4,36 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
-    "dev": "tsx watch bin/server.ts",
-    "start": "node build/bin/server.js",
+    "dev": "node ace.js migration:run --no-schema-generate && tsx watch bin/server.ts",
+    "start": "node build/bin/console.js migration:run --no-schema-generate && node build/bin/server.js",
     "mcp": "node build/bin/mcp.js",
+    "ace": "node ace.js",
     "build": "tsc && node scripts/copy-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts"
   },
   "dependencies": {
     "@adonisjs/core": "^7.5.0",
+    "@adonisjs/lucid": "^22.4.2",
     "@aws-sdk/client-s3": "^3.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "better-sqlite3": "^12.2.0",
+    "better-sqlite3": "^13.0.3",
     "effect": "^3.19.0",
-    "openid-client": "^6.8.0",
+    "luxon": "^3.7.2",
     "nodemailer": "^10.0.1",
+    "openid-client": "^6.8.0",
+    "pg": "^8.23.0",
     "reflect-metadata": "^0.2.2",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/nodemailer": "^7.0.1",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/luxon": "^3.7.5",
+    "@types/nodemailer": "^7.0.1",
     "tsx": "^4.20.0",
     "youch": "^4.1.0"
   }

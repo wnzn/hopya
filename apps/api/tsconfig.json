@@ -12,6 +12,6 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["app/**/*.ts", "bin/**/*.ts", "config/**/*.ts", "start/**/*.ts", "tests/**/*.ts", "adonisrc.ts"],
+  "include": ["app/**/*.ts", "bin/**/*.ts", "config/**/*.ts", "database/**/*.ts", "start/**/*.ts", "tests/**/*.ts", "adonisrc.ts"],
   "exclude": ["build", "node_modules"]
 }

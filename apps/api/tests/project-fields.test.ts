@@ -8,9 +8,11 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer } from 'node:net'
 import Database from 'better-sqlite3'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-project-fields-'))
 process.env.DATA_DIR = directory
+migrateDatabase()
 const { db, service, HttpError } = await import('../app/core.js')
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })
 function user() {
@@ -287,11 +289,11 @@ test('migration backfills only actual old projects, preserves values and enforce
   const old = new Database(join(directory, 'old.sqlite'))
   try {
     old.pragma('foreign_keys = ON')
-    for (const name of ['001_core.sql', '002_integrations.sql', '003_item_read_index.sql', '004_field_formula.sql']) old.exec(readFileSync(new URL(`../database/migrations/${name}`, import.meta.url), 'utf8'))
+    for (const name of ['001_core.sql', '002_integrations.sql', '003_item_read_index.sql', '004_field_formula.sql']) old.exec(readFileSync(new URL(`../database/migrations/legacy/${name}`, import.meta.url), 'utf8'))
     old.exec("INSERT INTO workspaces VALUES ('w','Old','2026-01-01T00:00:00.000Z'); INSERT INTO nodes VALUES ('p','w','Project','project',NULL,'2026-01-01T00:00:00.000Z'),('l','w','List','list','p','2026-01-01T00:00:00.000Z'); INSERT INTO fields VALUES ('f','w','Field','text','[]'); INSERT INTO items(id,workspaceId,nodeId,title,status,priority,customFields,createdAt,updatedAt) VALUES ('i','w','l','Old','todo','none','{\"f\":\"preserved\"}','old','old')")
     const before = old.prepare('SELECT * FROM items').get()
     old.exec("INSERT INTO workspaces VALUES ('other','Other','2026-01-01T00:00:00.000Z'); INSERT INTO nodes VALUES ('p2','w','Second project','project',NULL,'2026-01-01T00:00:00.000Z'),('empty','other','Empty project','project',NULL,'2026-01-01T00:00:00.000Z')")
-    old.transaction(() => old.exec(readFileSync(new URL('../database/migrations/005_project_fields.sql', import.meta.url), 'utf8')))()
+    old.transaction(() => old.exec(readFileSync(new URL('../database/migrations/legacy/005_project_fields.sql', import.meta.url), 'utf8')))()
     assert.deepEqual(old.prepare('SELECT * FROM items').get(), before)
     assert.deepEqual(old.prepare('SELECT projectId,fieldId FROM project_field_assignments ORDER BY projectId').all(), [{ projectId: 'p', fieldId: 'f' }, { projectId: 'p2', fieldId: 'f' }])
     assert.deepEqual(old.prepare('SELECT projectId FROM project_field_configs ORDER BY projectId').all(), [{ projectId: 'empty' }, { projectId: 'p' }, { projectId: 'p2' }])
@@ -573,7 +575,7 @@ test('migrations 006 and 007 preserve legacy data and backfill inherited list st
   const old = new Database(join(directory, 'features-old.sqlite'))
   try {
     old.pragma('foreign_keys = ON')
-    for (const name of ['001_core.sql', '002_integrations.sql', '003_item_read_index.sql', '004_field_formula.sql', '005_project_fields.sql']) old.exec(readFileSync(new URL(`../database/migrations/${name}`, import.meta.url), 'utf8'))
+    for (const name of ['001_core.sql', '002_integrations.sql', '003_item_read_index.sql', '004_field_formula.sql', '005_project_fields.sql']) old.exec(readFileSync(new URL(`../database/migrations/legacy/${name}`, import.meta.url), 'utf8'))
     old.exec(`INSERT INTO workspaces VALUES ('w','Old','2026-01-01T00:00:00.000Z');
       INSERT INTO nodes VALUES ('p','w','Project','project',NULL,'old'),('l','w','List','list','p','old');
       INSERT INTO fields VALUES ('f','w','Field','text','[]');
@@ -586,7 +588,7 @@ test('migrations 006 and 007 preserve legacy data and backfill inherited list st
     const before = tables.map((table) => old.prepare(`SELECT * FROM ${table}`).all())
     old.pragma('foreign_keys = OFF')
     old.transaction(() => {
-      old.exec(readFileSync(new URL('../database/migrations/006_project_features.sql', import.meta.url), 'utf8'))
+      old.exec(readFileSync(new URL('../database/migrations/legacy/006_project_features.sql', import.meta.url), 'utf8'))
       assert.deepEqual(old.pragma('foreign_key_check'), [])
     })()
     old.pragma('foreign_keys = ON')
@@ -598,7 +600,7 @@ test('migrations 006 and 007 preserve legacy data and backfill inherited list st
     assert.throws(() => old.exec("UPDATE nodes SET description='invalid' WHERE id='l'"), /CHECK/)
     assert.throws(() => old.exec("UPDATE project_field_assignments SET fieldId='foreign'"), /FOREIGN KEY/)
     const beforeListStatuses = tables.map((table) => old.prepare(`SELECT * FROM ${table}`).all())
-    old.transaction(() => old.exec(readFileSync(new URL('../database/migrations/007_list_status_configs.sql', import.meta.url), 'utf8')))()
+    old.transaction(() => old.exec(readFileSync(new URL('../database/migrations/legacy/007_list_status_configs.sql', import.meta.url), 'utf8')))()
     assert.deepEqual(tables.map((table) => old.prepare(`SELECT * FROM ${table}`).all()), beforeListStatuses)
     assert.deepEqual(old.prepare('SELECT listId,statuses,updatedAt FROM list_status_configs').all(), [{ listId: 'l', statuses: null, updatedAt: 'old' }])
     assert.throws(() => old.exec("INSERT INTO list_status_configs VALUES ('other','l',NULL,'old')"), /FOREIGN KEY/)

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Cause, Effect, Exit } from 'effect'
@@ -10,22 +10,6 @@ export const db = new Database(join(dataDir, 'hopya.sqlite'))
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 db.pragma('busy_timeout = 5000')
-db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, appliedAt TEXT NOT NULL)')
-const migrations = new URL('../database/migrations/', import.meta.url)
-for (const name of readdirSync(migrations).filter((name) => /^\d{3}_[\w-]+\.sql$/.test(name)).sort()) {
-  if (db.prepare('SELECT name FROM schema_migrations WHERE name = ?').get(name)) continue
-  // Table rebuilds must not cascade-delete referencing rows. Check the complete
-  // resulting schema before commit, then restore enforcement even on failure.
-  db.pragma('foreign_keys = OFF')
-  try {
-    db.transaction(() => {
-      if (db.prepare('SELECT name FROM schema_migrations WHERE name = ?').get(name)) return
-      db.exec(readFileSync(new URL(name, migrations), 'utf8'))
-      if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Migration foreign key check failed')
-      db.prepare('INSERT INTO schema_migrations (name, appliedAt) VALUES (?, ?)').run(name, new Date().toISOString())
-    }).immediate()
-  } finally { db.pragma('foreign_keys = ON') }
-}
 
 // Typed database failures, kept as values so callers compose audit writes and
 // mutations with Effect combinators instead of try/catch. The public audit()

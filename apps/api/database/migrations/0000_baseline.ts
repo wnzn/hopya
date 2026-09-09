@@ -1,5 +1,13 @@
 import { BaseSchema } from '@adonisjs/lucid/schema'
 
+const defaultStatuses = JSON.stringify([
+  { id: 'todo', name: 'To do', color: '#64748b', completed: false },
+  { id: 'backlog', name: 'Backlog', color: '#94a3b8', completed: false },
+  { id: 'in_progress', name: 'In progress', color: '#3b82f6', completed: false },
+  { id: 'review', name: 'Review', color: '#a855f7', completed: false },
+  { id: 'done', name: 'Done', color: '#22c55e', completed: true },
+])
+
 /**
  * Squashed baseline of the complete Hopya relational schema. New databases
  * (SQLite and Postgres) apply only this migration; databases migrated with
@@ -95,8 +103,8 @@ export default class extends BaseSchema {
       table.text('roleId').notNullable()
       table.primary(['workspaceId', 'userId'])
       table.index(['userId'], 'memberships_user')
-      table.foreign(['workspaceId'], 'memberships_workspace_fk').references(['id']).on('workspaces').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'roleId'], 'memberships_role_fk').references(['workspaceId', 'id']).on('roles').onDelete('CASCADE')
+      table.foreign(['workspaceId'], 'memberships_workspace_fk').references(['id']).inTable('workspaces').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'roleId'], 'memberships_role_fk').references(['workspaceId', 'id']).inTable('roles').onDelete('CASCADE')
     })
 
     this.schema.createTable('nodes', (table) => {
@@ -111,7 +119,7 @@ export default class extends BaseSchema {
       table.text('createdAt').notNullable()
       table.unique(['workspaceId', 'id'])
       table.index(['workspaceId', 'parentId'], 'nodes_workspace')
-      table.foreign(['workspaceId', 'parentId'], 'nodes_parent_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'parentId'], 'nodes_parent_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
     })
 
     this.schema.createTable('fields', (table) => {
@@ -149,9 +157,9 @@ export default class extends BaseSchema {
       table.index(['workspaceId', 'createdAt', 'id'], 'items_workspace_read')
       table.index(['workspaceId', 'archivedAt', 'createdAt', 'id'], 'items_workspace_archive_read')
       table.index(['parentId'], 'items_parent')
-      table.foreign(['workspaceId', 'nodeId'], 'items_node_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
-      table.foreign(['parentId'], 'items_parent_fk').references(['id']).on('items').onDelete('CASCADE')
-      table.foreign(['assigneeId'], 'items_assignee_fk').references(['id']).on('users')
+      table.foreign(['workspaceId', 'nodeId'], 'items_node_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
+      table.foreign(['parentId'], 'items_parent_fk').references(['id']).inTable('items').onDelete('CASCADE')
+      table.foreign(['assigneeId'], 'items_assignee_fk').references(['id']).inTable('users')
     })
 
     this.schema.createTable('audit_logs', (table) => {
@@ -163,7 +171,7 @@ export default class extends BaseSchema {
       table.text('details').notNullable().defaultTo('{}')
       table.text('createdAt').notNullable()
       table.index(['workspaceId', 'createdAt'], 'audit_workspace')
-      table.foreign(['actorId'], 'audit_actor_fk').references(['id']).on('users')
+      table.foreign(['actorId'], 'audit_actor_fk').references(['id']).inTable('users')
     })
 
     this.schema.createTable('storage_objects', (table) => {
@@ -186,9 +194,9 @@ export default class extends BaseSchema {
       table.text('createdAt').notNullable()
       table.unique(['objectKey'])
       table.index(['workspaceId', 'itemId', 'createdAt'], 'attachments_item')
-      table.foreign(['objectKey'], 'attachments_object_fk').references(['objectKey']).on('storage_objects')
-      table.foreign(['workspaceId', 'itemId'], 'attachments_item_fk').references(['workspaceId', 'id']).on('items').onDelete('CASCADE')
-      table.foreign(['createdBy'], 'attachments_creator_fk').references(['id']).on('users').onDelete('SET NULL')
+      table.foreign(['objectKey'], 'attachments_object_fk').references(['objectKey']).inTable('storage_objects')
+      table.foreign(['workspaceId', 'itemId'], 'attachments_item_fk').references(['workspaceId', 'id']).inTable('items').onDelete('CASCADE')
+      table.foreign(['createdBy'], 'attachments_creator_fk').references(['id']).inTable('users').onDelete('SET NULL')
     })
 
     this.schema.createTable('oidc_identities', (table) => {
@@ -219,10 +227,10 @@ export default class extends BaseSchema {
       table.text('projectId').notNullable()
       table.text('builtInFields').notNullable().defaultTo('[]')
       table.text('dateFormat').nullable()
-      table.text('statuses').notNullable()
+      table.text('statuses').notNullable().defaultTo(defaultStatuses)
       table.text('updatedAt').notNullable()
       table.primary(['workspaceId', 'projectId'])
-      table.foreign(['workspaceId', 'projectId'], 'project_field_configs_node_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'projectId'], 'project_field_configs_node_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
     })
 
     this.schema.createTable('project_field_assignments', (table) => {
@@ -232,8 +240,8 @@ export default class extends BaseSchema {
       table.integer('position').notNullable()
       table.primary(['workspaceId', 'projectId', 'fieldId'])
       table.index(['workspaceId', 'fieldId', 'projectId'], 'project_field_assignments_field')
-      table.foreign(['workspaceId', 'projectId'], 'project_field_assignments_config_fk').references(['workspaceId', 'projectId']).on('project_field_configs').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'fieldId'], 'project_field_assignments_field_fk').references(['workspaceId', 'id']).on('fields').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'projectId'], 'project_field_assignments_config_fk').references(['workspaceId', 'projectId']).inTable('project_field_configs').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'fieldId'], 'project_field_assignments_field_fk').references(['workspaceId', 'id']).inTable('fields').onDelete('CASCADE')
     })
 
     this.schema.createTable('list_status_configs', (table) => {
@@ -242,7 +250,7 @@ export default class extends BaseSchema {
       table.text('statuses').nullable()
       table.text('updatedAt').notNullable()
       table.primary(['workspaceId', 'listId'])
-      table.foreign(['workspaceId', 'listId'], 'list_status_configs_node_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'listId'], 'list_status_configs_node_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
     })
 
     this.schema.createTable('site_settings', (table) => {
@@ -296,7 +304,7 @@ export default class extends BaseSchema {
       table.unique(['automationId', 'version', 'position'])
       table.unique(['workspaceId', 'id'])
       table.index(['workspaceId', 'automationId', 'version', 'position'], 'automation_steps_version')
-      table.foreign(['workspaceId', 'automationId'], 'automation_steps_automation_fk').references(['workspaceId', 'id']).on('automations').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'automationId'], 'automation_steps_automation_fk').references(['workspaceId', 'id']).inTable('automations').onDelete('CASCADE')
     })
 
     this.schema.createTable('automation_runs', (table) => {
@@ -333,8 +341,8 @@ export default class extends BaseSchema {
       table.check('?? >= 1', ['position'])
       table.unique(['runId', 'position'])
       table.index(['workspaceId', 'runId', 'position'], 'automation_step_runs_run')
-      table.foreign(['workspaceId', 'runId'], 'automation_step_runs_run_fk').references(['workspaceId', 'id']).on('automation_runs').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'stepId'], 'automation_step_runs_step_fk').references(['workspaceId', 'id']).on('automation_steps').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'runId'], 'automation_step_runs_run_fk').references(['workspaceId', 'id']).inTable('automation_runs').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'stepId'], 'automation_step_runs_step_fk').references(['workspaceId', 'id']).inTable('automation_steps').onDelete('CASCADE')
     })
 
     this.schema.createTable('password_reset_tokens', (table) => {
@@ -346,7 +354,7 @@ export default class extends BaseSchema {
       table.unique(['userId'])
       table.unique(['tokenHash'])
       table.index(['expiresAt'], 'password_reset_tokens_expiry')
-      table.foreign(['userId'], 'password_reset_tokens_user_fk').references(['id']).on('users').onDelete('CASCADE')
+      table.foreign(['userId'], 'password_reset_tokens_user_fk').references(['id']).inTable('users').onDelete('CASCADE')
     })
 
     this.schema.createTable('comments', (table) => {
@@ -360,9 +368,9 @@ export default class extends BaseSchema {
       table.text('parentId').nullable()
       table.unique(['workspaceId', 'itemId', 'id'])
       table.index(['workspaceId', 'itemId', 'createdAt', 'id'], 'comments_item')
-      table.foreign(['workspaceId', 'itemId'], 'comments_item_fk').references(['workspaceId', 'id']).on('items').onDelete('CASCADE')
-      table.foreign(['authorId'], 'comments_author_fk').references(['id']).on('users').onDelete('SET NULL')
-      table.foreign(['parentId'], 'comments_parent_fk').references(['id']).on('comments')
+      table.foreign(['workspaceId', 'itemId'], 'comments_item_fk').references(['workspaceId', 'id']).inTable('items').onDelete('CASCADE')
+      table.foreign(['authorId'], 'comments_author_fk').references(['id']).inTable('users').onDelete('SET NULL')
+      table.foreign(['parentId'], 'comments_parent_fk').references(['id']).inTable('comments')
     })
 
     this.schema.createTable('item_mentions', (table) => {
@@ -370,8 +378,8 @@ export default class extends BaseSchema {
       table.text('itemId').notNullable()
       table.text('userId').notNullable()
       table.primary(['workspaceId', 'itemId', 'userId'])
-      table.foreign(['workspaceId', 'itemId'], 'item_mentions_item_fk').references(['workspaceId', 'id']).on('items').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'userId'], 'item_mentions_member_fk').references(['workspaceId', 'userId']).on('memberships').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'itemId'], 'item_mentions_item_fk').references(['workspaceId', 'id']).inTable('items').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'userId'], 'item_mentions_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')
     })
 
     this.schema.createTable('comment_mentions', (table) => {
@@ -380,8 +388,8 @@ export default class extends BaseSchema {
       table.text('commentId').notNullable()
       table.text('userId').notNullable()
       table.primary(['workspaceId', 'commentId', 'userId'])
-      table.foreign(['workspaceId', 'itemId', 'commentId'], 'comment_mentions_comment_fk').references(['workspaceId', 'itemId', 'id']).on('comments').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'userId'], 'comment_mentions_member_fk').references(['workspaceId', 'userId']).on('memberships').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'itemId', 'commentId'], 'comment_mentions_comment_fk').references(['workspaceId', 'itemId', 'id']).inTable('comments').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'userId'], 'comment_mentions_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')
     })
 
     this.schema.createTable('notifications', (table) => {
@@ -394,10 +402,10 @@ export default class extends BaseSchema {
       table.text('commentId').nullable()
       table.text('createdAt').notNullable()
       table.text('readAt').nullable()
-      table.foreign(['workspaceId', 'userId'], 'notifications_member_fk').references(['workspaceId', 'userId']).on('memberships').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'itemId'], 'notifications_item_fk').references(['workspaceId', 'id']).on('items').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'itemId', 'commentId'], 'notifications_comment_fk').references(['workspaceId', 'itemId', 'id']).on('comments').onDelete('CASCADE')
-      table.foreign(['actorId'], 'notifications_actor_fk').references(['id']).on('users').onDelete('SET NULL')
+      table.foreign(['workspaceId', 'userId'], 'notifications_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'itemId'], 'notifications_item_fk').references(['workspaceId', 'id']).inTable('items').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'itemId', 'commentId'], 'notifications_comment_fk').references(['workspaceId', 'itemId', 'id']).inTable('comments').onDelete('CASCADE')
+      table.foreign(['actorId'], 'notifications_actor_fk').references(['id']).inTable('users').onDelete('SET NULL')
     })
 
     this.schema.createTable('comment_reactions', (table) => {
@@ -409,8 +417,8 @@ export default class extends BaseSchema {
       table.text('createdAt').notNullable()
       table.primary(['workspaceId', 'commentId', 'userId', 'emoji'])
       table.index(['workspaceId', 'itemId', 'commentId', 'emoji'], 'comment_reactions_comment')
-      table.foreign(['workspaceId', 'itemId', 'commentId'], 'comment_reactions_comment_fk').references(['workspaceId', 'itemId', 'id']).on('comments').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'userId'], 'comment_reactions_member_fk').references(['workspaceId', 'userId']).on('memberships').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'itemId', 'commentId'], 'comment_reactions_comment_fk').references(['workspaceId', 'itemId', 'id']).inTable('comments').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'userId'], 'comment_reactions_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')
     })
 
     this.schema.createTable('list_view_settings', (table) => {
@@ -423,8 +431,8 @@ export default class extends BaseSchema {
       table.text('hiddenColumns').notNullable()
       table.text('sort').nullable()
       table.text('updatedAt').notNullable()
-      table.foreign(['workspaceId', 'userId'], 'list_view_settings_member_fk').references(['workspaceId', 'userId']).on('memberships').onDelete('CASCADE')
-      table.foreign(['workspaceId', 'projectId'], 'list_view_settings_node_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'userId'], 'list_view_settings_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'projectId'], 'list_view_settings_node_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
     })
 
     this.schema.createTable('list_tag_color_configs', (table) => {
@@ -433,7 +441,7 @@ export default class extends BaseSchema {
       table.text('colors').notNullable().defaultTo('{}')
       table.text('updatedAt').notNullable()
       table.primary(['workspaceId', 'listId'])
-      table.foreign(['workspaceId', 'listId'], 'list_tag_color_configs_node_fk').references(['workspaceId', 'id']).on('nodes').onDelete('CASCADE')
+      table.foreign(['workspaceId', 'listId'], 'list_tag_color_configs_node_fk').references(['workspaceId', 'id']).inTable('nodes').onDelete('CASCADE')
     })
 
     // CHECK constraints (value domains and JSON shape bounds) plus partial

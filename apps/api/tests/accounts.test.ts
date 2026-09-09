@@ -7,10 +7,12 @@ import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import type { HttpContext } from '@adonisjs/core/http'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-accounts-'))
 process.env.DATA_DIR = directory
 process.env.REGISTRATION_ENABLED = 'true'
+migrateDatabase()
 const { db, HttpError, service, authenticate } = await import('../app/core.js')
 const { accounts } = await import('../app/accounts.js')
 const { verifyPassword, hashPassword, hashToken } = await import('../app/security.js')
@@ -63,12 +65,12 @@ test('explicitly enabled registration remains closed until setup, then creates o
 })
 test('migration reapplication is idempotent and preserves persisted accounts', () => {
   const count = (db.prepare('SELECT count(*) AS count FROM users').get() as { count: number }).count
-  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', "const {db}=await import('./app/database.ts');db.close()"], {
+  const result = spawnSync(process.execPath, ['ace.js', 'migration:run', '--no-schema-generate', '--compact-output'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)), env: { ...process.env, DATA_DIR: directory }, encoding: 'utf8',
   })
   assert.equal(result.status, 0, result.stderr)
   assert.equal((db.prepare('SELECT count(*) AS count FROM users').get() as { count: number }).count, count)
-  assert.equal((db.prepare('SELECT count(*) AS count FROM schema_migrations WHERE name=?').get('001_core.sql') as { count: number }).count, 1)
+  assert.equal((db.prepare('SELECT count(*) AS count FROM adonis_schema WHERE name=?').get('database/migrations/0000_baseline') as { count: number }).count, 1)
 })
 test('site suspension overrides sole ownership, clears assignments across workspaces and supports recovery', (t) => {
   const f = suspensionFixture()
