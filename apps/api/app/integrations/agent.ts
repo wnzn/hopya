@@ -116,17 +116,17 @@ export async function askProvider(message: string, context: unknown, signal?: Ab
 let activeRequests = 0
 export function registerAgent(router: Router): void {
   router.post('/api/v1/workspaces/:wid/agent', async (ctx) => {
-    const user = authenticate(ctx)
+    const user = await authenticate(ctx)
     const wid = z.string().uuid().parse(ctx.params.wid)
-    requirePermission(user.id, wid, 'agent:use')
-    requirePermission(user.id, wid, 'items:read')
+    await requirePermission(user.id, wid, 'agent:use')
+    await requirePermission(user.id, wid, 'items:read')
     const input = z.object({ message: z.string().trim().min(1).max(8000) }).strict().parse(ctx.request.body())
-    rateLimit(ctx, `agent:${user.id}`)
+    await rateLimit(ctx, `agent:${user.id}`)
     if (activeRequests >= 4) {
       ctx.response.header('Retry-After', '1')
       throw new HttpError(429, 'Assistant is busy; try again shortly')
     }
-    const context = service.agentContext(user.id, wid)
+    const context = await service.agentContext(user.id, wid)
     const controller = new AbortController()
     const request = ctx.request.request
     const response = ctx.response.response
@@ -141,11 +141,11 @@ export function registerAgent(router: Router): void {
       const result = await askProvider(input.message, { ...context, snapshotDate: new Date().toISOString() }, controller.signal)
       controller.signal.throwIfAborted()
       // Revoked sessions/membership must not receive an in-flight response.
-      authenticate(ctx)
-      requirePermission(user.id, wid, 'agent:use')
-      requirePermission(user.id, wid, 'items:read')
-      if (result.proposal?.nodeId && !db.prepare("SELECT id FROM nodes WHERE workspaceId=? AND id=? AND kind='list'").get(wid, result.proposal.nodeId)) throw new HttpError(502, 'AI suggested an unavailable list. No tasks were changed.')
-      db.transaction(() => audit(user.id, wid, 'agent.answer', null, { proposal: Boolean(result.proposal) }))()
+      await authenticate(ctx)
+      await requirePermission(user.id, wid, 'agent:use')
+      await requirePermission(user.id, wid, 'items:read')
+      if (result.proposal?.nodeId && !await db.get("SELECT id FROM nodes WHERE workspaceId=? AND id=? AND kind='list'", wid, result.proposal.nodeId)) throw new HttpError(502, 'AI suggested an unavailable list. No tasks were changed.')
+      await db.transaction(async () => audit(user.id, wid, 'agent.answer', null, { proposal: Boolean(result.proposal) }))
       return { reply: result.reply, ...(result.proposal ? { proposal: result.proposal } : {}) }
     } finally {
       request.off('aborted', disconnected)

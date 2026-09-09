@@ -16,20 +16,20 @@ const logoName = 'logo'
 const allowedLogoTypes: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg',
 }
-const getSetting = (key: string): string | null =>
-  (db.prepare('SELECT value FROM site_settings WHERE key=?').get(key) as { value: string } | undefined)?.value ?? null
-const setSetting = (key: string, value: string | null): void => {
-  db.prepare('INSERT INTO site_settings (key,value,updatedAt) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updatedAt=excluded.updatedAt')
-    .run(key, value, new Date().toISOString())
+const getSetting = async (key: string): Promise<string | null> =>
+  (await db.get<{ value: string }>('SELECT value FROM site_settings WHERE key=?', key))?.value ?? null
+const setSetting = async (key: string, value: string | null): Promise<void> => {
+  await db.run('INSERT INTO site_settings (key,value,updatedAt) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updatedAt=excluded.updatedAt',
+    key, value, new Date().toISOString())
 }
 
-const logoMeta = (): { file: string; updatedAt: string } | null => {
-  const file = getSetting('logoFile')
-  return file ? { file, updatedAt: getSetting('logoUpdatedAt') ?? '' } : null
+const logoMeta = async (): Promise<{ file: string; updatedAt: string } | null> => {
+  const file = await getSetting('logoFile')
+  return file ? { file, updatedAt: await getSetting('logoUpdatedAt') ?? '' } : null
 }
-export function siteConfig() {
-  const landing = process.env.LANDING_ENABLED !== 'false' && getSetting('landingDisabled') !== '1'
-  const logo = logoMeta()
+export async function siteConfig() {
+  const landing = process.env.LANDING_ENABLED === 'true' && await getSetting('landingDisabled') !== '1'
+  const logo = await logoMeta()
   return { landingEnabled: landing, ...(logo ? { logo: `/api/v1/site/logo?v=${encodeURIComponent(logo.updatedAt)}` } : {}) }
 }
 
@@ -44,14 +44,14 @@ const brandingHttpError = (failure: BrandingFailure): HttpError => new HttpError
 // Logo resolution as an Effect: read the allowlisted setting, then validate the
 // exact names PUT /site/logo writes; anything else is absent.
 const requireLogoFileEffect = (): Effect.Effect<{ path: string; file: string }, LogoNotFound> => Effect.gen(function* () {
-  const file = yield* Effect.sync(() => getSetting('logoFile'))
+  const file = yield* Effect.promise(() => getSetting('logoFile'))
   // Allowlist of the exact names PUT /site/logo writes; anything else is absent.
   if (!file || !/^logo\.(png|jpg|webp|svg)$/.test(file)) return yield* Effect.fail(new LogoNotFound())
   return { path: join(brandDirectory, file), file }
 })
 
-function requireLogoFile(): { path: string; file: string } {
-  const result = Effect.runSync(Effect.either(requireLogoFileEffect()))
+async function requireLogoFile(): Promise<{ path: string; file: string }> {
+  const result = await Effect.runPromise(Effect.either(requireLogoFileEffect()))
   if (result._tag === 'Left') throw brandingHttpError(result.left)
   return result.right
 }
@@ -74,38 +74,42 @@ const writeLogoEffect = (file: string, bytes: Buffer): Effect.Effect<string, unk
 export function registerSiteSettings(router: Router): void {
   router.group(() => {
     router.get('/site/logo', async (ctx) => {
-      const { path, file } = requireLogoFile()
+      const { path, file } = await requireLogoFile()
       const stat = await lstat(path)
       if (!stat.isFile()) throw new HttpError(404, 'No custom logo')
       ctx.response.header('Cache-Control', 'public, max-age=300')
       const type = Object.entries(allowedLogoTypes).find(([, extension]) => file.endsWith(extension))?.[0] ?? 'application/octet-stream'
       return ctx.response.type(type).send(await readFile(path))
     })
-    router.get('/site/settings', (ctx) => {
-      authenticate(ctx)
-      requireAdmin(ctx)
+    router.get('/site/settings', async (ctx) => {
+      await authenticate(ctx)
+      await requireAdmin(ctx)
+      const [landingDisabled, mcpSseEnabled, logo] = await Promise.all([
+        getSetting('landingDisabled'), getSetting('mcpSseEnabled'), logoMeta(),
+      ])
       return {
-        landingDisabled: getSetting('landingDisabled') === '1',
-        mcpSseEnabled: getSetting('mcpSseEnabled') === '1',
-        logo: logoMeta() ? { updatedAt: getSetting('logoUpdatedAt') ?? '', url: `/api/v1/site/logo?v=${encodeURIComponent(getSetting('logoUpdatedAt') ?? '')}` } : null,
+        landingDisabled: landingDisabled === '1',
+        landingOperatorEnabled: process.env.LANDING_ENABLED === 'true',
+        mcpSseEnabled: mcpSseEnabled === '1',
+        logo: logo ? { updatedAt: logo.updatedAt, url: `/api/v1/site/logo?v=${encodeURIComponent(logo.updatedAt)}` } : null,
       }
     })
     router.patch('/site/settings', async (ctx) => {
-      const admin: User = requireAdmin(ctx)
+      const admin: User = await requireAdmin(ctx)
       const data = z.object({ landingDisabled: z.boolean().optional(), mcpSseEnabled: z.boolean().optional() }).strict().refine((value) => Object.keys(value).length > 0).parse(ctx.request.body())
-      const result = db.transaction(() => {
+      const result = await db.transaction(async () => {
         if (data.landingDisabled !== undefined) {
-          setSetting('landingDisabled', data.landingDisabled ? '1' : null)
+          await setSetting('landingDisabled', data.landingDisabled ? '1' : null)
         }
-        if (data.mcpSseEnabled !== undefined) setSetting('mcpSseEnabled', data.mcpSseEnabled ? '1' : null)
-        audit(admin.id, null, 'site.settings.update', null, data)
-        return { landingDisabled: getSetting('landingDisabled') === '1', mcpSseEnabled: getSetting('mcpSseEnabled') === '1' }
-      })()
+        if (data.mcpSseEnabled !== undefined) await setSetting('mcpSseEnabled', data.mcpSseEnabled ? '1' : null)
+        await audit(admin.id, null, 'site.settings.update', null, data)
+        return { landingDisabled: await getSetting('landingDisabled') === '1', mcpSseEnabled: await getSetting('mcpSseEnabled') === '1' }
+      })
       if (data.mcpSseEnabled === false) await closeMcpSseSessions()
       return result
     })
     router.put('/site/logo', async (ctx) => {
-      const admin: User = requireAdmin(ctx)
+      const admin: User = await requireAdmin(ctx)
       const data = z.object({
         contentType: z.string().max(127).refine((value) => value in allowedLogoTypes, 'Logo must be PNG, JPEG, WebP or SVG'),
         data: z.string().max(400 * 1024 / 3 * 4).refine((value) => {
@@ -119,21 +123,21 @@ export function registerSiteSettings(router: Router): void {
       const file = `${logoName}.${extension}`
       await runPromiseThrow(writeLogoEffect(file, bytes))
       const updatedAt = new Date().toISOString()
-      db.transaction(() => {
-        setSetting('logoFile', file)
-        setSetting('logoUpdatedAt', updatedAt)
-        audit(admin.id, null, 'site.logo.update', null, { contentType: data.contentType, size: bytes.length })
-      })()
+      await db.transaction(async () => {
+        await setSetting('logoFile', file)
+        await setSetting('logoUpdatedAt', updatedAt)
+        await audit(admin.id, null, 'site.logo.update', null, { contentType: data.contentType, size: bytes.length })
+      })
       return { url: `/api/v1/site/logo?v=${encodeURIComponent(updatedAt)}`, updatedAt }
     })
     router.delete('/site/logo', async (ctx) => {
-      const admin: User = requireAdmin(ctx)
-      const previous = requireLogoFile()
+      const admin: User = await requireAdmin(ctx)
+      const previous = await requireLogoFile()
       await unlink(previous.path).catch(() => {})
-      db.transaction(() => {
-        db.prepare('DELETE FROM site_settings WHERE key=? OR key=?').run('logoFile', 'logoUpdatedAt')
-        audit(admin.id, null, 'site.logo.delete', null)
-      })()
+      await db.transaction(async () => {
+        await db.run('DELETE FROM site_settings WHERE key=? OR key=?', 'logoFile', 'logoUpdatedAt')
+        await audit(admin.id, null, 'site.logo.delete', null)
+      })
       return { success: true }
     })
   }).prefix('/api/v1')

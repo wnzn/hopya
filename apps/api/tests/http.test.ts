@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
-import Database from 'better-sqlite3'
 import { createHash, randomUUID } from 'node:crypto'
+import { openTestDatabase } from './helpers/database.js'
+import { runMigrations } from './helpers/migrate.js'
 
 test('real Adonis HTTP contract and authentication security', { timeout: 60000 }, async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'hopya-http-'))
@@ -22,19 +23,21 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
   const password = 'test password with enough length'
   const setupToken = 'operator-only-test-setup-token'
   const compiled = process.env.HOPYA_TEST_BUILD === 'true'
+  const environment = { ...process.env, DATA_DIR: directory, API_PORT: String(port), HOST: '127.0.0.1', APP_URL: origin,
+    NODE_ENV: compiled ? 'production' : 'test', APP_KEY: 'a-random-looking-test-key-not-for-deployment-123456789', SETUP_TOKEN: setupToken,
+    LANDING_ENABLED: 'true', REGISTRATION_ENABLED: 'false', AI_PROVIDER: '', OIDC_ISSUER: '', STORAGE_DRIVER: 'filesystem', LOG_LEVEL: 'fatal' }
+  runMigrations(environment)
   const child = spawn(process.execPath, compiled ? ['build/bin/server.js'] : ['--import', 'tsx', 'bin/server.ts'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)),
-    env: { ...process.env, DATA_DIR: directory, API_PORT: String(port), HOST: '127.0.0.1', APP_URL: origin,
-      NODE_ENV: compiled ? 'production' : 'test', APP_KEY: 'a-random-looking-test-key-not-for-deployment-123456789', SETUP_TOKEN: setupToken,
-      LANDING_ENABLED: 'true', REGISTRATION_ENABLED: 'false', AI_PROVIDER: '', OIDC_ISSUER: '', STORAGE_DRIVER: 'filesystem', LOG_LEVEL: 'fatal' },
+    env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
   child.stdout.on('data', (chunk) => { output += String(chunk) })
   child.stderr.on('data', (chunk) => { output += String(chunk) })
-  let database: Database.Database | undefined
+  let database: ReturnType<typeof openTestDatabase> | undefined
   t.after(async () => {
-    database?.close()
+    await database?.close()
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit')
       child.kill('SIGTERM')
@@ -51,7 +54,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   assert.ok(ready, `Adonis failed to start:\n${output}`)
-  database = new Database(join(directory, 'hopya.sqlite'))
+  database = openTestDatabase(join(directory, 'hopya.sqlite'))
   async function request(path: string, options: { method?: string; body?: unknown; cookie?: string; token?: string; origin?: string | null; headers?: Record<string, string> } = {}) {
     const method = options.method || 'GET'
     const headers: Record<string, string> = { accept: 'application/json', ...options.headers }
@@ -95,7 +98,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.match(setCookie, /SameSite=Lax/i)
     assert.match(setCookie, /Path=\//i)
     assert.match(setCookie, /Max-Age=604800/i)
-    const session = database!.prepare('SELECT * FROM sessions WHERE userId=?').get(adminId) as any
+    const session = await database!.get<any>('SELECT * FROM sessions WHERE userId=?', adminId)
     assert.match(session.tokenHash, /^[a-f0-9]{64}$/)
     assert.ok(new Date(session.expiresAt).getTime() > Date.now())
     assert.equal(adminCookie.includes(session.tokenHash), false)
@@ -108,7 +111,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     const signed = 's:eyJtZXNzYWdlIjoidjYtY29tcGF0aWJpbGl0eS10ZXN0LXNlc3Npb24tbm90LWEtcmVhbC1jcmVkZW50aWFsIiwicHVycG9zZSI6ImhvcHlhX3Nlc3Npb24ifQ.pHJZn-wR6lSNjBt-cLpJyto2jsPHFLiCjqL-IO0civQ'
     const wrongPurpose = 's:eyJtZXNzYWdlIjoidjYtY29tcGF0aWJpbGl0eS10ZXN0LXNlc3Npb24tbm90LWEtcmVhbC1jcmVkZW50aWFsIiwicHVycG9zZSI6ImFub3RoZXJfY29va2llIn0.3smX-5o6NCFyj-rHGMe7Zl7w5z2ZFMsOrJed516QxzU'
     const id = randomUUID()
-    database!.prepare('INSERT INTO sessions (id,userId,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?)').run(
+    await database!.run('INSERT INTO sessions (id,userId,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?)',
       id, adminId, createHash('sha256').update('v6-compatibility-test-session-not-a-real-credential').digest('hex'),
       new Date(Date.now() + 60000).toISOString(), new Date().toISOString(),
     )
@@ -120,14 +123,14 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
       for (const invalid of [wrongPurpose, signed.slice(0, -1) + 'X']) {
         assert.equal((await request('/auth/me', { cookie: `hopya_session=${encodeURIComponent(invalid)}` })).status, 401)
       }
-      database!.prepare('UPDATE sessions SET expiresAt=? WHERE id=?').run('2000-01-01T00:00:00.000Z', id)
+      await database!.run('UPDATE sessions SET expiresAt=? WHERE id=?', '2000-01-01T00:00:00.000Z', id)
       assert.equal((await request('/auth/me', { cookie })).status, 401)
-      database!.prepare('UPDATE sessions SET expiresAt=? WHERE id=?').run(new Date(Date.now() + 60000).toISOString(), id)
+      await database!.run('UPDATE sessions SET expiresAt=? WHERE id=?', new Date(Date.now() + 60000).toISOString(), id)
       assert.equal((await request('/auth/logout', { method: 'POST', cookie })).status, 200)
       assert.equal((await request('/auth/me', { cookie })).status, 401)
-      assert.equal(database!.prepare('SELECT id FROM sessions WHERE id=?').get(id), undefined)
+      assert.equal(await database!.get('SELECT id FROM sessions WHERE id=?', id), undefined)
     } finally {
-      database!.prepare('DELETE FROM sessions WHERE id=?').run(id)
+      await database!.run('DELETE FROM sessions WHERE id=?', id)
     }
   })
   await t.test('admin user creation is private; login rotates sessions and generic failures hide accounts', async () => {
@@ -188,14 +191,14 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
   await t.test('conditional PATCH rejects stale or invalid versions without side effects and keeps legacy writes', async () => {
     const path = `/workspaces/${workspaceId}/items/${itemId}`
     const current = (await request(path, { cookie: adminCookie })).data
-    const auditCount = () => (database!.prepare("SELECT count(*) AS count FROM audit_logs WHERE resourceId=? AND action='item.update'").get(itemId) as { count: number }).count
-    const before = auditCount()
+    const auditCount = async () => (await database!.get<{ count: number }>("SELECT count(*) AS count FROM audit_logs WHERE resourceId=? AND action='item.update'", itemId))!.count
+    const before = await auditCount()
     const responses = await Promise.all(['low', 'urgent'].map((priority) => request(path, { method: 'PATCH', cookie: adminCookie, body: { priority, expectedUpdatedAt: current.updatedAt } })))
     assert.deepEqual(responses.map((result) => result.status).sort(), [200, 409])
     const winner = responses.find((result) => result.status === 200)!.data
     assert.ok(Date.parse(winner.updatedAt) > Date.parse(current.updatedAt))
     assert.equal(Object.hasOwn(winner, 'expectedUpdatedAt'), false)
-    assert.equal(auditCount(), before + 1)
+    assert.equal(await auditCount(), before + 1)
     const stale = await request(path, { method: 'PATCH', cookie: adminCookie, body: { title: 'Stale replacement', expectedUpdatedAt: current.updatedAt } })
     assert.equal(stale.status, 409)
     assert.deepEqual(Object.keys(stale.data), ['error'])
@@ -204,7 +207,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     }
     assert.equal((await request(`/workspaces/${workspaceId}/items`, { method: 'POST', cookie: adminCookie, body: { title: 'Invalid create', nodeId: listId, expectedUpdatedAt: winner.updatedAt } })).status, 400)
     assert.deepEqual((await request(path, { cookie: adminCookie })).data, winner)
-    assert.equal(auditCount(), before + 1)
+    assert.equal(await auditCount(), before + 1)
     const legacy = await request(path, { method: 'PATCH', cookie: adminCookie, body: { priority: 'medium' } })
     assert.equal(legacy.status, 200)
     assert.ok(Date.parse(legacy.data.updatedAt) > Date.parse(winner.updatedAt))
@@ -223,7 +226,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal((await request(`/admin/users/${adminId}`, { method: 'PATCH', cookie: otherCookie, body: { disabled: true } })).status, 200)
     assert.equal((await request('/auth/me', { cookie: adminCookie })).status, 401)
     assert.equal((await request('/auth/me', { token: ownerToken.data.token })).status, 401)
-    assert.equal((database!.prepare('SELECT roleId FROM memberships WHERE workspaceId=? AND userId=?').get(workspaceId, adminId) as { roleId: string }).roleId, ownerRoleId)
+    assert.equal((await database!.get<{ roleId: string }>('SELECT roleId FROM memberships WHERE workspaceId=? AND userId=?', workspaceId, adminId))!.roleId, ownerRoleId)
     assert.equal((await request(`/admin/users/${otherId}`, { method: 'PATCH', cookie: otherCookie, body: { disabled: true } })).status, 409)
     assert.equal((await request(`/admin/users/${adminId}`, { method: 'PATCH', cookie: otherCookie, body: { disabled: false } })).status, 200)
     assert.equal((await request('/auth/me', { token: ownerToken.data.token })).status, 401)
@@ -263,13 +266,13 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal(role.status, 201)
     for (const roleId of [viewerRoleId, role.data.id]) {
       assert.equal((await request(`/workspaces/${workspaceId}/members/${otherId}`, { method: 'PATCH', cookie: adminCookie, body: { roleId } })).status, 200)
-      const before = database!.prepare('SELECT * FROM audit_logs').all()
+      const before: Record<string, unknown>[] = await database!.all('SELECT * FROM audit_logs')
       for (const body of [{}, { status: 'done' }, { expectedUpdatedAt: current.updatedAt }]) {
         const result = await request(path, { method: 'PATCH', cookie: otherCookie, body })
         assert.equal(result.status, 403)
         assert.deepEqual(Object.keys(result.data), ['error'])
       }
-      assert.deepEqual(database!.prepare('SELECT * FROM audit_logs').all(), before)
+      assert.deepEqual(await database!.all('SELECT * FROM audit_logs'), before)
       assert.deepEqual((await request(path, { cookie: adminCookie })).data, current)
     }
     assert.equal((await request(path, { cookie: otherCookie })).status, 403)
@@ -283,7 +286,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     const tokens = await request('/auth/tokens', { cookie: adminCookie })
     assert.equal(JSON.stringify(tokens.data).includes(token), false)
     assert.equal(JSON.stringify(tokens.data).includes('tokenHash'), false)
-    const stored = database!.prepare('SELECT tokenHash FROM tokens WHERE userId=?').get(adminId) as any
+    const stored = await database!.get<any>('SELECT tokenHash FROM tokens WHERE userId=?', adminId)
     assert.notEqual(stored.tokenHash, token)
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', token, origin: null, body: { priority: 'high' } })).status, 200)
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', token, origin: 'https://evil.example', body: { priority: 'urgent' } })).status, 403)
@@ -321,26 +324,26 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal((await request(`/admin/users/${otherId}`, { method: 'PATCH', cookie: adminCookie, body: { disabled: true } })).status, 200)
     assert.equal((await request('/auth/me', { cookie: otherCookie })).status, 401)
     assert.equal((await request('/auth/me', { token: tokenResult.data.token })).status, 401)
-    assert.equal((database!.prepare('SELECT count(*) AS count FROM sessions WHERE userId=?').get(otherId) as any).count, 0)
-    assert.equal((database!.prepare('SELECT count(*) AS count FROM tokens WHERE userId=?').get(otherId) as any).count, 0)
-    assert.ok(database!.prepare('SELECT userId FROM memberships WHERE workspaceId=? AND userId=?').get(owned.data.id, otherId))
-    assert.equal((database!.prepare('SELECT count(*) AS count FROM items WHERE assigneeId=?').get(otherId) as { count: number }).count, 0)
+    assert.equal((await database!.get<any>('SELECT count(*) AS count FROM sessions WHERE userId=?', otherId))!.count, 0)
+    assert.equal((await database!.get<any>('SELECT count(*) AS count FROM tokens WHERE userId=?', otherId))!.count, 0)
+    assert.ok(await database!.get('SELECT userId FROM memberships WHERE workspaceId=? AND userId=?', owned.data.id, otherId))
+    assert.equal((await database!.get<{ count: number }>('SELECT count(*) AS count FROM items WHERE assigneeId=?', otherId))!.count, 0)
     const cleared = (await request(`/workspaces/${workspaceId}/items/${itemId}`, { cookie: adminCookie })).data
     assert.equal(cleared.assigneeId, null)
     assert.ok(Date.parse(cleared.updatedAt) > Date.parse(assigned.data.updatedAt))
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { expectedUpdatedAt: assigned.data.updatedAt, status: 'todo' } })).status, 409)
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { expectedUpdatedAt: cleared.updatedAt, status: 'todo' } })).status, 200)
-    const suspensionAudit = database!.prepare("SELECT details FROM audit_logs WHERE action='admin.user.update' AND resourceId=? ORDER BY rowid DESC LIMIT 1").get(otherId) as { details: string }
+    const suspensionAudit = (await database!.get<{ details: string }>("SELECT details FROM audit_logs WHERE action='admin.user.update' AND resourceId=? ORDER BY rowid DESC LIMIT 1", otherId))!
     assert.deepEqual(JSON.parse(suspensionAudit.details), { disabled: true, clearedAssignments: 2, affectedWorkspaces: 2, revokedSessions: 1, revokedTokens: 1 })
     const expiring = await request('/auth/tokens', { method: 'POST', cookie: adminCookie, body: { name: 'Expired' } })
-    database!.prepare('UPDATE tokens SET expiresAt=?').run('2000-01-01T00:00:00.000Z')
+    await database!.run('UPDATE tokens SET expiresAt=?', '2000-01-01T00:00:00.000Z')
     assert.equal((await request('/auth/me', { token: expiring.data.token })).status, 401)
     const logout = await request('/auth/logout', { method: 'POST', cookie: adminCookie })
     assert.equal(logout.status, 200)
     assert.equal((await request('/auth/me', { cookie: adminCookie })).status, 401)
     const login = await request('/auth/login', { method: 'POST', body: { email: 'admin@example.test', password } })
     assert.equal(login.status, 200)
-    database!.prepare('UPDATE sessions SET expiresAt=?').run('2000-01-01T00:00:00.000Z')
+    await database!.run('UPDATE sessions SET expiresAt=?', '2000-01-01T00:00:00.000Z')
     assert.equal((await request('/auth/me', { cookie: login.cookie })).status, 401)
   })
   await t.test('workspace owners can permanently delete through the REST endpoint', async () => {
@@ -349,7 +352,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal(deleted.status, 200)
     assert.deepEqual(deleted.data, { success: true })
     assert.equal((await request(`/workspaces/${workspaceId}`, { cookie: login.cookie })).status, 403)
-    assert.ok(database!.prepare("SELECT id FROM audit_logs WHERE workspaceId=? AND action='workspace.delete'").get(workspaceId))
+    assert.ok(await database!.get("SELECT id FROM audit_logs WHERE workspaceId=? AND action='workspace.delete'", workspaceId))
   })
   await t.test('setup and login rate limits cannot be bypassed with forwarded IP spoofing', async () => {
     for (const path of ['/auth/login', '/auth/setup']) {
@@ -362,5 +365,5 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
       assert.equal(status, 429)
     }
   })
-  assert.equal(database.pragma('integrity_check', { simple: true }), 'ok')
+  assert.equal((await database.get<{ integrity_check: string }>('PRAGMA integrity_check'))?.integrity_check, 'ok')
 })

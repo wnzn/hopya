@@ -8,7 +8,8 @@ import { createServer } from 'node:net'
 import { randomBytes, randomUUID, createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type { TestContext } from './japa.js'
-import Database from 'better-sqlite3'
+import { openTestDatabase } from './helpers/database.js'
+import { runMigrations } from './helpers/migrate.js'
 
 export async function integrationServer(t: TestContext, env: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'hopya-storage-sso-'))
@@ -20,15 +21,16 @@ export async function integrationServer(t: TestContext, env: Record<string, stri
   const environment = { ...process.env, DATA_DIR: directory, API_PORT: String(port), HOST: '127.0.0.1', APP_URL: base,
     NODE_ENV: 'test', APP_KEY: 'storage-sso-test-key-not-for-deployment-123456789', REGISTRATION_ENABLED: 'false',
     AI_PROVIDER: '', OIDC_ISSUER: '', OIDC_AUTO_PROVISION: 'false', OIDC_ALLOW_INSECURE_HTTP: 'false', STORAGE_DRIVER: 'filesystem', LOG_LEVEL: 'fatal', ...env }
+  runMigrations(environment)
   const child = spawn(process.execPath, ['--import', 'tsx', 'tests/storage-sso-server.ts'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)), env: environment, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
   child.stdout.on('data', (chunk) => { output += String(chunk) })
   child.stderr.on('data', (chunk) => { output += String(chunk) })
-  let database: Database.Database | undefined
+  let database: ReturnType<typeof openTestDatabase> | undefined
   t.after(async () => {
-    database?.close()
+    await database?.close()
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit')
       child.kill('SIGTERM')
@@ -45,9 +47,9 @@ export async function integrationServer(t: TestContext, env: Record<string, stri
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   assert.ok(ready, `Adonis failed to start:\n${output}`)
-  const db = database = new Database(join(directory, 'hopya.sqlite'))
-  db.pragma('foreign_keys = ON')
-  db.pragma('busy_timeout = 5000')
+  const db = database = openTestDatabase(join(directory, 'hopya.sqlite'))
+  await db.run('PRAGMA foreign_keys = ON')
+  await db.run('PRAGMA busy_timeout = 5000')
   const request = (path: string, options: { method?: string; body?: unknown; token?: string; cookie?: string; origin?: string; headers?: Record<string, string> } = {}) => fetch(`${base}/api/v1${path}`, {
     method: options.method || 'GET', redirect: 'manual',
     headers: { ...(options.body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -55,10 +57,12 @@ export async function integrationServer(t: TestContext, env: Record<string, stri
       ...(options.origin ? { origin: options.origin } : {}), ...options.headers },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   })
-  function user(isAdmin = false, email = `${randomUUID()}@example.test`) {
+  async function user(isAdmin = false, email = `${randomUUID()}@example.test`) {
     const id = randomUUID(); const token = randomBytes(32).toString('base64url')
-    db.prepare('INSERT INTO users (id,name,email,isAdmin,createdAt) VALUES (?,?,?,?,?)').run(id, 'Integration User', email, Number(isAdmin), new Date().toISOString())
-    db.prepare('INSERT INTO tokens (id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)').run(randomUUID(), id, 'Test token', createHash('sha256').update(token).digest('hex'), new Date(Date.now() + 3600000).toISOString(), new Date().toISOString())
+    await db.transaction(async (transaction) => {
+      await transaction.run('INSERT INTO users (id,name,email,isAdmin,createdAt) VALUES (?,?,?,?,?)', id, 'Integration User', email, Number(isAdmin), new Date().toISOString())
+      await transaction.run('INSERT INTO tokens (id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)', randomUUID(), id, 'Test token', createHash('sha256').update(token).digest('hex'), new Date(Date.now() + 3600000).toISOString(), new Date().toISOString())
+    })
     return { id, token, email }
   }
   async function item(token: string) {
@@ -76,7 +80,7 @@ export async function integrationServer(t: TestContext, env: Record<string, stri
   async function collect() {
     const compiled = process.env.HOPYA_TEST_BUILD === 'true'
     const collector = spawn(process.execPath, [...(compiled ? [] : ['--import', 'tsx']), '--input-type=module', '-e',
-      `const {collectStorageGarbage}=await import('./${compiled ? 'build/' : ''}app/integrations/storage.${compiled ? 'js' : 'ts'}'); console.log(JSON.stringify(await collectStorageGarbage())); const {db}=await import('./${compiled ? 'build/' : ''}app/core.${compiled ? 'js' : 'ts'}'); db.close()`], {
+      `import 'reflect-metadata'; const {pathToFileURL}=await import('node:url'); const {Ignitor}=await import('@adonisjs/core'); const root=pathToFileURL(process.cwd()+'/${compiled ? 'build/' : ''}'); const app=new Ignitor(root,{importer:(path)=>import(path.startsWith('.')?new URL(path,root).href:path)}).createApp('test'); await app.init(); await app.boot(); try { const {collectStorageGarbage}=await import(new URL('app/integrations/storage.js',root).href); console.log(JSON.stringify(await collectStorageGarbage())) } finally { await app.terminate() }`], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), env: environment, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let result = ''; let errors = ''

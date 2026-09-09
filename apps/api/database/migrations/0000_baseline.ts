@@ -10,11 +10,9 @@ const defaultStatuses = JSON.stringify([
 
 /**
  * Squashed baseline of the complete Hopya relational schema. New databases
- * (SQLite and Postgres) apply only this migration; databases migrated with
- * the legacy numbered .sql runner are adopted inside up() below, which marks
- * the baseline as already applied without rebuilding their schema.
+ * (SQLite and Postgres) apply only this migration.
  *
- * Layout parity rules with the legacy SQLite schema:
+ * Cross-database layout rules:
  * - All timestamps are TEXT ISO-8601 strings produced by the application,
  *   never engine timestamp types, so lexicographic SQL comparisons
  *   (expiry checks, keyset cursor seeks) behave identically on both dialects.
@@ -28,17 +26,6 @@ export default class extends BaseSchema {
     // Lucid dialect names: 'better-sqlite3' for the sqlite connection,
     // 'postgres' for Postgres. Works on both query and transaction clients.
     const pg = this.db.dialect.name === 'postgres'
-
-    // Legacy adoption: SQLite deployments migrated with the numbered .sql
-    // runner already have the complete final schema and a populated
-    // schema_migrations history. Their upgrade ends here; fresh databases
-    // fall through and build the schema.
-    if (!pg) {
-      const legacy = await this.db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
-      const hasHistory = Array.isArray(legacy) && legacy.length > 0 &&
-        ((await this.db.rawQuery('SELECT COUNT(*) AS count FROM schema_migrations') as { count: number }[]))[0]?.count > 0
-      if (hasHistory) return
-    }
 
     this.schema.createTable('users', (table) => {
       table.text('id').primary()
@@ -415,7 +402,7 @@ export default class extends BaseSchema {
       table.text('userId').notNullable()
       table.text('emoji').notNullable()
       table.text('createdAt').notNullable()
-      table.primary(['workspaceId', 'commentId', 'userId', 'emoji'])
+      table.primary(['workspaceId', 'itemId', 'commentId', 'userId', 'emoji'])
       table.index(['workspaceId', 'itemId', 'commentId', 'emoji'], 'comment_reactions_comment')
       table.foreign(['workspaceId', 'itemId', 'commentId'], 'comment_reactions_comment_fk').references(['workspaceId', 'itemId', 'id']).inTable('comments').onDelete('CASCADE')
       table.foreign(['workspaceId', 'userId'], 'comment_reactions_member_fk').references(['workspaceId', 'userId']).inTable('memberships').onDelete('CASCADE')

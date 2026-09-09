@@ -151,17 +151,17 @@ async function objectOperation(object: StoredObject, operation: 'put' | 'get' | 
   return runStorage(objectOperationEffect(object, operation, bytes))
 }
 
-function authorize(ctx: HttpContext, permission: Permission) {
-  const user = authenticate(ctx)
+async function authorize(ctx: HttpContext, permission: Permission) {
+  const user = await authenticate(ctx)
   const { wid, id } = z.object({ wid: z.string().uuid(), id: z.string().uuid() }).parse(ctx.params)
-  requirePermission(user.id, wid, permission)
-  service.getItem(user.id, wid, id)
+  await requirePermission(user.id, wid, permission)
+  await service.getItem(user.id, wid, id)
   return user
 }
-function attachment(ctx: HttpContext): Attachment {
+async function attachment(ctx: HttpContext): Promise<Attachment> {
   const id = z.string().uuid().parse(ctx.params.attachmentId)
-  const row = db.prepare(`SELECT a.*,o.driver,o.location FROM attachments a JOIN storage_objects o ON o.objectKey=a.objectKey
-    WHERE a.workspaceId=? AND a.itemId=? AND a.id=?`).get(ctx.params.wid, ctx.params.id, id) as Attachment | undefined
+  const row = await db.get(`SELECT a.*,o.driver,o.location FROM attachments a JOIN storage_objects o ON o.objectKey=a.objectKey
+    WHERE a.workspaceId=? AND a.itemId=? AND a.id=?`, ctx.params.wid, ctx.params.id, id) as Attachment | undefined
   if (!row) throw new HttpError(404, 'Attachment not found')
   return row
 }
@@ -174,9 +174,9 @@ function attachment(ctx: HttpContext): Attachment {
 export async function collectStorageGarbage(): Promise<{ scanned: number; deleted: number; failed: number }> {
   const store = backend()
   store.client?.destroy()
-  const rows = db.prepare(`SELECT o.* FROM storage_objects o WHERE o.driver=? AND o.location=? AND o.createdAt<?
-    AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey) ORDER BY o.createdAt LIMIT 100`)
-    .all(store.driver, store.location, new Date(Date.now() - 86400000).toISOString()) as StoredObject[]
+  const rows = await db.all(`SELECT o.* FROM storage_objects o WHERE o.driver=? AND o.location=? AND o.createdAt<?
+    AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey) ORDER BY o.createdAt LIMIT 100`,
+    store.driver, store.location, new Date(Date.now() - 86400000).toISOString()) as unknown as StoredObject[]
   // Each row is its own Effect that can only resolve to counted outcomes, so a
   // failed DELETE can never reject the collection. Sequential (concurrency 1)
   // preserves single-writer SQLite semantics on the shared connection.
@@ -187,9 +187,7 @@ export async function collectStorageGarbage(): Promise<{ scanned: number; delete
           try: () => objectOperation(row, 'delete'),
           catch: (error) => error as unknown,
         })
-        yield* Effect.sync(() => {
-          db.prepare('DELETE FROM storage_objects WHERE objectKey=? AND NOT EXISTS (SELECT 1 FROM attachments WHERE objectKey=?)').run(row.objectKey, row.objectKey)
-        })
+        yield* Effect.promise(() => db.run('DELETE FROM storage_objects WHERE objectKey=? AND NOT EXISTS (SELECT 1 FROM attachments WHERE objectKey=?)', row.objectKey, row.objectKey))
         return 'deleted' as const
       }),
       () => Effect.succeed('failed' as const),
@@ -200,12 +198,12 @@ export async function collectStorageGarbage(): Promise<{ scanned: number; delete
 
 export function registerStorage(router: Router): void {
   const path = '/api/v1/workspaces/:wid/items/:id/attachments'
-  router.get(path, (ctx) => {
-    authorize(ctx, 'items:read')
-    return db.prepare('SELECT id,name,size,contentType,createdAt FROM attachments WHERE workspaceId=? AND itemId=? ORDER BY createdAt,id').all(ctx.params.wid, ctx.params.id)
+  router.get(path, async (ctx) => {
+    await authorize(ctx, 'items:read')
+    return db.all('SELECT id,name,size,contentType,createdAt FROM attachments WHERE workspaceId=? AND itemId=? ORDER BY createdAt,id', ctx.params.wid, ctx.params.id)
   })
   router.post(path, async (ctx) => {
-    const user = authorize(ctx, 'items:write')
+    const user = await authorize(ctx, 'items:write')
     const data = uploadSchema.parse(ctx.request.body())
     const bytes = Buffer.from(data.data, 'base64')
     if (bytes.length > maxBytes) throw new HttpError(413, 'Attachment exceeds 10 MiB')
@@ -214,27 +212,27 @@ export function registerStorage(router: Router): void {
     store.client?.destroy()
     const row: Attachment = { id: randomUUID(), objectKey: randomUUID(), driver: store.driver, location: store.location,
       workspaceId: ctx.params.wid, itemId: ctx.params.id, name: data.name, size: bytes.length, contentType: data.contentType, createdAt: new Date().toISOString() }
-    db.transaction(() => {
-      db.prepare('INSERT INTO storage_objects (objectKey,driver,location,createdAt) VALUES (@objectKey,@driver,@location,@createdAt)').run(row)
-      audit(user.id, row.workspaceId, 'attachment.upload.start', row.id)
-    })()
+    await db.transaction(async () => {
+      await db.run('INSERT INTO storage_objects (objectKey,driver,location,createdAt) VALUES (@objectKey,@driver,@location,@createdAt)', row)
+      await audit(user.id, row.workspaceId, 'attachment.upload.start', row.id)
+    })
     let uploaded = false
     try {
       await objectOperation(row, 'put', bytes)
       uploaded = true
-      db.transaction(() => {
-        authorize(ctx, 'items:write')
+      await db.transaction(async () => {
+        await authorize(ctx, 'items:write')
         if (Date.now() - Date.parse(row.createdAt) >= 86400000) throw new HttpError(503, 'Attachment upload expired')
-        db.prepare(`INSERT INTO attachments (id,workspaceId,itemId,objectKey,name,contentType,size,createdBy,createdAt)
-          VALUES (@id,@workspaceId,@itemId,@objectKey,@name,@contentType,@size,@createdBy,@createdAt)`).run({ ...row, createdBy: user.id })
-        audit(user.id, row.workspaceId, 'attachment.create', row.id, { size: row.size })
-      })()
+        await db.run(`INSERT INTO attachments (id,workspaceId,itemId,objectKey,name,contentType,size,createdBy,createdAt)
+          VALUES (@id,@workspaceId,@itemId,@objectKey,@name,@contentType,@size,@createdBy,@createdAt)`, { ...row, createdBy: user.id })
+        await audit(user.id, row.workspaceId, 'attachment.create', row.id, { size: row.size })
+      })
     } catch (error) {
       try {
         await objectOperation(row, 'delete')
         // A failed remote PUT may still finish after compensation. Keep its
         // ledger until the grace-period collector issues another DELETE.
-        if (uploaded) db.prepare('DELETE FROM storage_objects WHERE objectKey=?').run(row.objectKey)
+        if (uploaded) await db.run('DELETE FROM storage_objects WHERE objectKey=?', row.objectKey)
       } catch { /* Durable ledger lets the collector retry failed compensation. */ }
       throw error
     }
@@ -242,11 +240,11 @@ export function registerStorage(router: Router): void {
     return metadata(row)
   })
   router.get(`${path}/:attachmentId`, async (ctx) => {
-    authorize(ctx, 'items:read')
-    const row = attachment(ctx)
+    await authorize(ctx, 'items:read')
+    const row = await attachment(ctx)
     const bytes = await objectOperation(row, 'get')
-    authorize(ctx, 'items:read')
-    if (attachment(ctx).objectKey !== row.objectKey || bytes.length !== row.size) throw new HttpError(503, 'Attachment storage unavailable')
+    await authorize(ctx, 'items:read')
+    if ((await attachment(ctx)).objectKey !== row.objectKey || bytes.length !== row.size) throw new HttpError(503, 'Attachment storage unavailable')
     const encoded = encodeURIComponent(row.name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
     ctx.response.header('Content-Type', 'application/octet-stream')
     ctx.response.header('Content-Disposition', `attachment; filename="download"; filename*=UTF-8''${encoded}`)
@@ -255,19 +253,19 @@ export function registerStorage(router: Router): void {
     ctx.response.send(bytes)
   })
   router.delete(`${path}/:attachmentId`, async (ctx) => {
-    const user = authorize(ctx, 'items:delete')
-    const row = attachment(ctx)
+    const user = await authorize(ctx, 'items:delete')
+    const row = await attachment(ctx)
     // Revoke access atomically first. Physical deletion can safely be retried by GC.
-    db.transaction(() => {
-      db.prepare('DELETE FROM attachments WHERE id=? AND workspaceId=? AND itemId=?').run(row.id, ctx.params.wid, ctx.params.id)
-      audit(user.id, row.workspaceId, 'attachment.delete', row.id)
-    })()
+    await db.transaction(async () => {
+      await db.run('DELETE FROM attachments WHERE id=? AND workspaceId=? AND itemId=?', row.id, ctx.params.wid, ctx.params.id)
+      await audit(user.id, row.workspaceId, 'attachment.delete', row.id)
+    })
     let cleanupPending = false
     try {
       await objectOperation(row, 'delete')
-      db.prepare('DELETE FROM storage_objects WHERE objectKey=?').run(row.objectKey)
+      await db.run('DELETE FROM storage_objects WHERE objectKey=?', row.objectKey)
     } catch { cleanupPending = true }
-    authorize(ctx, 'items:delete')
+    await authorize(ctx, 'items:delete')
     return { success: true, cleanupPending }
   })
 }

@@ -215,7 +215,7 @@ function coerceCustomValue(field: FieldDefinition, value: unknown, n: number, fr
   return coerced as string | number | boolean | string[] | null
 }
 
-function normalizeRow(wid: string, row: RawRow, n: number, statuses: StatusEntry[], fields: FieldDefinition[], fromCsv: boolean): NormalizedRow {
+async function normalizeRow(wid: string, row: RawRow, n: number, statuses: StatusEntry[], fields: FieldDefinition[], fromCsv: boolean): Promise<NormalizedRow> {
   checkColumns(row, n, !fromCsv)
 
   const rawTitle = row.title
@@ -263,8 +263,8 @@ function normalizeRow(wid: string, row: RawRow, n: number, statuses: StatusEntry
   if (rawAssignee !== null && rawAssignee !== undefined && String(rawAssignee).trim() !== '') {
     if (typeof rawAssignee !== 'string') throw rowError(n, 'assignee must be an email address')
     const email = rawAssignee.trim()
-    const member = db.prepare(`SELECT u.id FROM users u JOIN memberships m ON m.userId=u.id
-      WHERE m.workspaceId=? AND lower(u.email)=lower(?) AND u.disabled=0`).get(wid, email) as { id: string } | undefined
+    const member = await db.get<{ id: string }>(`SELECT u.id FROM users u JOIN memberships m ON m.userId=u.id
+      WHERE m.workspaceId=? AND lower(u.email)=lower(?) AND u.disabled=0`, wid, email)
     if (!member) throw rowError(n, `assignee '${email}' is not an active workspace member`)
     assigneeId = member.id
   }
@@ -297,7 +297,7 @@ function normalizeRow(wid: string, row: RawRow, n: number, statuses: StatusEntry
     const value = customFields[field.id]
     if (field.type === 'formula' && typeof value === 'string') {
       try {
-        validateFormulaReferences(wid, value, field.id)
+        await validateFormulaReferences(wid, value, field.id)
       } catch (error) {
         if (error instanceof HttpError) throw rowError(n, error.message)
         throw error
@@ -308,30 +308,32 @@ function normalizeRow(wid: string, row: RawRow, n: number, statuses: StatusEntry
   return { title, description, status, priority, startDate, dueDate, tags, assigneeId, customFields }
 }
 
-export function importItems(userId: string, wid: string, input: unknown): { imported: number; ids: string[] } {
+export async function importItems(userId: string, wid: string, input: unknown): Promise<{ imported: number; ids: string[] }> {
   const body = importBody.parse(input)
-  return db.transaction(() => {
-    requirePermission(userId, wid, 'items:write')
-    const node = db.prepare('SELECT id,kind FROM nodes WHERE workspaceId=? AND id=?').get(wid, body.nodeId) as { id: string; kind: string } | undefined
+  return db.transaction(async () => {
+    await requirePermission(userId, wid, 'items:write')
+    const node = await db.get<{ id: string; kind: string }>('SELECT id,kind FROM nodes WHERE workspaceId=? AND id=?', wid, body.nodeId)
     if (!node) throw new HttpError(404, 'Node not found')
     if (node.kind !== 'list') throw new HttpError(400, 'Import target must be a list')
-    const statuses = effectiveListStatuses(wid, body.nodeId)
-    const fields = (db.prepare('SELECT * FROM fields WHERE workspaceId=?').all(wid) as Parameters<typeof decodeField>[0][]).map(decodeField)
+    const statuses = await effectiveListStatuses(wid, body.nodeId)
+    const fields = (await db.all('SELECT * FROM fields WHERE workspaceId=?', wid) as Parameters<typeof decodeField>[0][]).map(decodeField)
     const rows = body.format === 'json' ? rowsFromJson(body.data) : rowsFromCsv(body.data)
     if (rows.length > MAX_IMPORT_ROWS) {
       throw new HttpError(400, `Import row limit exceeded: maximum ${MAX_IMPORT_ROWS} rows per import`)
     }
     const fromCsv = body.format === 'csv'
     // Validate every row before inserting any, so a single bad row aborts the import.
-    const normalized = rows.map((row, index) => normalizeRow(wid, row, index + 1, statuses, fields, fromCsv))
+    const normalized: NormalizedRow[] = []
+    for (let index = 0; index < rows.length; index++) {
+      normalized.push(await normalizeRow(wid, rows[index]!, index + 1, statuses, fields, fromCsv))
+    }
     const timestamp = new Date().toISOString()
-    const insert = db.prepare(`INSERT INTO items
-      (id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,createdAt,updatedAt)
-      VALUES (@id,@workspaceId,@nodeId,@title,@description,@status,@priority,@startDate,@dueDate,@tags,@customFields,@assigneeId,@createdAt,@updatedAt)`)
     const ids: string[] = []
     for (const item of normalized) {
       const id = randomUUID()
-      insert.run({
+      await db.run(`INSERT INTO items
+        (id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,createdAt,updatedAt)
+        VALUES (@id,@workspaceId,@nodeId,@title,@description,@status,@priority,@startDate,@dueDate,@tags,@customFields,@assigneeId,@createdAt,@updatedAt)`, {
         id, workspaceId: wid, nodeId: body.nodeId, title: item.title, description: item.description,
         status: item.status, priority: item.priority, startDate: item.startDate, dueDate: item.dueDate,
         tags: JSON.stringify(item.tags), customFields: JSON.stringify(item.customFields),
@@ -339,9 +341,9 @@ export function importItems(userId: string, wid: string, input: unknown): { impo
       })
       ids.push(id)
     }
-    audit(userId, wid, 'item.import', body.nodeId, { imported: normalized.length, format: body.format })
+    await audit(userId, wid, 'item.import', body.nodeId, { imported: normalized.length, format: body.format })
     return { imported: normalized.length, ids }
-  })()
+  })
 }
 
 // --- Export ---
@@ -354,20 +356,20 @@ function customCell(value: Item['customFields'][string]): string {
   return String(value)
 }
 
-export function exportItems(userId: string, wid: string, query: unknown): { body: unknown; contentType: string; filename: string } {
+export async function exportItems(userId: string, wid: string, query: unknown): Promise<{ body: unknown; contentType: string; filename: string }> {
   const filters = exportQuery.parse(query)
-  requirePermission(userId, wid, 'items:read')
+  await requirePermission(userId, wid, 'items:read')
   const clauses = ['workspaceId=?', 'archivedAt IS NULL']
   const values: string[] = [wid]
   if (filters.nodeId) {
-    const node = db.prepare('SELECT id,kind FROM nodes WHERE workspaceId=? AND id=?').get(wid, filters.nodeId) as { id: string; kind: string } | undefined
+    const node = await db.get<{ id: string; kind: string }>('SELECT id,kind FROM nodes WHERE workspaceId=? AND id=?', wid, filters.nodeId)
     if (!node) throw new HttpError(404, 'Node not found')
     const ids = node.kind === 'list' ? [node.id]
-      : (db.prepare(`WITH RECURSIVE descendants(id) AS (
+      : (await db.all<{ id: string }>(`WITH RECURSIVE descendants(id) AS (
           SELECT id FROM nodes WHERE workspaceId=? AND id=?
           UNION SELECT n.id FROM nodes n JOIN descendants d ON n.parentId=d.id WHERE n.workspaceId=?
-        ) SELECT n.id AS id FROM nodes n JOIN descendants d ON n.id=d.id WHERE n.workspaceId=? AND n.kind='list'`)
-        .all(wid, node.id, wid, wid) as { id: string }[]).map((entry) => entry.id)
+        ) SELECT n.id AS id FROM nodes n JOIN descendants d ON n.id=d.id WHERE n.workspaceId=? AND n.kind='list'`,
+        wid, node.id, wid, wid)).map((entry) => entry.id)
     if (ids.length === 0) {
       return filters.format === 'csv'
         ? { body: `${EXPORT_COLUMNS.join(',')}\n`, contentType: 'text/csv', filename: `hopya-export-${wid.slice(0, 8)}.csv` }
@@ -378,12 +380,14 @@ export function exportItems(userId: string, wid: string, query: unknown): { body
   }
   if (filters.status) { clauses.push('status=?'); values.push(filters.status) }
   if (filters.search) {
-    clauses.push("(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
+    clauses.push(db.sql({
+      sqlite: "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')",
+      pg: "(title ILIKE ? ESCAPE '\\' OR description ILIKE ? ESCAPE '\\')",
+    }))
     const pattern = `%${filters.search.replace(/[\\%_]/g, '\\$&')}%`
     values.push(pattern, pattern)
   }
-  const rows = db.prepare(`SELECT ${itemColumns} FROM items WHERE ${clauses.join(' AND ')} ORDER BY createdAt,id LIMIT ?`)
-    .all(...values, filters.limit) as ItemRow[]
+  const rows = await db.all(`SELECT ${itemColumns} FROM items WHERE ${clauses.join(' AND ')} ORDER BY createdAt,id LIMIT ?`, ...values, filters.limit) as ItemRow[]
   const items = rows.map(decodeItem)
   const filename = `hopya-export-${wid.slice(0, 8)}.${filters.format}`
   if (filters.format === 'json') {
@@ -392,11 +396,11 @@ export function exportItems(userId: string, wid: string, query: unknown): { body
   const assigneeIds = [...new Set(items.map((item) => item.assigneeId).filter((value): value is string => value !== null))]
   const emailById = new Map<string, string>()
   if (assigneeIds.length) {
-    for (const user of db.prepare(`SELECT id,email FROM users WHERE id IN (${assigneeIds.map(() => '?').join(',')})`).all(...assigneeIds) as { id: string; email: string }[]) {
+    for (const user of await db.all<{ id: string; email: string }>(`SELECT id,email FROM users WHERE id IN (${assigneeIds.map(() => '?').join(',')})`, ...assigneeIds)) {
       emailById.set(user.id, user.email)
     }
   }
-  const nodes = db.prepare('SELECT id,name,parentId FROM nodes WHERE workspaceId=?').all(wid) as { id: string; name: string; parentId: string | null }[]
+  const nodes = await db.all<{ id: string; name: string; parentId: string | null }>('SELECT id,name,parentId FROM nodes WHERE workspaceId=?', wid)
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const nodePath = (nodeId: string): string => {
     const parts: string[] = []
@@ -408,7 +412,7 @@ export function exportItems(userId: string, wid: string, query: unknown): { body
     }
     return parts.join('/')
   }
-  const fields = (db.prepare('SELECT * FROM fields WHERE workspaceId=?').all(wid) as Parameters<typeof decodeField>[0][]).map(decodeField)
+  const fields = (await db.all('SELECT * FROM fields WHERE workspaceId=?', wid) as Parameters<typeof decodeField>[0][]).map(decodeField)
   const fieldById = new Map(fields.map((field) => [field.id, field]))
   const union = new Set<string>()
   for (const item of items) {
@@ -435,8 +439,9 @@ export function exportItems(userId: string, wid: string, query: unknown): { body
   return { body: lines.join('\r\n'), contentType: 'text/csv', filename }
 }
 
-export function handleExport(ctx: HttpContext): unknown {
-  const result = exportItems(authenticate(ctx).id, ctx.params.wid, ctx.request.qs())
+export async function handleExport(ctx: HttpContext): Promise<unknown> {
+  const user = await authenticate(ctx)
+  const result = await exportItems(user.id, ctx.params.wid, ctx.request.qs())
   ctx.response.header('Content-Disposition', `attachment; filename="${result.filename}"`)
   ctx.response.header('Content-Type', result.contentType)
   return result.body

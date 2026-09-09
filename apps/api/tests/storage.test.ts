@@ -8,7 +8,7 @@ import { integrationServer } from './storage-sso-fixture.js'
 
 test('filesystem attachments over real Adonis HTTP: auth, bounds, private bytes, cascade GC', { timeout: 60000 }, async (t) => {
   const f = await integrationServer(t)
-  const owner = f.user(true); const other = f.user(true)
+  const owner = await f.user(true); const other = await f.user(true)
   const item = await f.item(owner.token); const foreign = await f.item(other.token)
   const payload = { name: 'report.html', contentType: 'text/html', data: Buffer.from('<script>alert(1)</script>').toString('base64') }
   const upload = (body: unknown = payload, token = owner.token) => f.request(item.path, { method: 'POST', token, body })
@@ -22,7 +22,8 @@ test('filesystem attachments over real Adonis HTTP: auth, bounds, private bytes,
   const attachment = await result.json() as { id: string; name: string; size: number; contentType: string; createdAt: string }
   assert.deepEqual(Object.keys(attachment).sort(), ['contentType', 'createdAt', 'id', 'name', 'size'])
   assert.equal(attachment.size, Buffer.from(payload.data, 'base64').length)
-  const row = f.db.prepare('SELECT * FROM attachments WHERE id=?').get(attachment.id) as { objectKey: string }
+  const row = await f.db.get<{ objectKey: string }>('SELECT * FROM attachments WHERE id=?', attachment.id)
+  assert.ok(row)
   assert.notEqual(row.objectKey, attachment.id)
   assert.match(row.objectKey, /^[a-f0-9-]{36}$/)
   assert.equal(statSync(join(f.directory, 'objects')).mode & 0o777, 0o700)
@@ -37,9 +38,10 @@ test('filesystem attachments over real Adonis HTTP: auth, bounds, private bytes,
   assert.equal(download.headers.get('content-type'), 'application/octet-stream')
   assert.equal((await f.request(`${foreign.path}/${attachment.id}`, { token: other.token })).status, 404)
   assert.equal((await f.request(`${item.path}/${attachment.id}`, { token: other.token })).status, 403)
-  const viewer = f.user()
-  const role = f.db.prepare("SELECT id FROM roles WHERE workspaceId=? AND name='Viewer'").get(item.wid) as { id: string }
-  f.db.prepare('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)').run(item.wid, viewer.id, role.id)
+  const viewer = await f.user()
+  const role = await f.db.get<{ id: string }>("SELECT id FROM roles WHERE workspaceId=? AND name='Viewer'", item.wid)
+  assert.ok(role)
+  await f.db.run('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)', item.wid, viewer.id, role.id)
   assert.equal((await f.request(item.path, { token: viewer.token })).status, 200)
   assert.equal((await upload(payload, viewer.token)).status, 403)
   assert.equal((await f.request(`${item.path}/${attachment.id}`, { method: 'DELETE', token: viewer.token })).status, 403)
@@ -51,33 +53,33 @@ test('filesystem attachments over real Adonis HTTP: auth, bounds, private bytes,
   assert.equal(existsSync(join(f.directory, 'objects', row.objectKey)), false)
   assert.equal((await f.request(`${item.path}/${attachment.id}`, { token: owner.token })).status, 404)
   assert.equal((await f.request(`/workspaces/${item.wid}/items/${item.id}`, { method: 'DELETE', token: owner.token })).status, 200)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM attachments').get() as { count: number }).count, 0)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM attachments'))?.count, 0)
   assert.deepEqual(await f.collect(), { scanned: 0, deleted: 0, failed: 0 })
-  f.db.prepare('UPDATE storage_objects SET createdAt=?').run('2000-01-01T00:00:00.000Z')
+  await f.db.run('UPDATE storage_objects SET createdAt=?', '2000-01-01T00:00:00.000Z')
   assert.deepEqual(await f.collect(), { scanned: 1, deleted: 1, failed: 0 })
   assert.deepEqual(readdirSync(join(f.directory, 'objects')), [])
-  const audit = JSON.stringify(f.db.prepare("SELECT * FROM audit_logs WHERE action LIKE 'attachment.%'").all())
+  const audit = JSON.stringify(await f.db.all("SELECT * FROM audit_logs WHERE action LIKE 'attachment.%'"))
   assert.ok(audit.includes('attachment.create'))
   assert.ok(audit.includes('attachment.delete'))
   assert.equal(audit.includes(payload.data), false)
-  assert.deepEqual(f.db.pragma('foreign_key_check'), [])
+  assert.deepEqual(await f.db.all('PRAGMA foreign_key_check'), [])
 })
 
 test('filesystem refuses a symlinked object directory without disclosing local files', { timeout: 30000 }, async (t) => {
   const f = await integrationServer(t)
-  const owner = f.user(); const item = await f.item(owner.token)
+  const owner = await f.user(); const item = await f.item(owner.token)
   symlinkSync(f.directory, join(f.directory, 'objects'))
   const result = await f.request(item.path, { method: 'POST', token: owner.token, body: { name: 'bad', contentType: 'text/plain', data: 'aGk=' } })
   assert.equal(result.status, 503)
   assert.deepEqual(await result.json(), { error: 'Attachment storage unavailable' })
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM attachments').get() as { count: number }).count, 0)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM attachments'))?.count, 0)
   assert.equal(readdirSync(f.directory).filter((name) => /^[a-f0-9-]{36}$/.test(name)).length, 0)
 })
 
 test('AWS SDK against a local S3 mock: private signed requests, revocation races, compensation and GC', { timeout: 60000 }, async (t) => {
   const objects = new Map<string, Buffer>()
   let failPut = false; let failDelete = false; let oversized = false
-  let onPut = () => {}; let onGet = () => {}; let onDelete = () => {}
+  let onPut = async () => {}; let onGet = async () => {}; let onDelete = async () => {}
   const seen: Array<{ method: string; url: string; authorization: string; acl?: string }> = []
   const server = createServer(async (request, response) => {
     const key = new URL(request.url!, 'http://localhost').pathname
@@ -85,13 +87,13 @@ test('AWS SDK against a local S3 mock: private signed requests, revocation races
     if (request.method === 'PUT') {
       const chunks = []; for await (const chunk of request) chunks.push(chunk)
       if (failPut) { response.writeHead(503); response.end('<Error><Code>Unavailable</Code><Message>secret mock credential</Message></Error>'); return }
-      objects.set(key, Buffer.concat(chunks)); onPut(); response.writeHead(200); response.end()
+      objects.set(key, Buffer.concat(chunks)); await onPut(); response.writeHead(200); response.end()
     } else if (request.method === 'GET') {
-      onGet()
+      await onGet()
       if (!objects.has(key)) { response.writeHead(404); response.end(); return }
       response.writeHead(200); response.end(oversized ? Buffer.alloc(10 * 1024 * 1024 + 1) : objects.get(key))
     } else if (request.method === 'DELETE') {
-      onDelete()
+      await onDelete()
       if (failDelete) { response.writeHead(503); response.end('<Error><Code>Unavailable</Code></Error>'); return }
       objects.delete(key); response.writeHead(204); response.end()
     } else { response.writeHead(404); response.end() }
@@ -101,7 +103,7 @@ test('AWS SDK against a local S3 mock: private signed requests, revocation races
   const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`
   const f = await integrationServer(t, { STORAGE_DRIVER: 's3', S3_BUCKET: 'private-test', S3_REGION: 'us-east-1', S3_ENDPOINT: endpoint,
     S3_FORCE_PATH_STYLE: 'true', AWS_ACCESS_KEY_ID: 'mock-access', AWS_SECRET_ACCESS_KEY: 'mock-secret', AWS_EC2_METADATA_DISABLED: 'true' })
-  const owner = f.user(); const item = await f.item(owner.token)
+  const owner = await f.user(); const item = await f.item(owner.token)
   const payload = { name: 'private.txt', contentType: 'text/plain', data: 'aGk=' }
   const upload = () => f.request(item.path, { method: 'POST', token: owner.token, body: payload })
   let response = await upload()
@@ -112,48 +114,50 @@ test('AWS SDK against a local S3 mock: private signed requests, revocation races
   oversized = true
   assert.equal((await f.request(`${item.path}/${saved.id}`, { token: owner.token })).status, 503)
   oversized = false
-  onGet = () => { f.db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(owner.id) }
+  onGet = async () => { await f.db.run('UPDATE users SET disabled=1 WHERE id=?', owner.id) }
   assert.equal((await f.request(`${item.path}/${saved.id}`, { token: owner.token })).status, 401)
-  onGet = () => {}; f.db.prepare('UPDATE users SET disabled=0 WHERE id=?').run(owner.id)
-  onPut = () => { f.db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(owner.id) }
+  onGet = async () => {}; await f.db.run('UPDATE users SET disabled=0 WHERE id=?', owner.id)
+  onPut = async () => { await f.db.run('UPDATE users SET disabled=1 WHERE id=?', owner.id) }
   assert.equal((await upload()).status, 401)
   assert.equal(objects.size, 1)
-  onPut = () => {}; f.db.prepare('UPDATE users SET disabled=0 WHERE id=?').run(owner.id)
-  const membership = f.db.prepare('SELECT roleId FROM memberships WHERE userId=? AND workspaceId=?').get(owner.id, item.wid) as { roleId: string }
-  const viewer = f.db.prepare("SELECT id FROM roles WHERE workspaceId=? AND name='Viewer'").get(item.wid) as { id: string }
-  onPut = () => { f.db.prepare('UPDATE memberships SET roleId=? WHERE userId=? AND workspaceId=?').run(viewer.id, owner.id, item.wid) }
+  onPut = async () => {}; await f.db.run('UPDATE users SET disabled=0 WHERE id=?', owner.id)
+  const membership = await f.db.get<{ roleId: string }>('SELECT roleId FROM memberships WHERE userId=? AND workspaceId=?', owner.id, item.wid)
+  const viewer = await f.db.get<{ id: string }>("SELECT id FROM roles WHERE workspaceId=? AND name='Viewer'", item.wid)
+  assert.ok(membership)
+  assert.ok(viewer)
+  onPut = async () => { await f.db.run('UPDATE memberships SET roleId=? WHERE userId=? AND workspaceId=?', viewer.id, owner.id, item.wid) }
   assert.equal((await upload()).status, 403)
   assert.equal(objects.size, 1)
-  onPut = () => {}
-  f.db.prepare('UPDATE memberships SET roleId=? WHERE userId=? AND workspaceId=?').run(membership.roleId, owner.id, item.wid)
-  onGet = () => { f.db.prepare('DELETE FROM memberships WHERE userId=? AND workspaceId=?').run(owner.id, item.wid) }
+  onPut = async () => {}
+  await f.db.run('UPDATE memberships SET roleId=? WHERE userId=? AND workspaceId=?', membership.roleId, owner.id, item.wid)
+  onGet = async () => { await f.db.run('DELETE FROM memberships WHERE userId=? AND workspaceId=?', owner.id, item.wid) }
   assert.equal((await f.request(`${item.path}/${saved.id}`, { token: owner.token })).status, 403)
-  onGet = () => {}
-  f.db.prepare('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)').run(item.wid, owner.id, membership.roleId)
+  onGet = async () => {}
+  await f.db.run('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)', item.wid, owner.id, membership.roleId)
   failPut = true
   assert.equal((await upload()).status, 503)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM storage_objects').get() as { count: number }).count, 2)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM storage_objects'))?.count, 2)
   failDelete = true
   response = await upload()
   assert.equal(response.status, 503)
   assert.deepEqual(await response.json(), { error: 'Attachment storage unavailable' })
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM storage_objects').get() as { count: number }).count, 3)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM storage_objects'))?.count, 3)
   failPut = false
   response = await f.request(`${item.path}/${saved.id}`, { method: 'DELETE', token: owner.token })
   assert.deepEqual(await response.json(), { success: true, cleanupPending: true })
   assert.equal((await f.request(`${item.path}/${saved.id}`, { token: owner.token })).status, 404)
   failDelete = false
-  f.db.prepare('UPDATE storage_objects SET createdAt=?').run('2000-01-01T00:00:00.000Z')
+  await f.db.run('UPDATE storage_objects SET createdAt=?', '2000-01-01T00:00:00.000Z')
   assert.deepEqual(await f.collect(), { scanned: 3, deleted: 3, failed: 0 })
   assert.equal(objects.size, 0)
   const disappearing = await f.item(owner.token)
-  onPut = () => { f.db.prepare('DELETE FROM items WHERE id=?').run(disappearing.id) }
+  onPut = async () => { await f.db.run('DELETE FROM items WHERE id=?', disappearing.id) }
   assert.equal((await f.request(disappearing.path, { method: 'POST', token: owner.token, body: payload })).status, 404)
   assert.equal(objects.size, 0)
-  onPut = () => {}
+  onPut = async () => {}
   response = await upload()
   const removed = await response.json() as { id: string }
-  onDelete = () => { f.db.prepare('DELETE FROM tokens WHERE userId=?').run(owner.id) }
+  onDelete = async () => { await f.db.run('DELETE FROM tokens WHERE userId=?', owner.id) }
   assert.equal((await f.request(`${item.path}/${removed.id}`, { method: 'DELETE', token: owner.token })).status, 401)
   assert.equal(f.output().includes('mock-secret'), false)
 })

@@ -13,10 +13,6 @@ new Ignitor(root, { importer: (filePath) => import(filePath.startsWith('.') ? ne
   .tap((app) => {
     app.listen('SIGTERM', () => app.terminate())
     app.listen('SIGINT', () => app.terminate())
-    app.terminating(async () => {
-      const { db } = await import('../app/database.js')
-      db.close()
-    })
   })
   .httpServer()
   .start()

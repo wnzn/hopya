@@ -9,7 +9,7 @@ import { integrationServer } from './storage-sso-fixture.js'
 
 type Api = Awaited<ReturnType<typeof integrationServer>>
 type Auth = { token?: string; cookie?: string }
-type Context = ReturnType<Api['user']> & { wid: string }
+type Context = Awaited<ReturnType<Api['user']>> & { wid: string }
 type Outcome = { kind: 'response'; status: number; headers: IncomingHttpHeaders; body: string }
   | { kind: 'closed'; reason: string }
 type ProviderCall = {
@@ -119,7 +119,7 @@ async function fixture(t: TestContext) {
   }
 
   async function context(): Promise<Context> {
-    const user = api.user()
+    const user = await api.user()
     const post = async (path: string, body: unknown) => JSON.parse((await received(send(path, user, body), 201)).body) as { id: string }
     const workspace = await post('/workspaces', { name: 'Agent lifecycle' })
     const project = await post(`/workspaces/${workspace.id}/nodes`, { name: 'Project', kind: 'project' })
@@ -152,13 +152,15 @@ async function fixture(t: TestContext) {
       call.response.end(call.partial ? call.payload.slice(20) : call.payload)
     }
   }
-  function snapshot(all = false) {
+  async function snapshot(all = false) {
     const tables = all ? ['users', 'tokens', 'sessions', 'workspaces', 'roles', 'memberships', 'nodes', 'fields', 'items', 'audit_logs']
       : ['nodes', 'fields', 'items']
-    return tables.map((table) => api.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all())
+    const rows = []
+    for (const table of tables) rows.push(await api.db.all(`SELECT * FROM ${table} ORDER BY rowid`))
+    return rows
   }
-  function audits(user: Context) {
-    return api.db.prepare("SELECT * FROM audit_logs WHERE actorId=? AND workspaceId=? AND action='agent.answer'").all(user.id, user.wid)
+  async function audits(user: Context) {
+    return api.db.all("SELECT * FROM audit_logs WHERE actorId=? AND workspaceId=? AND action='agent.answer'", user.id, user.wid)
   }
   return { api, calls, send, context, ask, pending, reached, partial, complete, snapshot, audits }
 }
@@ -174,13 +176,13 @@ async function received(client: { result: Promise<Outcome> }, status: number) {
 test('agent global admission: four users/workspaces, fifth Retry-After, denied calls and reusable success/error slots', { timeout: 30000 }, async (t) => {
   const f = await fixture(t)
   const users = await Promise.all(Array.from({ length: 5 }, () => f.context()))
-  const before = f.snapshot()
+  const before = await f.snapshot()
   const requests = users.slice(0, 4).map((user) => f.pending(user))
   const calls = await Promise.all(requests.map(({ message }) => f.reached(message)))
   assert.equal(f.calls.length, 4)
   for (const { client } of requests) assert.equal(client.outcome, undefined)
 
-  const outsider = f.api.user()
+  const outsider = await f.api.user()
   await received(f.ask({ ...outsider, wid: users[0].wid }), 403)
   const busy = await received(f.ask(users[4]), 429)
   assert.match(busy.body, /Assistant is busy/)
@@ -198,16 +200,16 @@ test('agent global admission: four users/workspaces, fifth Retry-After, denied c
   for (const call of [calls[2], calls[3], replacementCall, afterErrorCall]) f.complete(call)
   for (const client of [requests[2].client, requests[3].client, replacement.client, afterError.client]) await received(client, 200)
   assert.equal(f.calls.length, 6)
-  assert.deepEqual(users.map((user) => f.audits(user).length), [1, 1, 1, 1, 1])
-  assert.deepEqual(f.snapshot(), before)
+  assert.deepEqual((await Promise.all(users.map((user) => f.audits(user)))).map((audits) => audits.length), [1, 1, 1, 1, 1])
+  assert.deepEqual(await f.snapshot(), before)
   assert.match(String(busy.headers['retry-after'] ?? ''), /^[1-9]\d*$/, 'Busy admission must advertise a positive Retry-After')
 })
 
 test('agent actual 45s deadline covers concurrent headers-stall and partial-body-stall and closes provider sockets', { timeout: 70000 }, async (t) => {
   const f = await fixture(t)
   const users = await Promise.all(Array.from({ length: 4 }, () => f.context()))
-  const before = f.snapshot(true)
-  const tasksBefore = f.snapshot()
+  const before = await f.snapshot(true)
+  const tasksBefore = await f.snapshot()
   const started = performance.now()
   const requests = users.slice(0, 2).map((user) => f.pending(user))
   const calls = await Promise.all(requests.map(({ message }) => f.reached(message)))
@@ -219,21 +221,21 @@ test('agent actual 45s deadline covers concurrent headers-stall and partial-body
     assert.deepEqual(JSON.parse(result.body), { error: providerError })
   }))
   await until(() => calls.every((call) => call.socketClosedAt !== undefined), 'Both timed-out provider sockets must close')
-  assert.deepEqual(f.snapshot(true), before, 'Timeouts must not audit an answer or mutate any application rows')
+  assert.deepEqual(await f.snapshot(true), before, 'Timeouts must not audit an answer or mutate any application rows')
   // Refill all four slots: a lone successful request would not prove both deadlines released admission.
   const retries = users.map((user) => f.pending(user))
   const retryCalls = await Promise.all(retries.map(({ message }) => f.reached(message)))
   for (const call of retryCalls) f.complete(call)
   for (const { client } of retries) await received(client, 200)
-  assert.deepEqual(users.map((user) => f.audits(user).length), [1, 1, 1, 1])
-  assert.deepEqual(f.snapshot(), tasksBefore)
+  assert.deepEqual((await Promise.all(users.map((user) => f.audits(user)))).map((audits) => audits.length), [1, 1, 1, 1])
+  assert.deepEqual(await f.snapshot(), tasksBefore)
 })
 
 for (const phase of ['before response headers', 'during partial provider body']) {
   test(`agent client disconnect ${phase} cancels promptly, releases its slot and cannot succeed or audit`, { timeout: 25000 }, async (t) => {
     const f = await fixture(t)
     const users = await Promise.all(Array.from({ length: 5 }, () => f.context()))
-    const before = f.snapshot()
+    const before = await f.snapshot()
     const requests = users.slice(0, 4).map((user) => f.pending(user))
     const calls = await Promise.all(requests.map(({ message }) => f.reached(message)))
     const abandoned = requests[0].client
@@ -245,7 +247,7 @@ for (const phase of ['before response headers', 'during partial provider body'])
     assert.equal((await abandoned.result).kind, 'closed', 'A disconnected request cannot return a complete success')
     await until(() => calls[0].socketClosedAt !== undefined, `Provider socket stayed open after client disconnect ${phase}`)
     assert.ok(calls[0].socketClosedAt! - disconnectedAt < 3000, 'Provider cancellation must propagate within 3 seconds')
-    assert.deepEqual(f.audits(users[0]), [])
+    assert.deepEqual(await f.audits(users[0]), [])
 
     const replacement = f.pending(users[4])
     const replacementCall = await f.reached(replacement.message)
@@ -256,15 +258,15 @@ for (const phase of ['before response headers', 'during partial provider body'])
     for (const call of [...calls.slice(1), replacementCall]) f.complete(call)
     for (const { client } of [...requests.slice(1), replacement]) await received(client, 200)
     assert.equal((await abandoned.result).kind, 'closed')
-    assert.deepEqual(users.map((user) => f.audits(user).length), [0, 1, 1, 1, 1])
-    assert.deepEqual(f.snapshot(), before)
+    assert.deepEqual((await Promise.all(users.map((user) => f.audits(user)))).map((audits) => audits.length), [0, 1, 1, 1, 1])
+    assert.deepEqual(await f.snapshot(), before)
   })
 }
 
 test('agent normal POST completion does not cancel a long provider wait', { timeout: 20000 }, async (t) => {
   const f = await fixture(t)
   const user = await f.context()
-  const before = f.snapshot()
+  const before = await f.snapshot()
   const { client, message } = f.pending(user)
   const call = await f.reached(message)
   assert.ok(client.sent)
@@ -274,8 +276,8 @@ test('agent normal POST completion does not cancel a long provider wait', { time
   assert.equal(client.outcome, undefined)
   f.complete(call)
   assert.deepEqual(JSON.parse((await received(client, 200)).body), answer(message))
-  assert.equal(f.audits(user).length, 1)
-  assert.deepEqual(f.snapshot(), before)
+  assert.equal((await f.audits(user)).length, 1)
+  assert.deepEqual(await f.snapshot(), before)
 })
 
 test('agent pending token/session revocation, live expiry, all-credential withdrawal and suspension deny completed answers', { timeout: 45000 }, async (t) => {
@@ -285,12 +287,12 @@ test('agent pending token/session revocation, live expiry, all-credential withdr
   const passwordHash = `scrypt$32768$8$1$${salt}$${scryptSync(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString('hex')}`
   for (const scenario of ['token-revoke', 'token-expiry', 'session-revoke', 'session-expiry', 'all-credentials', 'disabled']) {
     const user = await f.context()
-    f.api.db.prepare('UPDATE users SET passwordHash=? WHERE id=?').run(passwordHash, user.id)
+    await f.api.db.run('UPDATE users SET passwordHash=? WHERE id=?', passwordHash, user.id)
     const login = await received(f.send('/auth/login', {}, { email: user.email, password }), 200)
     const cookie = login.headers['set-cookie']!.map((value) => value.split(';')[0]).join('; ')
     const tokenHash = createHash('sha256').update(user.token).digest('hex')
-    const token = f.api.db.prepare('SELECT id FROM tokens WHERE tokenHash=?').get(tokenHash) as { id: string }
-    const session = f.api.db.prepare('SELECT id FROM sessions WHERE userId=?').get(user.id) as { id: string }
+    const token = (await f.api.db.get<{ id: string }>('SELECT id FROM tokens WHERE tokenHash=?', tokenHash))!
+    const session = (await f.api.db.get<{ id: string }>('SELECT id FROM sessions WHERE userId=?', user.id))!
     assert.ok(token.id && session.id)
     const credentials: Auth[] = scenario === 'all-credentials' || scenario === 'disabled' ? [{ token: user.token }, { cookie }]
       : scenario.startsWith('session') ? [{ cookie }] : [{ token: user.token }]
@@ -298,23 +300,23 @@ test('agent pending token/session revocation, live expiry, all-credential withdr
     const calls = await Promise.all(requests.map(({ message }) => f.reached(message)))
     for (const { client } of requests) assert.equal(client.outcome, undefined, scenario)
     // Change the very credentials used by these pending HTTP requests, with no replacement login.
-    if (scenario === 'token-revoke') f.api.db.prepare('DELETE FROM tokens WHERE id=?').run(token.id)
-    else if (scenario === 'session-revoke') f.api.db.prepare('DELETE FROM sessions WHERE id=?').run(session.id)
-    else if (scenario === 'token-expiry') f.api.db.prepare('UPDATE tokens SET expiresAt=? WHERE id=?').run('2000-01-01T00:00:00.000Z', token.id)
-    else if (scenario === 'session-expiry') f.api.db.prepare('UPDATE sessions SET expiresAt=? WHERE id=?').run('2000-01-01T00:00:00.000Z', session.id)
-    else if (scenario === 'disabled') f.api.db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(user.id)
-    else f.api.db.transaction(() => {
-      f.api.db.prepare('DELETE FROM tokens WHERE userId=?').run(user.id)
-      f.api.db.prepare('DELETE FROM sessions WHERE userId=?').run(user.id)
-    })()
-    const before = f.snapshot(true)
+    if (scenario === 'token-revoke') await f.api.db.run('DELETE FROM tokens WHERE id=?', token.id)
+    else if (scenario === 'session-revoke') await f.api.db.run('DELETE FROM sessions WHERE id=?', session.id)
+    else if (scenario === 'token-expiry') await f.api.db.run('UPDATE tokens SET expiresAt=? WHERE id=?', '2000-01-01T00:00:00.000Z', token.id)
+    else if (scenario === 'session-expiry') await f.api.db.run('UPDATE sessions SET expiresAt=? WHERE id=?', '2000-01-01T00:00:00.000Z', session.id)
+    else if (scenario === 'disabled') await f.api.db.run('UPDATE users SET disabled=1 WHERE id=?', user.id)
+    else await f.api.db.transaction(async (database) => {
+      await database.run('DELETE FROM tokens WHERE userId=?', user.id)
+      await database.run('DELETE FROM sessions WHERE userId=?', user.id)
+    })
+    const before = await f.snapshot(true)
     for (const call of calls) f.complete(call)
     for (const { client } of requests) {
       const denied = await received(client, 401)
       assert.deepEqual(JSON.parse(denied.body), { error: 'Authentication required' }, scenario)
     }
-    assert.deepEqual(f.audits(user), [], scenario)
-    assert.deepEqual(f.snapshot(true), before, `${scenario}: no answer audit, task mutation or credential resurrection`)
+    assert.deepEqual(await f.audits(user), [], scenario)
+    assert.deepEqual(await f.snapshot(true), before, `${scenario}: no answer audit, task mutation or credential resurrection`)
   }
 })
 
@@ -322,31 +324,31 @@ test('agent pending membership and either required permission withdrawal deny co
   const f = await fixture(t)
   for (const scenario of ['membership', 'agent:use', 'items:read', 'role-reassignment']) {
     const owner = await f.context()
-    const member = { ...f.api.user(), wid: owner.wid }
+    const member = { ...await f.api.user(), wid: owner.wid }
     const roleId = randomUUID()
-    f.api.db.prepare('INSERT INTO roles (id,workspaceId,name,permissions) VALUES (?,?,?,?)')
-      .run(roleId, owner.wid, 'Assistant reader', JSON.stringify(['agent:use', 'items:read']))
-    f.api.db.prepare('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)').run(owner.wid, member.id, roleId)
+    await f.api.db.run('INSERT INTO roles (id,workspaceId,name,permissions) VALUES (?,?,?,?)',
+      roleId, owner.wid, 'Assistant reader', JSON.stringify(['agent:use', 'items:read']))
+    await f.api.db.run('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)', owner.wid, member.id, roleId)
     const { client, message } = f.pending(member)
     const call = await f.reached(message)
     assert.equal(client.outcome, undefined)
-    if (scenario === 'membership') f.api.db.prepare('DELETE FROM memberships WHERE workspaceId=? AND userId=?').run(owner.wid, member.id)
+    if (scenario === 'membership') await f.api.db.run('DELETE FROM memberships WHERE workspaceId=? AND userId=?', owner.wid, member.id)
     else if (scenario === 'role-reassignment') {
       const deniedRole = randomUUID()
-      f.api.db.prepare('INSERT INTO roles (id,workspaceId,name,permissions) VALUES (?,?,?,?)').run(deniedRole, owner.wid, 'No access', '[]')
-      f.api.db.prepare('UPDATE memberships SET roleId=? WHERE workspaceId=? AND userId=?').run(deniedRole, owner.wid, member.id)
-    } else f.api.db.prepare('UPDATE roles SET permissions=? WHERE id=? AND workspaceId=?')
-      .run(JSON.stringify(scenario === 'agent:use' ? ['items:read'] : ['agent:use']), roleId, owner.wid)
-    const before = f.snapshot(true)
+      await f.api.db.run('INSERT INTO roles (id,workspaceId,name,permissions) VALUES (?,?,?,?)', deniedRole, owner.wid, 'No access', '[]')
+      await f.api.db.run('UPDATE memberships SET roleId=? WHERE workspaceId=? AND userId=?', deniedRole, owner.wid, member.id)
+    } else await f.api.db.run('UPDATE roles SET permissions=? WHERE id=? AND workspaceId=?',
+      JSON.stringify(scenario === 'agent:use' ? ['items:read'] : ['agent:use']), roleId, owner.wid)
+    const before = await f.snapshot(true)
     f.complete(call)
     const denied = await received(client, 403)
     assert.deepEqual(JSON.parse(denied.body), { error: scenario === 'membership' ? 'Workspace access denied'
       : `Permission required: ${scenario === 'role-reassignment' ? 'agent:use' : scenario}` })
-    assert.deepEqual(f.audits(member), [])
-    assert.deepEqual(f.snapshot(true), before, scenario)
+    assert.deepEqual(await f.audits(member), [])
+    assert.deepEqual(await f.snapshot(true), before, scenario)
     const count = f.calls.length
     await received(f.ask(member), 403)
     assert.equal(f.calls.length, count, 'Withdrawn authorization must also deny before provider admission')
-    assert.deepEqual(f.snapshot(true), before)
+    assert.deepEqual(await f.snapshot(true), before)
   }
 })

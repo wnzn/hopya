@@ -3,7 +3,7 @@ import type { NextFn } from '@adonisjs/core/types/http'
 import { Effect } from 'effect'
 import { checkOrigin } from '../security.js'
 import { allowAnyOrigin } from '../settings.js'
-import { runSyncThrow } from '../database.js'
+import { runPromiseThrow } from '../database.js'
 
 const applySecurityHeaders = (ctx: HttpContext): Effect.Effect<void> =>
   Effect.sync(() => {
@@ -33,13 +33,11 @@ const applyOpenCors = (ctx: HttpContext): Effect.Effect<boolean> =>
 // Origin admission reuses the public security boundary (typed Effect pipeline
 // mapped to HttpError there), so browser/bearer semantics stay identical.
 const enforceOrigin = (ctx: HttpContext): Effect.Effect<void> =>
-  Effect.sync(() => {
-    checkOrigin(ctx)
-  })
+  Effect.promise(() => checkOrigin(ctx))
 
 export default class BoundaryMiddleware {
   async handle(ctx: HttpContext, next: NextFn) {
-    const handled = runSyncThrow(Effect.gen(function* () {
+    const handled = await runPromiseThrow(Effect.gen(function* () {
       yield* applySecurityHeaders(ctx)
       // A handled preflight ends here. Otherwise open CORS replaces only the
       // origin check; the route still runs.

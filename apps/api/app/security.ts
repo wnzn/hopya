@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
 import type { HttpContext } from '@adonisjs/core/http'
 import { Effect } from 'effect'
-import { db, runSyncThrow, runPromiseThrow } from './database.js'
+import { db, runPromiseThrow, runSyncThrow } from './database.js'
 import { appUrl, sessionSeconds } from './settings.js'
 import { HttpError, type User, type UserRow } from './types.js'
 
@@ -31,6 +31,7 @@ class PasswordFailure {
 }
 
 const nowIso = () => new Date().toISOString()
+type DbUserRow = UserRow & Record<string, unknown>
 
 function derive(password: string, salt: string): Promise<Buffer> {
   return new Promise((resolve, reject) => scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, result) => error ? reject(error) : resolve(result)))
@@ -79,7 +80,7 @@ export async function verifyPassword(password: string, encoded: string | null): 
 
 const bearerPattern = /^Bearer [A-Za-z0-9_-]{32,256}$/
 
-// Authenticate as a composable Effect: synchronous DB reads stay defects
+// Authenticate as a composable Effect: DB errors stay defects
 // (driver errors propagate unchanged), while missing/invalid credentials are
 // typed AuthFailure values mapped to 401 at the boundary.
 export const authenticateEffect = (ctx: HttpContext): Effect.Effect<User, AuthFailure> =>
@@ -88,22 +89,25 @@ export const authenticateEffect = (ctx: HttpContext): Effect.Effect<User, AuthFa
     let row: UserRow | undefined
     if (authorization !== undefined) {
       if (!bearerPattern.test(authorization)) return yield* Effect.fail(new AuthFailure())
-      // Synchronous reads: driver errors stay defects and propagate unchanged.
-      row = db.prepare('SELECT u.* FROM users u JOIN tokens t ON t.userId=u.id WHERE t.tokenHash=? AND t.expiresAt>? AND u.disabled=0')
-        .get(hashToken(authorization.slice(7)), nowIso()) as UserRow | undefined
+      row = yield* Effect.promise(() => db.get<DbUserRow>(
+        'SELECT u.* FROM users u JOIN tokens t ON t.userId=u.id WHERE t.tokenHash=? AND t.expiresAt>? AND u.disabled=0',
+        hashToken(authorization.slice(7)), nowIso(),
+      ))
     } else {
       const token: unknown = ctx.request.cookie('hopya_session')
       if (typeof token === 'string' && token.length <= 256) {
-        row = db.prepare('SELECT u.* FROM users u JOIN sessions s ON s.userId=u.id WHERE s.tokenHash=? AND s.expiresAt>? AND u.disabled=0')
-          .get(hashToken(token), nowIso()) as UserRow | undefined
+        row = yield* Effect.promise(() => db.get<DbUserRow>(
+          'SELECT u.* FROM users u JOIN sessions s ON s.userId=u.id WHERE s.tokenHash=? AND s.expiresAt>? AND u.disabled=0',
+          hashToken(token), nowIso(),
+        ))
       }
     }
     if (!row) return yield* Effect.fail(new AuthFailure())
     return publicUser(row)
   })
 
-export function authenticate(ctx: HttpContext): User {
-  return runSyncThrow(authenticateEffect(ctx).pipe(
+export function authenticate(ctx: HttpContext): Promise<User> {
+  return runPromiseThrow(authenticateEffect(ctx).pipe(
     Effect.mapError((failure) => new HttpError(401, failure.message)),
   ))
 }
@@ -124,45 +128,50 @@ export const checkOriginEffect = (ctx: HttpContext): Effect.Effect<void, OriginF
     return yield* Effect.fail(new OriginFailure('A matching Origin header is required'))
   })
 
-export function checkOrigin(ctx: HttpContext): void {
-  runSyncThrow(checkOriginEffect(ctx).pipe(
+export function checkOrigin(ctx: HttpContext): Promise<void> {
+  return runPromiseThrow(checkOriginEffect(ctx).pipe(
     Effect.mapError((failure) => failure instanceof AuthFailure ? new HttpError(401, failure.message) : new HttpError(403, failure.message)),
   ))
 }
 
 export const createSessionEffect = (ctx: HttpContext, userId: string): Effect.Effect<string, AuthFailure> =>
   Effect.gen(function* () {
-    const account = db.prepare('SELECT id FROM users WHERE id=? AND disabled=0').get(userId)
+    const account = yield* Effect.promise(() => db.get('SELECT id FROM users WHERE id=? AND disabled=0', userId))
     if (!account) return yield* Effect.fail(new AuthFailure('Account unavailable'))
     const token = randomBytes(32).toString('base64url')
-    yield* Effect.sync(() => {
-      db.transaction(() => {
+    yield* Effect.promise(() =>
+      db.transaction(async () => {
         const previous: unknown = ctx.request.cookie('hopya_session')
-        if (typeof previous === 'string') db.prepare('DELETE FROM sessions WHERE tokenHash=?').run(hashToken(previous))
-        db.prepare('DELETE FROM sessions WHERE expiresAt<=?').run(nowIso())
-        db.prepare('INSERT INTO sessions (id,userId,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?)')
-          .run(randomUUID(), userId, hashToken(token), new Date(Date.now() + sessionSeconds * 1000).toISOString(), nowIso())
-        db.prepare('DELETE FROM sessions WHERE userId=? AND id NOT IN (SELECT id FROM sessions WHERE userId=? ORDER BY createdAt DESC LIMIT 20)').run(userId, userId)
-      })()
-    })
+        if (typeof previous === 'string') await db.run('DELETE FROM sessions WHERE tokenHash=?', hashToken(previous))
+        await db.run('DELETE FROM sessions WHERE expiresAt<=?', nowIso())
+        await db.run(
+          'INSERT INTO sessions (id,userId,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?)',
+          randomUUID(), userId, hashToken(token), new Date(Date.now() + sessionSeconds * 1000).toISOString(), nowIso(),
+        )
+        await db.run(
+          'DELETE FROM sessions WHERE userId=? AND id NOT IN (SELECT id FROM sessions WHERE userId=? ORDER BY createdAt DESC LIMIT 20)',
+          userId, userId,
+        )
+      }),
+    )
     return token
   })
 
-export function createSession(ctx: HttpContext, userId: string): void {
-  const token = runSyncThrow(createSessionEffect(ctx, userId).pipe(
+export async function createSession(ctx: HttpContext, userId: string): Promise<void> {
+  const token = await runPromiseThrow(createSessionEffect(ctx, userId).pipe(
     Effect.mapError((failure) => new HttpError(401, failure.message)),
   ))
   ctx.response.cookie('hopya_session', token, { httpOnly: true, sameSite: 'lax', secure: appUrl.protocol === 'https:', path: '/', maxAge: sessionSeconds })
 }
 
 export const destroySessionEffect = (ctx: HttpContext): Effect.Effect<void> =>
-  Effect.sync(() => {
+  Effect.promise(async () => {
     const token: unknown = ctx.request.cookie('hopya_session')
-    if (typeof token === 'string') db.prepare('DELETE FROM sessions WHERE tokenHash=?').run(hashToken(token))
+    if (typeof token === 'string') await db.run('DELETE FROM sessions WHERE tokenHash=?', hashToken(token))
   })
 
-export function destroySession(ctx: HttpContext): void {
-  runSyncThrow(destroySessionEffect(ctx))
+export async function destroySession(ctx: HttpContext): Promise<void> {
+  await runPromiseThrow(destroySessionEffect(ctx))
   ctx.response.clearCookie('hopya_session', { path: '/', httpOnly: true, sameSite: 'lax', secure: appUrl.protocol === 'https:' })
 }
 

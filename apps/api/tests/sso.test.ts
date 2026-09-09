@@ -9,7 +9,7 @@ async function provider(t: TestContext) {
   const keys = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const badKeys = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const codes = new Map<string, { nonce: string; challenge: string; redirect: string }>()
-  const state = { claims: {} as Record<string, unknown>, invalidSignature: false, tokenCalls: 0, onToken: () => {}, discoveryCalls: 0, metadataIssuer: undefined as string | undefined }
+  const state = { claims: {} as Record<string, unknown>, invalidSignature: false, tokenCalls: 0, onToken: async () => {}, discoveryCalls: 0, metadataIssuer: undefined as string | undefined }
   let issuer = ''
   const server = createServer(async (request, response) => {
     const url = new URL(request.url!, issuer)
@@ -44,7 +44,7 @@ async function provider(t: TestContext) {
         body.get('redirect_uri') !== code.redirect || createHash('sha256').update(body.get('code_verifier') || '').digest('base64url') !== code.challenge) {
         json({ error: 'invalid_grant', error_description: 'mock-idp-secret should never be exposed' }, 400); return
       }
-      state.onToken()
+      await state.onToken()
       const now = Math.floor(Date.now() / 1000)
       const claims = { iss: issuer, sub: 'provider-subject', aud: 'hopya-test-client', iat: now, exp: now + 300, nonce: code.nonce,
         email: 'sso@example.test', email_verified: true, name: 'SSO User', ...state.claims }
@@ -75,18 +75,18 @@ test('configured OIDC issuer must exactly match discovery, including trailing sl
   p.state.metadataIssuer = `${p.issuer}/`
   p.state.claims = { iss: p.state.metadataIssuer }
   const mismatched = await integrationServer(t, p.env)
-  mismatched.user(true)
+  await mismatched.user(true)
   const denied = await mismatched.request('/auth/sso')
   assert.equal(denied.status, 503)
   assert.deepEqual(await denied.json(), { error: 'SSO provider unavailable' })
-  assert.deepEqual(mismatched.db.prepare('SELECT * FROM oidc_flows').all(), [])
+  assert.deepEqual(await mismatched.db.all('SELECT * FROM oidc_flows'), [])
   assert.equal(p.state.tokenCalls, 0)
   const exact = await integrationServer(t, { ...p.env, OIDC_ISSUER: p.state.metadataIssuer })
-  exact.user(true)
+  await exact.user(true)
   const response = await finish(await begin(exact))
   assert.equal(response.status, 302)
   assert.equal((await exact.request('/auth/me', { cookie: responseCookie(response) })).status, 200)
-  assert.equal((exact.db.prepare('SELECT issuer FROM oidc_identities').get() as { issuer: string }).issuer, p.state.metadataIssuer)
+  assert.equal((await exact.db.get<{ issuer: string }>('SELECT issuer FROM oidc_identities'))?.issuer, p.state.metadataIssuer)
 })
 
 test('OIDC code/PKCE over real HTTP: setup gate, one-use hashed flows, JIT isolation and session cookies', { timeout: 60000 }, async (t) => {
@@ -94,13 +94,14 @@ test('OIDC code/PKCE over real HTTP: setup gate, one-use hashed flows, JIT isola
   const f = await integrationServer(t, p.env)
   assert.equal((await f.request('/auth/sso')).status, 503)
   assert.equal(p.state.discoveryCalls, 0)
-  const admin = f.user(true, 'admin@example.test')
+  const admin = await f.user(true, 'admin@example.test')
   let flow = await begin(f)
   assert.match(flow.response.headers.get('set-cookie')!, /HttpOnly/)
   assert.match(flow.response.headers.get('set-cookie')!, /SameSite=Lax/)
   assert.match(flow.response.headers.get('set-cookie')!, /Path=\/api\/v1\/auth\/sso;/)
   assert.match(flow.response.headers.get('set-cookie')!, /Max-Age=600/)
-  const stored = f.db.prepare('SELECT * FROM oidc_flows').get() as { cookieHash: string; stateHash: string; codeVerifier: string; nonce: string }
+  const stored = await f.db.get<{ cookieHash: string; stateHash: string; codeVerifier: string; nonce: string }>('SELECT * FROM oidc_flows')
+  assert.ok(stored)
   assert.match(stored.cookieHash, /^[a-f0-9]{64}$/)
   assert.match(stored.stateHash, /^[a-f0-9]{64}$/)
   assert.equal(flow.cookie.includes(stored.cookieHash), false)
@@ -114,8 +115,8 @@ test('OIDC code/PKCE over real HTTP: setup gate, one-use hashed flows, JIT isola
   const me = await (await f.request('/auth/me', { cookie: session })).json() as { id: string; isAdmin: boolean; email: string }
   assert.equal(me.email, 'sso@example.test'); assert.equal(me.isAdmin, false)
   assert.deepEqual(await (await f.request('/workspaces', { cookie: session })).json(), [])
-  assert.equal((f.db.prepare('SELECT passwordHash FROM users WHERE id=?').get(me.id) as { passwordHash: unknown }).passwordHash, null)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM oidc_flows').get() as { count: number }).count, 0)
+  assert.equal((await f.db.get<{ passwordHash: unknown }>('SELECT passwordHash FROM users WHERE id=?', me.id))?.passwordHash, null)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM oidc_flows'))?.count, 0)
   assert.equal((await finish(flow)).status, 401)
   assert.equal(p.state.tokenCalls, 1)
   p.state.claims = { email: 'changed-unverified@example.test', email_verified: false }
@@ -124,13 +125,13 @@ test('OIDC code/PKCE over real HTTP: setup gate, one-use hashed flows, JIT isola
   assert.equal(response.status, 302)
   session = responseCookie(response)
   assert.equal((await (await f.request('/auth/me', { cookie: session })).json() as { id: string }).id, me.id)
-  assert.equal((f.db.prepare('SELECT email FROM users WHERE id=?').get(me.id) as { email: string }).email, 'sso@example.test')
+  assert.equal((await f.db.get<{ email: string }>('SELECT email FROM users WHERE id=?', me.id))?.email, 'sso@example.test')
   flow = await begin(f)
   const badState = new URL(flow.callback); badState.searchParams.set('state', 'wrong')
   assert.equal((await finish({ ...flow, callback: badState.href })).status, 401)
   assert.equal((await finish(flow)).status, 401)
   flow = await begin(f)
-  f.db.prepare('UPDATE oidc_flows SET expiresAt=?').run('2000-01-01T00:00:00.000Z')
+  await f.db.run('UPDATE oidc_flows SET expiresAt=?', '2000-01-01T00:00:00.000Z')
   assert.equal((await finish(flow)).status, 401)
   flow = await begin(f)
   assert.equal((await finish({ ...flow, cookie: '' })).status, 401)
@@ -147,21 +148,21 @@ test('OIDC code/PKCE over real HTTP: setup gate, one-use hashed flows, JIT isola
   assert.equal((await finish(restarted)).status, 302)
   p.state.claims = { sub: 'new-without-admin', email: 'new@example.test' }
   flow = await begin(f)
-  p.state.onToken = () => { f.db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(admin.id) }
+  p.state.onToken = async () => { await f.db.run('UPDATE users SET disabled=1 WHERE id=?', admin.id) }
   assert.equal((await finish(flow)).status, 503)
-  assert.equal(f.db.prepare('SELECT id FROM users WHERE email=?').get('new@example.test'), undefined)
-  const audit = JSON.stringify(f.db.prepare('SELECT * FROM audit_logs').all())
+  assert.equal(await f.db.get('SELECT id FROM users WHERE email=?', 'new@example.test'), undefined)
+  const audit = JSON.stringify(await f.db.all('SELECT * FROM audit_logs'))
   for (const secret of ['mock-idp-secret', 'mock-private-access-token', stored.codeVerifier, stored.nonce, 'provider-subject']) {
     assert.equal(audit.includes(secret), false)
     assert.equal(f.output().includes(secret), false)
   }
-  assert.deepEqual(f.db.pragma('foreign_key_check'), [])
+  assert.deepEqual(await f.db.all('PRAGMA foreign_key_check'), [])
 })
 
 test('OIDC rejects invalid signed claims, email collisions and unverified JIT emails', { timeout: 60000 }, async (t) => {
   const p = await provider(t)
   const f = await integrationServer(t, p.env)
-  f.user(true, 'local@example.test')
+  await f.user(true, 'local@example.test')
   for (const claims of [{ nonce: 'wrong-nonce' }, { aud: 'wrong-client' }, { iss: 'https://wrong-issuer.test' }, { exp: 1 }, { sub: '' }]) {
     p.state.claims = claims
     const response = await finish(await begin(f))
@@ -177,15 +178,15 @@ test('OIDC rejects invalid signed claims, email collisions and unverified JIT em
   assert.equal((await finish(await begin(f))).status, 409)
   p.state.claims = { email_verified: 'true' }
   assert.equal((await finish(await begin(f))).status, 403)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM users').get() as { count: number }).count, 1)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM sessions').get() as { count: number }).count, 0)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM oidc_identities').get() as { count: number }).count, 0)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM users'))?.count, 1)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM sessions'))?.count, 0)
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM oidc_identities'))?.count, 0)
 })
 
 test('closed OIDC provisioning requires explicit admin issuer/subject linking and rechecks disabled users', { timeout: 60000 }, async (t) => {
   const p = await provider(t)
   const f = await integrationServer(t, { ...p.env, OIDC_AUTO_PROVISION: 'false' })
-  const admin = f.user(true); const target = f.user()
+  const admin = await f.user(true); const target = await f.user()
   assert.equal((await finish(await begin(f))).status, 403)
   const body = { userId: target.id, issuer: p.issuer, subject: 'provider-subject' }
   const link = (token: string, value: unknown = body, origin?: string) => f.request('/admin/oidc-identities', { method: 'POST', token, body: value, origin })
@@ -205,12 +206,12 @@ test('closed OIDC provisioning requires explicit admin issuer/subject linking an
   const cookie = responseCookie(response)
   assert.equal((await (await f.request('/auth/me', { cookie })).json() as { id: string }).id, target.id)
   const flow = await begin(f)
-  p.state.onToken = () => { f.db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(target.id) }
+  p.state.onToken = async () => { await f.db.run('UPDATE users SET disabled=1 WHERE id=?', target.id) }
   assert.equal((await finish(flow)).status, 403)
   assert.equal((await f.request('/auth/me', { cookie })).status, 401)
   assert.equal((await link(admin.token, { ...body, subject: 'another' })).status, 404)
-  assert.equal((f.db.prepare('SELECT count(*) AS count FROM users').get() as { count: number }).count, 2)
-  const audit = JSON.stringify(f.db.prepare("SELECT * FROM audit_logs WHERE action='admin.oidc.link'").all())
+  assert.equal((await f.db.get<{ count: number }>('SELECT count(*) AS count FROM users'))?.count, 2)
+  const audit = JSON.stringify(await f.db.all("SELECT * FROM audit_logs WHERE action='admin.oidc.link'"))
   assert.equal(audit.includes('provider-subject'), false)
   assert.equal(audit.includes(target.id), true)
 })
@@ -219,7 +220,7 @@ test('OIDC HTTP requires explicit loopback test opt-in and remains forbidden in 
   const p = await provider(t)
   for (const env of [{ ...p.env, OIDC_ALLOW_INSECURE_HTTP: 'false' }, { ...p.env, NODE_ENV: 'production' }, { ...p.env, OIDC_ISSUER: 'http://insecure.example' }]) {
     const f = await integrationServer(t, env)
-    f.user(true)
+    await f.user(true)
     const response = await f.request('/auth/sso')
     assert.equal(response.status, 503)
     assert.deepEqual(await response.json(), { error: 'SSO provider unavailable' })

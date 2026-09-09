@@ -75,7 +75,7 @@ export function test(name: string, optionsOrCallback: TestCallback | { timeout?:
       await runCleanups((context as TestContext & { cleanups: Cleanup[] }).cleanups)
     }
   })
-  if (typeof optionsOrCallback !== 'function' && optionsOrCallback.timeout) registered.timeout(optionsOrCallback.timeout)
+  registered.timeout(typeof optionsOrCallback !== 'function' && optionsOrCallback.timeout ? optionsOrCallback.timeout : 10000)
   return registered
 }
 

@@ -9,11 +9,11 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { integrationServer } from './storage-sso-fixture.js'
 
 test('agent provider adapters, bounded untrusted output and workspace authorization', { timeout: 60000 }, async (t) => {
-  let mode = 'valid'; let payload: Record<string, any> = {}; let calls = 0; let onRequest = () => {}
+  let mode = 'valid'; let payload: Record<string, any> = {}; let calls = 0; let onRequest = async () => {}
   let selectedList = ''; const requests: { path: string; headers: Record<string, unknown>; body: any }[] = []
   const mock = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk
-    calls++; requests.push({ path: req.url!, headers: req.headers, body: JSON.parse(raw) }); onRequest()
+    calls++; requests.push({ path: req.url!, headers: req.headers, body: JSON.parse(raw) }); await onRequest()
     const answer = JSON.stringify(mode === 'foreign-list' ? { reply: 'Try this', proposal: { title: 'Bad reference', nodeId: '00000000-0000-4000-8000-000000000000' } }
       : { reply: 'Review this suggestion. No changes were made.', proposal: { title: 'Proposed task', nodeId: selectedList, dueDate: '2026-09-20', priority: 'high' } })
     if (mode === 'error') { res.writeHead(500); res.end('SECRET-provider-error'); return }
@@ -29,11 +29,11 @@ test('agent provider adapters, bounded untrusted output and workspace authorizat
   const providerUrl = `http://127.0.0.1:${(mock.address() as { port: number }).port}/v1`
   for (const provider of ['openai-compatible', 'openai', 'anthropic', 'google']) {
     await t.test(provider, async (t) => {
-      mode = 'valid'; onRequest = () => {}
+      mode = 'valid'; onRequest = async () => {}
       const api = await integrationServer(t, { AI_PROVIDER: provider, AI_BASE_URL: providerUrl, AI_MODEL: 'test-model', AI_API_KEY: 'SECRET-api-key', AI_MAX_OUTPUT_TOKENS: '4096' })
-      const admin = api.user(true); const stranger = api.user()
+      const admin = await api.user(true); const stranger = await api.user()
       const task = await api.item(admin.token)
-      selectedList = (api.db.prepare('SELECT nodeId FROM items WHERE id=?').get(task.id) as { nodeId: string }).nodeId
+      selectedList = (await api.db.get<{ nodeId: string }>('SELECT nodeId FROM items WHERE id=?', task.id))!.nodeId
       const endpoint = `/workspaces/${task.wid}/agent`
       const ask = () => api.request(endpoint, { method: 'POST', token: admin.token, body: { message: 'PRIVATE-prompt: propose a task' } })
       const count = calls
@@ -43,7 +43,7 @@ test('agent provider adapters, bounded untrusted output and workspace authorizat
       assert.equal(result.status, 200, await result.clone().text())
       const answer = await result.json() as any
       assert.equal(answer.proposal.nodeId, selectedList)
-      assert.equal((api.db.prepare('SELECT count(*) AS n FROM items').get() as any).n, 1, 'An AI answer cannot mutate tasks')
+      assert.equal((await api.db.get<{ n: number }>('SELECT count(*) AS n FROM items'))!.n, 1, 'An AI answer cannot mutate tasks')
       const outbound = requests.at(-1)!
       assert.equal(outbound.path.includes('SECRET'), false)
       assert.equal(JSON.stringify(outbound.body).includes(admin.email), false)
@@ -60,7 +60,7 @@ test('agent provider adapters, bounded untrusted output and workspace authorizat
         assert.equal(Object.hasOwn(outbound.body, 'max_completion_tokens'), false)
         assert.equal(Object.hasOwn(outbound.body, 'store'), false)
       }
-      const audits = JSON.stringify(api.db.prepare('SELECT * FROM audit_logs').all())
+      const audits = JSON.stringify(await api.db.all('SELECT * FROM audit_logs'))
       for (const secret of ['PRIVATE-prompt', 'SECRET-api-key', admin.token]) assert.equal(audits.includes(secret), false)
       if (provider === 'openai-compatible') {
         for (mode of ['foreign-list', 'error', 'redirect', 'malformed', 'huge']) {
@@ -69,16 +69,16 @@ test('agent provider adapters, bounded untrusted output and workspace authorizat
           assert.equal((await rejected.text()).includes('SECRET'), false)
         }
         mode = 'valid'
-        onRequest = () => { api.db.prepare('DELETE FROM memberships WHERE workspaceId=? AND userId=?').run(task.wid, admin.id) }
+        onRequest = async () => { await api.db.run('DELETE FROM memberships WHERE workspaceId=? AND userId=?', task.wid, admin.id) }
         const revoked = await ask()
         assert.equal(revoked.status, 403)
-        assert.equal((api.db.prepare('SELECT count(*) AS n FROM items').get() as any).n, 1)
+        assert.equal((await api.db.get<{ n: number }>('SELECT count(*) AS n FROM items'))!.n, 1)
       }
     })
   }
   await t.test('invalid operator token budget fails before any provider call', async (t) => {
     const api = await integrationServer(t, { AI_PROVIDER: 'openai', AI_BASE_URL: providerUrl, AI_MODEL: 'test-model', AI_API_KEY: 'SECRET-api-key', AI_MAX_OUTPUT_TOKENS: '32769' })
-    const user = api.user(true)
+    const user = await api.user(true)
     const task = await api.item(user.token)
     const count = calls
     const result = await api.request(`/workspaces/${task.wid}/agent`, { method: 'POST', token: user.token, body: { message: 'Budget validation' } })
@@ -89,9 +89,9 @@ test('agent provider adapters, bounded untrusted output and workspace authorizat
 
 test('official MCP client negotiates stdio; read-only default, opt-in mutations and token revocation', { timeout: 45000 }, async (t) => {
   const api = await integrationServer(t)
-  const owner = api.user(true)
+  const owner = await api.user(true)
   const task = await api.item(owner.token)
-  const nodeId = (api.db.prepare('SELECT nodeId FROM items WHERE id=?').get(task.id) as { nodeId: string }).nodeId
+  const nodeId = (await api.db.get<{ nodeId: string }>('SELECT nodeId FROM items WHERE id=?', task.id))!.nodeId
   async function connect(writes: boolean) {
     const client = new Client({ name: 'hopya-test', version: '1.0' })
     const transport = new StdioClientTransport({ command: process.execPath, args: process.env.HOPYA_TEST_BUILD === 'true' ? [fileURLToPath(new URL('../build/bin/mcp.js', import.meta.url))] : ['--import', 'tsx', fileURLToPath(new URL('../bin/mcp.ts', import.meta.url))],
@@ -111,7 +111,7 @@ test('official MCP client negotiates stdio; read-only default, opt-in mutations 
   assert.equal((await writer.listTools()).tools.length, 7)
   const created = await writer.callTool({ name: 'create_item', arguments: { workspaceId: task.wid, nodeId, title: 'Created through MCP', description: '' } })
   assert.equal(created.isError, false, JSON.stringify(created))
-  assert.equal((api.db.prepare('SELECT count(*) AS n FROM items').get() as any).n, 2)
+  assert.equal((await api.db.get<{ n: number }>('SELECT count(*) AS n FROM items'))!.n, 2)
   const firstPage = await readonly.callTool({ name: 'list_items', arguments: { workspaceId: task.wid, limit: 1 } })
   assert.equal(firstPage.isError, false)
   const pageOne = JSON.parse((firstPage.content as { text: string }[])[0].text) as { items: { id: string }[]; nextCursor: string }
@@ -124,14 +124,14 @@ test('official MCP client negotiates stdio; read-only default, opt-in mutations 
   assert.equal(pageTwo.nextCursor, null)
   assert.equal(new Set([...pageOne.items, ...pageTwo.items].map((item) => item.id)).size, 2)
   assert.equal((await readonly.callTool({ name: 'list_items', arguments: { workspaceId: task.wid, limit: 1, cursor: pageOne.nextCursor, search: 'different filter' } })).isError, true)
-  const createdRow = api.db.prepare('SELECT id,updatedAt FROM items WHERE workspaceId=? AND title=?').get(task.wid, 'Created through MCP') as { id: string; updatedAt: string }
+  const createdRow = (await api.db.get<{ id: string; updatedAt: string }>('SELECT id,updatedAt FROM items WHERE workspaceId=? AND title=?', task.wid, 'Created through MCP'))!
   const update = await writer.callTool({ name: 'update_item', arguments: { workspaceId: task.wid, itemId: createdRow.id, status: 'done', expectedUpdatedAt: createdRow.updatedAt } })
   assert.equal(update.isError, false)
-  assert.equal((api.db.prepare('SELECT status FROM items WHERE id=?').get(createdRow.id) as { status: string }).status, 'done')
+  assert.equal((await api.db.get<{ status: string }>('SELECT status FROM items WHERE id=?', createdRow.id))!.status, 'done')
   assert.equal((await writer.callTool({ name: 'update_item', arguments: { workspaceId: task.wid, itemId: createdRow.id, status: 'todo', expectedUpdatedAt: createdRow.updatedAt } })).isError, true)
   assert.equal((await writer.callTool({ name: 'delete_item', arguments: { workspaceId: task.wid, itemId: createdRow.id } })).isError, false)
-  assert.equal(api.db.prepare('SELECT id FROM items WHERE id=?').get(createdRow.id), undefined)
-  const project = api.db.prepare("SELECT id FROM nodes WHERE workspaceId=? AND kind='project'").get(task.wid) as { id: string }
+  assert.equal(await api.db.get('SELECT id FROM items WHERE id=?', createdRow.id), undefined)
+  const project = (await api.db.get<{ id: string }>("SELECT id FROM nodes WHERE workspaceId=? AND kind='project'", task.wid))!
   const config = await api.request(`/workspaces/${task.wid}/projects/${project.id}/fields`, { token: owner.token })
   const configuration = await config.json() as { statuses: unknown[] }
   const statuses = [...configuration.statuses, { id: 'custom-ready', name: 'Custom ready', color: '#123456', completed: false }]
@@ -146,16 +146,16 @@ test('official MCP client negotiates stdio; read-only default, opt-in mutations 
   const customItem = JSON.parse((filtered.content as { text: string }[])[0].text).items[0]
   assert.equal(customItem.status, 'custom-ready')
   assert.deepEqual(customItem.customFields[checklistField.id], ['Two'])
-  api.db.prepare('DELETE FROM tokens WHERE userId=?').run(owner.id)
+  await api.db.run('DELETE FROM tokens WHERE userId=?', owner.id)
   assert.equal((await writer.callTool({ name: 'get_item', arguments: { workspaceId: task.wid, itemId: task.id } })).isError, true)
   assert.equal((await readonly.callTool({ name: 'list_items', arguments: { workspaceId: task.wid, cursor: pageOne.nextCursor } })).isError, true)
 })
 
 test('MCP SSE is admin-controlled, bearer-only and workspace-scoped', { timeout: 30000 }, async (t) => {
   const api = await integrationServer(t)
-  const admin = api.user(true)
-  const member = api.user()
-  const outsider = api.user()
+  const admin = await api.user(true)
+  const member = await api.user()
+  const outsider = await api.user()
   const task = await api.item(member.token)
   assert.equal((await fetch(`${api.base}/api/v1/mcp/sse`, { headers: { authorization: `Bearer ${member.token}` } })).status, 404)
   assert.equal((await api.request('/site/settings', { method: 'PATCH', token: member.token, body: { mcpSseEnabled: true } })).status, 403)
@@ -172,7 +172,7 @@ test('MCP SSE is admin-controlled, bearer-only and workspace-scoped', { timeout:
   const foreign = await client.callTool({ name: 'list_items', arguments: { workspaceId: (await api.item(outsider.token)).wid } })
   assert.equal(foreign.isError, true)
 
-  api.db.prepare('DELETE FROM tokens WHERE userId=?').run(member.id)
+  await api.db.run('DELETE FROM tokens WHERE userId=?', member.id)
   await assert.rejects(() => client.callTool({ name: 'get_item', arguments: { workspaceId: task.wid, itemId: task.id } }))
   const disabled = await api.request('/site/settings', { method: 'PATCH', token: admin.token, body: { mcpSseEnabled: false } })
   assert.equal(disabled.status, 200)

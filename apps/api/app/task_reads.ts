@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import type Database from 'better-sqlite3'
 import { z } from 'zod'
+import type { DatabaseApi } from './database.js'
 import { HttpError, type Item } from './types.js'
 
 export const PAGE_BYTES = 2 * 1024 * 1024
@@ -26,12 +26,12 @@ export const pageFilters = itemFilters.extend({
   cursor: z.string().min(1).max(1024).optional(),
 })
 
-export function itemQuery(database: Database.Database, wid: string, filters: unknown): { where: string; values: string[]; scope: string; index: string } {
+export async function itemQuery(database: DatabaseApi, wid: string, filters: unknown): Promise<{ where: string; values: string[]; scope: string; index: string }> {
   const query = itemFilters.parse(filters)
   const clauses = ['workspaceId=?']
   const values: string[] = [wid]
   if (query.nodeId) {
-    if (!database.prepare('SELECT id FROM nodes WHERE workspaceId=? AND id=?').get(wid, query.nodeId)) throw new HttpError(404, 'Node not found')
+    if (!await database.get('SELECT id FROM nodes WHERE workspaceId=? AND id=?', wid, query.nodeId)) throw new HttpError(404, 'Node not found')
     clauses.push('nodeId=?'); values.push(query.nodeId)
   }
   if (query.status) { clauses.push('status=?'); values.push(query.status) }

@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { get, type IncomingMessage } from 'node:http'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import Database from 'better-sqlite3'
+import { openTestDatabase } from './helpers/database.js'
+import { runMigrations } from './helpers/migrate.js'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 test('real HTTP bounded bulk streams, snapshots and live authorization', { timeout: 120000 }, async (t) => {
@@ -21,21 +22,23 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   const base = `http://127.0.0.1:${port}`
   const origin = 'http://localhost:4321'
   const compiled = process.env.HOPYA_TEST_BUILD === 'true'
+  const environment = { ...process.env, DATA_DIR: directory, API_PORT: String(port), HOST: '127.0.0.1', APP_URL: origin,
+    NODE_ENV: compiled ? 'production' : 'test', APP_KEY: 'stream-test-key-not-for-deployment-123456789', SETUP_TOKEN: 'stream-test-setup-secret',
+    REGISTRATION_ENABLED: 'false', AI_PROVIDER: '', OIDC_ISSUER: '', STORAGE_DRIVER: 'filesystem', LOG_LEVEL: 'fatal' }
+  runMigrations(environment)
   const child = spawn(process.execPath, compiled ? ['build/bin/server.js'] : ['--import', 'tsx', 'bin/server.ts'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)),
-    env: { ...process.env, DATA_DIR: directory, API_PORT: String(port), HOST: '127.0.0.1', APP_URL: origin,
-      NODE_ENV: compiled ? 'production' : 'test', APP_KEY: 'stream-test-key-not-for-deployment-123456789', SETUP_TOKEN: 'stream-test-setup-secret',
-      REGISTRATION_ENABLED: 'false', AI_PROVIDER: '', OIDC_ISSUER: '', STORAGE_DRIVER: 'filesystem', LOG_LEVEL: 'fatal' },
+    env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
   child.stdout.on('data', (chunk) => { output = (output + chunk).slice(-20000) })
   child.stderr.on('data', (chunk) => { output = (output + chunk).slice(-20000) })
-  let database: Database.Database | undefined
+  let database: ReturnType<typeof openTestDatabase> | undefined
   const opened = new Set<IncomingMessage>()
   t.after(async () => {
     for (const response of opened) response.destroy()
-    database?.close()
+    await database?.close()
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit'); child.kill('SIGTERM')
       const timer = setTimeout(() => child.kill('SIGKILL'), 3000)
@@ -50,9 +53,7 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     await sleep(100)
   }
   assert.ok(ready, output)
-  database = new Database(join(directory, 'hopya.sqlite'))
-  database.pragma('foreign_keys = ON')
-  database.pragma('busy_timeout = 1000')
+  database = openTestDatabase(join(directory, 'hopya.sqlite'))
   let cookie = ''
   async function api(path: string, method = 'GET', body?: unknown, token?: string) {
     return fetch(`${base}/api/v1${path}`, { method, headers: { origin, 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : { cookie }) }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -71,24 +72,23 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   const ids: string[] = []
   // The large body is allocated in the test parent, not an API fixture route.
   const description = 'Private body %_\\ '.repeat(3000).slice(0, 50000)
-  database.transaction(() => {
+  await database.transaction(async (db) => {
     for (let n = 0; n < 5; n++) {
       const id = randomUUID(); const roleId = randomUUID(); const tokenId = randomUUID(); const token = randomBytes(32).toString('base64url')
-      database!.prepare('INSERT INTO users(id,name,email,passwordHash,createdAt) VALUES (?,?,?,?,?)').run(id, `Reader ${n}`, `${id}@example.test`, 'private-password-hash-marker', timestamp)
-      database!.prepare('INSERT INTO roles(id,workspaceId,name,permissions) VALUES (?,?,?,?)').run(roleId, wid, `Reader ${n}`, '["items:read"]')
-      database!.prepare('INSERT INTO memberships(workspaceId,userId,roleId) VALUES (?,?,?)').run(wid, id, roleId)
-      database!.prepare('INSERT INTO tokens(id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)').run(tokenId, id, 'Private token', createHash('sha256').update(token).digest('hex'), '2099-01-01T00:00:00.000Z', timestamp)
+      await db.run('INSERT INTO users(id,name,email,passwordHash,createdAt) VALUES (?,?,?,?,?)', id, `Reader ${n}`, `${id}@example.test`, 'private-password-hash-marker', timestamp)
+      await db.run('INSERT INTO roles(id,workspaceId,name,permissions) VALUES (?,?,?,?)', roleId, wid, `Reader ${n}`, '["items:read"]')
+      await db.run('INSERT INTO memberships(workspaceId,userId,roleId) VALUES (?,?,?)', wid, id, roleId)
+      await db.run('INSERT INTO tokens(id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)', tokenId, id, 'Private token', createHash('sha256').update(token).digest('hex'), '2099-01-01T00:00:00.000Z', timestamp)
       users.push({ id, token, tokenId, roleId })
     }
-    const insert = database!.prepare('INSERT INTO items(id,workspaceId,nodeId,title,description,status,priority,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)')
     for (let n = 0; n < 800; n++) {
       const id = randomUUID(); ids.push(id)
-      insert.run(id, wid, list.id, `Item ${n}`, description, n === 0 ? 'done' : 'todo', 'none', new Date(Date.parse(timestamp) + n).toISOString(), timestamp)
+      await db.run('INSERT INTO items(id,workspaceId,nodeId,title,description,status,priority,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)', id, wid, list.id, `Item ${n}`, description, n === 0 ? 'done' : 'todo', 'none', new Date(Date.parse(timestamp) + n).toISOString(), timestamp)
     }
-    database!.prepare('INSERT INTO fields(id,workspaceId,name,type,options) VALUES (?,?,?,?,?)').run(randomUUID(), wid, 'Color', 'select', '["Red","Blue"]')
-    database!.prepare('INSERT INTO storage_objects(objectKey,driver,location,createdAt) VALUES (?,?,?,?)').run('private-storage-key-marker', 'filesystem', 'private-location-marker', timestamp)
-    database!.prepare('INSERT INTO attachments(id,workspaceId,itemId,objectKey,name,contentType,size,createdBy,createdAt) VALUES (?,?,?,?,?,?,?,?,?)').run(randomUUID(), wid, ids[0], 'private-storage-key-marker', 'note.txt', 'text/plain', 12, admin.id, timestamp)
-  })()
+    await db.run('INSERT INTO fields(id,workspaceId,name,type,options) VALUES (?,?,?,?,?)', randomUUID(), wid, 'Color', 'select', '["Red","Blue"]')
+    await db.run('INSERT INTO storage_objects(objectKey,driver,location,createdAt) VALUES (?,?,?,?)', 'private-storage-key-marker', 'filesystem', 'private-location-marker', timestamp)
+    await db.run('INSERT INTO attachments(id,workspaceId,itemId,objectKey,name,contentType,size,createdBy,createdAt) VALUES (?,?,?,?,?,?,?,?,?)', randomUUID(), wid, ids[0], 'private-storage-key-marker', 'note.txt', 'text/plain', 12, admin.id, timestamp)
+  })
   const path = `/workspaces/${wid}/items`
   async function paused(suffix = path, token = users[0].token, useCookie = false): Promise<IncomingMessage> {
     return new Promise((resolve, reject) => {
@@ -118,8 +118,8 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     assert.equal((await api(`/workspaces/${wid}`, 'PATCH', { name: 'Changed workspace' })).status, 200)
     assert.equal((await api(`/workspaces/${wid}/nodes/${list.id}`, 'PATCH', { name: 'Changed list' })).status, 200)
     assert.ok(Date.now() - start < 2500, 'snapshot must not busy the writer')
-    database!.prepare('DELETE FROM attachments WHERE workspaceId=?').run(wid)
-    database!.prepare('DELETE FROM fields WHERE workspaceId=?').run(wid)
+    await database!.run('DELETE FROM attachments WHERE workspaceId=?', wid)
+    await database!.run('DELETE FROM fields WHERE workspaceId=?', wid)
     const body = await text(response)
     for (const secret of ['passwordHash', 'tokenHash', 'private-password-hash-marker', 'private-storage-key-marker', 'private-location-marker', ...users.map((user) => user.token)]) assert.equal(body.includes(secret), false)
     const data = JSON.parse(body)
@@ -153,8 +153,8 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     await sleep(150)
     const replacement = await paused(); assert.equal(replacement.statusCode, 200); replacement.destroy()
     await sleep(100)
-    const checkpoint = database!.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[]
-    assert.equal(checkpoint[0].busy, 0)
+    const checkpoint = await database!.get<{ busy: number }>('PRAGMA wal_checkpoint(TRUNCATE)')
+    assert.equal(checkpoint?.busy, 0)
   })
 
   await t.test('role, token, disabled user, removed membership and logout terminate in-flight JSON rather than completing it', async () => {
@@ -167,10 +167,10 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
       if (kind === 'membership') assert.equal((await api(`/workspaces/${wid}/members/${users[0].id}`, 'DELETE')).status, 200)
       if (kind === 'logout') assert.equal((await api('/auth/logout', 'POST')).status, 200)
       await truncated(response)
-      if (kind === 'role') database!.prepare('UPDATE roles SET permissions=? WHERE id=?').run('["items:read"]', users[0].roleId)
-      if (kind === 'membership') database!.prepare('INSERT INTO memberships(workspaceId,userId,roleId) VALUES (?,?,?)').run(wid, users[0].id, users[0].roleId)
-      if (kind === 'disabled') database!.prepare('UPDATE users SET disabled=0 WHERE id=?').run(users[0].id)
-      if (kind === 'disabled' || kind === 'token') database!.prepare('INSERT INTO tokens(id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)').run(users[0].tokenId, users[0].id, 'Restored test token', createHash('sha256').update(users[0].token).digest('hex'), '2099-01-01T00:00:00.000Z', timestamp)
+      if (kind === 'role') await database!.run('UPDATE roles SET permissions=? WHERE id=?', '["items:read"]', users[0].roleId)
+      if (kind === 'membership') await database!.run('INSERT INTO memberships(workspaceId,userId,roleId) VALUES (?,?,?)', wid, users[0].id, users[0].roleId)
+      if (kind === 'disabled') await database!.run('UPDATE users SET disabled=0 WHERE id=?', users[0].id)
+      if (kind === 'disabled' || kind === 'token') await database!.run('INSERT INTO tokens(id,userId,name,tokenHash,expiresAt,createdAt) VALUES (?,?,?,?,?,?)', users[0].tokenId, users[0].id, 'Restored test token', createHash('sha256').update(users[0].token).digest('hex'), '2099-01-01T00:00:00.000Z', timestamp)
       if (kind === 'logout') {
         const login = await api('/auth/login', 'POST', { email: 'admin@streams.example.test', password: 'stream-test-long-password' })
         assert.equal(login.status, 200); cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ')
@@ -182,7 +182,7 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     const response = await paused()
     assert.equal(response.statusCode, 200)
     await sleep(31_000)
-    assert.equal((database!.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[])[0].busy, 0)
+    assert.equal((await database!.get<{ busy: number }>('PRAGMA wal_checkpoint(TRUNCATE)'))?.busy, 0)
     await truncated(response)
     const replacement = await paused(); assert.equal(replacement.statusCode, 200); replacement.destroy()
     await sleep(100)
@@ -210,32 +210,42 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   })
 
   await t.test('oversized/corrupt stored rows fail safely before or after response headers', async () => {
-    database!.prepare('UPDATE items SET description=? WHERE id=?').run('x'.repeat(8 * 1024 * 1024), ids[0])
-    const response = await paused(path + '?status=done')
-    assert.equal(response.statusCode, 500)
-    assert.deepEqual(JSON.parse(await text(response)), { error: 'Bulk read failed' })
-    database!.prepare('UPDATE items SET description=?,tags=? WHERE id=?').run(description, 'not-json-private-marker', ids[0])
-    const corrupt = await paused(path + '?status=done')
-    assert.equal(corrupt.statusCode, 500)
-    assert.deepEqual(JSON.parse(await text(corrupt)), { error: 'Bulk read failed' })
-    database!.prepare("UPDATE items SET tags='[]' WHERE id=?").run(ids[0])
-    // Later invalid records must abort an already-started JSON response instead.
-    for (const [body, tags] of [['x'.repeat(8 * 1024 * 1024), '[]'], [description, 'not-json-private-marker']]) {
-      database!.prepare('UPDATE items SET description=?,tags=? WHERE id=?').run(body, tags, ids[5])
-      try {
-        const late = await paused(path)
-        assert.equal(late.statusCode, 200)
-        await truncated(late)
-      } finally { database!.prepare("UPDATE items SET description=?,tags='[]' WHERE id=?").run(description, ids[5]) }
+    await database!.run('PRAGMA ignore_check_constraints = ON')
+    try {
+      await database!.run('UPDATE items SET description=? WHERE id=?', 'x'.repeat(8 * 1024 * 1024), ids[0])
+      const response = await paused(path + '?status=done')
+      assert.equal(response.statusCode, 500)
+      assert.deepEqual(JSON.parse(await text(response)), { error: 'Bulk read failed' })
+      await database!.run('UPDATE items SET description=?,tags=? WHERE id=?', description, 'not-json-private-marker', ids[0])
+      const corrupt = await paused(path + '?status=done')
+      assert.equal(corrupt.statusCode, 500)
+      assert.deepEqual(JSON.parse(await text(corrupt)), { error: 'Bulk read failed' })
+      await database!.run("UPDATE items SET tags='[]' WHERE id=?", ids[0])
+      // Later invalid records must abort an already-started JSON response instead.
+      for (const [body, tags] of [['x'.repeat(8 * 1024 * 1024), '[]'], [description, 'not-json-private-marker']]) {
+        await database!.run('UPDATE items SET description=?,tags=? WHERE id=?', body, tags, ids[5])
+        try {
+          const late = await paused(path)
+          assert.equal(late.statusCode, 200)
+          await truncated(late)
+        } finally { await database!.run("UPDATE items SET description=?,tags='[]' WHERE id=?", description, ids[5]) }
+      }
+      assert.equal((await api(path + '?status=done')).status, 200)
+      assert.equal(output.includes('not-json-private-marker'), false)
+    } finally {
+      await database!.run('PRAGMA ignore_check_constraints = OFF')
     }
-    assert.equal((await api(path + '?status=done')).status, 200)
-    assert.equal(output.includes('not-json-private-marker'), false)
   })
 
   await t.test('never-started generators release their connection and admission slot on response finish/close and request abort', async () => {
-    process.env.DATA_DIR = directory
-    const { streamTasks } = await import('../app/task_streams.js')
-    const { db } = await import('../app/database.js')
+    Object.assign(process.env, environment)
+    const root = new URL(compiled ? '../build/' : '../', import.meta.url)
+    const { Ignitor } = await import('./framework.js')
+    const app = new Ignitor(root, {
+      importer: (filePath) => import(filePath.startsWith('.') ? new URL(filePath, root).href : filePath),
+    }).createApp('test')
+    await app.init()
+    await app.boot()
     const { EventEmitter } = await import('node:events')
     const { Readable } = await import('node:stream')
     const streams: InstanceType<typeof Readable>[] = []
@@ -245,16 +255,20 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
       return { params: { wid }, request: { request, header: (name: string) => name === 'authorization' ? `Bearer ${users[0].token}` : undefined, qs: () => ({}), method: () => 'GET' }, response: { response: raw, type() {}, header() {}, stream(value: InstanceType<typeof Readable>) { streams.push(value) } } }
     }
     try {
+      const { streamTasks } = await import(new URL('app/task_streams.js', root).href)
       for (const event of ['finish', 'close', 'aborted']) {
         const a = context(); const b = context()
-        streamTasks(a as any, false); streamTasks(b as any, false)
-        assert.throws(() => streamTasks(context() as any, false), /Too many bulk reads/)
+        await streamTasks(a as any, false); await streamTasks(b as any, false)
+        await assert.rejects(() => streamTasks(context() as any, false), /Too many bulk reads/)
         if (event === 'aborted') { a.request.request.emit(event); b.request.request.emit(event) }
         else { a.response.response.emit(event); b.response.response.emit(event) }
-        assert.equal((database!.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[])[0].busy, 0)
+        assert.equal((await database!.get<{ busy: number }>('PRAGMA wal_checkpoint(TRUNCATE)'))?.busy, 0)
       }
-    } finally { for (const stream of streams) stream.destroy(); db.close() }
+    } finally {
+      for (const stream of streams) stream.destroy()
+      await app.terminate()
+    }
   })
-  assert.equal(database.pragma('integrity_check', { simple: true }), 'ok')
+  assert.equal((await database.get<{ integrity_check: string }>('PRAGMA integrity_check'))?.integrity_check, 'ok')
   assert.ok(detail.roles.some((role: any) => role.isOwner))
 })

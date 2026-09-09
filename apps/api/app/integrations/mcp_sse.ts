@@ -11,18 +11,18 @@ const USER_SESSION_LIMIT = 4
 const SESSION_TTL_MS = 30 * 60 * 1000
 const MESSAGE_LIMIT = 4 * 1024 * 1024
 
-function enabled(): boolean {
-  return db.prepare("SELECT value FROM site_settings WHERE key='mcpSseEnabled'").pluck().get() === '1'
+async function enabled(): Promise<boolean> {
+  return (await db.get<{ value: string }>("SELECT value FROM site_settings WHERE key='mcpSseEnabled'"))?.value === '1'
 }
 
-function bearerUser(ctx: HttpContext) {
+async function bearerUser(ctx: HttpContext) {
   if (!/^Bearer\s+[A-Za-z0-9_-]{32,256}$/i.test(ctx.request.header('authorization') || '')) throw new HttpError(401, 'Bearer token required')
   return authenticate(ctx)
 }
 
-function result(operation: () => unknown, mutation = false): McpResult {
+async function result(operation: () => unknown | Promise<unknown>, mutation = false): Promise<McpResult> {
   try {
-    const value = operation()
+    const value = await operation()
     if (mutation) scheduleFlush()
     const text = JSON.stringify(value ?? null)
     if (Buffer.byteLength(text) > MESSAGE_LIMIT) return { isError: true, content: [{ type: 'text', text: 'Response too large; request a smaller page or use the REST API.' }] }
@@ -34,7 +34,7 @@ function result(operation: () => unknown, mutation = false): McpResult {
 }
 
 function requestFor(userId: string) {
-  return (path: string, method = 'GET', body?: unknown): McpResult => {
+  return async (path: string, method = 'GET', body?: unknown): Promise<McpResult> => {
     if (path === '/workspaces' && method === 'GET') return result(() => service.listWorkspaces(userId))
     const workspace = path.match(/^\/workspaces\/([0-9a-f-]+)$/i)
     if (workspace && method === 'GET') return result(() => service.getWorkspace(userId, workspace[1]))
@@ -64,8 +64,8 @@ export async function closeMcpSseSessions(): Promise<void> {
 
 export function registerMcpSse(router: Router): void {
   router.get('/api/v1/mcp/sse', async (ctx) => {
-    if (!enabled()) throw new HttpError(404, 'Not found')
-    const user = bearerUser(ctx)
+    if (!await enabled()) throw new HttpError(404, 'Not found')
+    const user = await bearerUser(ctx)
     if (sessions.size >= SESSION_LIMIT || [...sessions.values()].filter((session) => session.userId === user.id).length >= USER_SESSION_LIMIT) {
       ctx.response.header('Retry-After', '5')
       throw new HttpError(429, 'Too many MCP sessions')
@@ -85,8 +85,8 @@ export function registerMcpSse(router: Router): void {
   })
 
   router.post('/api/v1/mcp/messages', async (ctx) => {
-    if (!enabled()) throw new HttpError(404, 'Not found')
-    const user = bearerUser(ctx)
+    if (!await enabled()) throw new HttpError(404, 'Not found')
+    const user = await bearerUser(ctx)
     const sessionId = ctx.request.qs().sessionId
     if (typeof sessionId !== 'string' || sessionId.length > 64) throw new HttpError(400, 'Invalid MCP session')
     const session = sessions.get(sessionId)

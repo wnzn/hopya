@@ -228,14 +228,14 @@ const deliveryTimeout = <A>(effect: Effect.Effect<A, DeliveryFail>): Effect.Effe
     onTimeout: () => new DeliveryError('Delivery timed out'),
   })
 
-interface WebhookRow { id: string; workspaceId: string; name: string; url: string; events: string; enabled: number; secret: string; createdAt: string; updatedAt: string }
-interface AutomationRow { id: string; workspaceId: string; name: string; event: string; config: string; version: number; enabled: number; createdAt: string; updatedAt: string }
-interface StepRow { id: string; workspaceId: string; automationId: string; version: number; position: number; type: ProviderType; config: string; createdAt: string }
-interface RunRow { id: string; workspaceId: string; automationId: string | null; targetType: 'automation' | 'webhook'; targetId: string; automationVersion: number | null; status: string; event: string; detail: string; createdAt: string; startedAt: string | null; completedAt: string | null }
-interface StepRunRow { id: string; runId: string; stepId: string; position: number; type: ProviderType; status: string; output: string; log: string; startedAt: string | null; completedAt: string | null }
+interface WebhookRow extends Record<string, unknown> { id: string; workspaceId: string; name: string; url: string; events: string; enabled: number; secret: string; createdAt: string; updatedAt: string }
+interface AutomationRow extends Record<string, unknown> { id: string; workspaceId: string; name: string; event: string; config: string; version: number; enabled: number; createdAt: string; updatedAt: string }
+interface StepRow extends Record<string, unknown> { id: string; workspaceId: string; automationId: string; version: number; position: number; type: ProviderType; config: string; createdAt: string }
+interface RunRow extends Record<string, unknown> { id: string; workspaceId: string; automationId: string | null; targetType: 'automation' | 'webhook'; targetId: string; automationVersion: number | null; status: string; event: string; detail: string; createdAt: string; startedAt: string | null; completedAt: string | null }
+interface StepRunRow extends Record<string, unknown> { id: string; runId: string; stepId: string; position: number; type: ProviderType; status: string; output: string; log: string; startedAt: string | null; completedAt: string | null }
 const decodeWebhook = (row: WebhookRow) => ({ id: row.id, name: row.name, url: row.url, events: JSON.parse(row.events) as EventName[], enabled: Boolean(row.enabled), createdAt: row.createdAt, updatedAt: row.updatedAt })
-const decodeAutomation = ({ config, ...row }: AutomationRow) => {
-  const steps = (db.prepare('SELECT type,config FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position').all(row.workspaceId, row.id, row.version) as Pick<StepRow, 'type' | 'config'>[])
+const decodeAutomation = async ({ config, ...row }: AutomationRow) => {
+  const steps = (await db.all<Pick<StepRow, 'type' | 'config'>>('SELECT type,config FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', row.workspaceId, row.id, row.version))
     .map((step) => ({ type: step.type, config: JSON.parse(step.config) as unknown }))
   return { ...row, enabled: Boolean(row.enabled), steps, ...(steps.length === 1 ? { action: steps[0] } : {}) }
 }
@@ -247,38 +247,38 @@ function eventJson(payload: EventPayload): string {
   return encoded
 }
 
-function insertRun(workspaceId: string, targetType: 'automation' | 'webhook', targetId: string, version: number | null, event: string): string {
+async function insertRun(workspaceId: string, targetType: 'automation' | 'webhook', targetId: string, version: number | null, event: string): Promise<string> {
   const id = randomUUID()
   const automationId = targetType === 'automation' ? targetId : null
   const createdAt = new Date().toISOString()
-  db.prepare(`INSERT INTO automation_runs
+  await db.run(`INSERT INTO automation_runs
     (id,workspaceId,automationId,targetType,targetId,automationVersion,status,event,detail,createdAt)
-    VALUES (?,?,?,?,?,?,'pending',?,'',?)`).run(id, workspaceId, automationId, targetType, targetId, version, event, createdAt)
+    VALUES (?,?,?,?,?,?,'pending',?,'',?)`, id, workspaceId, automationId, targetType, targetId, version, event, createdAt)
   if (targetType === 'automation') {
-    const steps = db.prepare('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position').all(workspaceId, targetId, version) as StepRow[]
-    for (const step of steps) db.prepare(`INSERT INTO automation_step_runs
-      (id,workspaceId,runId,stepId,position,type,status) VALUES (?,?,?,?,?,?,'pending')`)
-      .run(randomUUID(), workspaceId, id, step.id, step.position, step.type)
+    const steps = await db.all<StepRow>('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', workspaceId, targetId, version)
+    for (const step of steps) await db.run(`INSERT INTO automation_step_runs
+      (id,workspaceId,runId,stepId,position,type,status) VALUES (?,?,?,?,?,?,'pending')`,
+    randomUUID(), workspaceId, id, step.id, step.position, step.type)
   }
   return id
 }
 
-function trimRuns(workspaceId: string): void {
-  db.prepare(`DELETE FROM automation_runs WHERE workspaceId=? AND status IN ('delivered','failed') AND id IN (
-    SELECT id FROM automation_runs WHERE workspaceId=? AND status IN ('delivered','failed') ORDER BY createdAt DESC,id DESC LIMIT -1 OFFSET ?
-  )`).run(workspaceId, workspaceId, RUN_RETENTION)
+async function trimRuns(workspaceId: string): Promise<void> {
+  await db.run(`DELETE FROM automation_runs WHERE workspaceId=? AND status IN ('delivered','failed') AND id NOT IN (
+    SELECT id FROM automation_runs WHERE workspaceId=? AND status IN ('delivered','failed') ORDER BY createdAt DESC,id DESC LIMIT ?
+  )`, workspaceId, workspaceId, RUN_RETENTION)
 }
 
 // Called inside service mutation transactions. Queue rows therefore commit or
 // roll back with the event-producing mutation and survive process restarts.
-export function emitEvent(input: Omit<EventPayload, 'at'>): void {
+export async function emitEvent(input: Omit<EventPayload, 'at'>): Promise<void> {
   const payload = { ...input, at: new Date().toISOString() }
   const encoded = eventJson(payload)
-  const automations = db.prepare('SELECT * FROM automations WHERE workspaceId=? AND event=? AND enabled=1').all(payload.workspaceId, payload.event) as AutomationRow[]
-  for (const automation of automations) insertRun(payload.workspaceId, 'automation', automation.id, automation.version, encoded)
-  const hooks = db.prepare('SELECT * FROM webhooks WHERE workspaceId=? AND enabled=1').all(payload.workspaceId) as WebhookRow[]
-  for (const hook of hooks) if ((JSON.parse(hook.events) as EventName[]).includes(payload.event)) insertRun(payload.workspaceId, 'webhook', hook.id, null, encoded)
-  trimRuns(payload.workspaceId)
+  const automations = await db.all<AutomationRow>('SELECT * FROM automations WHERE workspaceId=? AND event=? AND enabled=1', payload.workspaceId, payload.event)
+  for (const automation of automations) await insertRun(payload.workspaceId, 'automation', automation.id, automation.version, encoded)
+  const hooks = await db.all<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? AND enabled=1', payload.workspaceId)
+  for (const hook of hooks) if ((JSON.parse(hook.events) as EventName[]).includes(payload.event)) await insertRun(payload.workspaceId, 'webhook', hook.id, null, encoded)
+  await trimRuns(payload.workspaceId)
 }
 
 function resolveReferences(value: unknown, outputs: Map<number, string>): unknown {
@@ -288,33 +288,34 @@ function resolveReferences(value: unknown, outputs: Map<number, string>): unknow
   return value
 }
 
-function finishRun(run: RunRow, status: 'delivered' | 'failed', detail: string): void {
-  db.prepare('UPDATE automation_runs SET status=?,detail=?,completedAt=? WHERE workspaceId=? AND id=?')
-    .run(status, sanitize(detail, STEP_LOG_BYTES), new Date().toISOString(), run.workspaceId, run.id)
-  trimRuns(run.workspaceId)
+async function finishRun(run: RunRow, status: 'delivered' | 'failed', detail: string): Promise<void> {
+  await db.run('UPDATE automation_runs SET status=?,detail=?,completedAt=? WHERE workspaceId=? AND id=?',
+    status, sanitize(detail, STEP_LOG_BYTES), new Date().toISOString(), run.workspaceId, run.id)
+  await trimRuns(run.workspaceId)
 }
 
 const processRun = (run: RunRow) => deliverySlots.withPermits(1)(Effect.gen(function* () {
   const payload = JSON.parse(run.event) as EventPayload
   if (run.targetType === 'webhook') {
-    const hook = db.prepare('SELECT * FROM webhooks WHERE workspaceId=? AND id=? AND enabled=1').get(run.workspaceId, run.targetId) as WebhookRow | undefined
-    if (!hook) { finishRun(run, 'failed', 'Webhook is unavailable'); return }
+    const hook = yield* Effect.promise(() => db.get<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? AND id=? AND enabled=1', run.workspaceId, run.targetId))
+    if (!hook) { yield* Effect.promise(() => finishRun(run, 'failed', 'Webhook is unavailable')); return }
     const body = JSON.stringify(payload)
     const result = yield* Effect.either(deliveryTimeout(request(hook.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-hopya-signature': hmac(hook.secret, body) } })))
-    if (result._tag === 'Left') finishRun(run, 'failed', `webhook: ${result.left.message}`)
-    else finishRun(run, 'delivered', `webhook ${result.right.status}`)
+    if (result._tag === 'Left') yield* Effect.promise(() => finishRun(run, 'failed', `webhook: ${result.left.message}`))
+    else yield* Effect.promise(() => finishRun(run, 'delivered', `webhook ${result.right.status}`))
     return
   }
-  const automation = db.prepare('SELECT id FROM automations WHERE workspaceId=? AND id=?').get(run.workspaceId, run.targetId)
-  if (!automation || run.automationVersion === null) { finishRun(run, 'failed', 'Automation is unavailable'); return }
-  const steps = db.prepare('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position').all(run.workspaceId, run.targetId, run.automationVersion) as StepRow[]
-  const existing = new Map((db.prepare('SELECT * FROM automation_step_runs WHERE workspaceId=? AND runId=?').all(run.workspaceId, run.id) as StepRunRow[]).map((step) => [step.position, step]))
+  const automation = yield* Effect.promise(() => db.get('SELECT id FROM automations WHERE workspaceId=? AND id=?', run.workspaceId, run.targetId))
+  if (!automation || run.automationVersion === null) { yield* Effect.promise(() => finishRun(run, 'failed', 'Automation is unavailable')); return }
+  const steps = yield* Effect.promise(() => db.all<StepRow>('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', run.workspaceId, run.targetId, run.automationVersion))
+  const priorRuns = yield* Effect.promise(() => db.all<StepRunRow>('SELECT * FROM automation_step_runs WHERE workspaceId=? AND runId=?', run.workspaceId, run.id))
+  const existing = new Map(priorRuns.map((step) => [step.position, step]))
   const outputs = new Map<number, string>()
   for (const step of steps) {
     const prior = existing.get(step.position)
     if (prior?.status === 'delivered') { outputs.set(step.position, prior.output); continue }
     const startedAt = new Date().toISOString()
-    db.prepare("UPDATE automation_step_runs SET status='running',startedAt=? WHERE workspaceId=? AND runId=? AND position=?").run(startedAt, run.workspaceId, run.id, step.position)
+    yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='running',startedAt=? WHERE workspaceId=? AND runId=? AND position=?", startedAt, run.workspaceId, run.id, step.position))
     const adapter = adapters[step.type] as ActionAdapter<SomeConfig>
     const resolved = resolveReferences(JSON.parse(step.config), outputs)
     const parsed = adapter.config.safeParse(resolved)
@@ -324,17 +325,17 @@ const processRun = (run: RunRow) => deliverySlots.withPermits(1)(Effect.gen(func
     const completedAt = new Date().toISOString()
     if (result._tag === 'Left') {
       const log = sanitize(result.left.message, STEP_LOG_BYTES)
-      db.prepare("UPDATE automation_step_runs SET status='failed',log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?").run(log, completedAt, run.workspaceId, run.id, step.position)
-      db.prepare("UPDATE automation_step_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND position>?").run(completedAt, run.workspaceId, run.id, step.position)
-      finishRun(run, 'failed', `Step ${step.position} failed: ${log}`)
+      yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='failed',log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?", log, completedAt, run.workspaceId, run.id, step.position))
+      yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND position>?", completedAt, run.workspaceId, run.id, step.position))
+      yield* Effect.promise(() => finishRun(run, 'failed', `Step ${step.position} failed: ${log}`))
       return
     }
     const output = sanitize(result.right.output, STEP_OUTPUT_BYTES)
     outputs.set(step.position, output)
-    db.prepare("UPDATE automation_step_runs SET status='delivered',output=?,log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?")
-      .run(output, sanitize(result.right.log, STEP_LOG_BYTES), completedAt, run.workspaceId, run.id, step.position)
+    yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='delivered',output=?,log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?",
+      output, sanitize(result.right.log, STEP_LOG_BYTES), completedAt, run.workspaceId, run.id, step.position))
   }
-  finishRun(run, 'delivered', `${steps.length} step${steps.length === 1 ? '' : 's'} delivered`)
+  yield* Effect.promise(() => finishRun(run, 'delivered', `${steps.length} step${steps.length === 1 ? '' : 's'} delivered`))
 }))
 
 let flushing = false
@@ -343,17 +344,28 @@ export async function flushEvents(): Promise<void> {
   flushing = true
   try {
     const stale = new Date(Date.now() - 60_000).toISOString()
-    db.transaction(() => {
-      db.prepare("UPDATE automation_step_runs SET status='pending',startedAt=NULL WHERE status='running' AND runId IN (SELECT id FROM automation_runs WHERE status='running' AND startedAt<?)").run(stale)
-      db.prepare("UPDATE automation_runs SET status='pending',startedAt=NULL WHERE status='running' AND startedAt<?").run(stale)
-    }).immediate()
+    await db.transaction(async () => {
+      await db.run("UPDATE automation_step_runs SET status='pending',startedAt=NULL WHERE status='running' AND runId IN (SELECT id FROM automation_runs WHERE status='running' AND startedAt<?)", stale)
+      await db.run("UPDATE automation_runs SET status='pending',startedAt=NULL WHERE status='running' AND startedAt<?", stale)
+    })
     while (true) {
-      const batch = db.transaction(() => {
-        const rows = db.prepare("SELECT * FROM automation_runs WHERE status='pending' AND event IS NOT NULL ORDER BY createdAt,id LIMIT 20").all() as RunRow[]
+      const batch = await db.transaction(async () => {
         const now = new Date().toISOString()
-        for (const row of rows) db.prepare("UPDATE automation_runs SET status='running',startedAt=? WHERE id=? AND status='pending'").run(now, row.id)
-        return rows
-      }).immediate()
+        const claimSql = db.sql({
+          pg: `WITH claimable AS (
+            SELECT id FROM automation_runs WHERE status='pending' AND event IS NOT NULL
+            ORDER BY createdAt,id LIMIT 20 FOR UPDATE SKIP LOCKED
+          )
+          UPDATE automation_runs SET status='running',startedAt=?
+          WHERE id IN (SELECT id FROM claimable) AND status='pending' RETURNING *`,
+          sqlite: `UPDATE automation_runs SET status='running',startedAt=?
+          WHERE id IN (
+            SELECT id FROM automation_runs WHERE status='pending' AND event IS NOT NULL ORDER BY createdAt,id LIMIT 20
+          ) AND status='pending' RETURNING *`,
+        })
+        const rows = await db.all<RunRow>(claimSql, now)
+        return rows.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      })
       if (!batch.length) break
       await Effect.runPromise(Effect.all(batch.map(processRun), { concurrency: 'unbounded', discard: true }).pipe(Effect.catchAll(() => Effect.void)))
     }
@@ -364,25 +376,27 @@ export function scheduleFlush(): void {
   void flushEvents().catch(() => {})
 }
 
-function webhookInWorkspace(wid: string, hookId: string): WebhookRow {
-  const row = db.prepare('SELECT * FROM webhooks WHERE workspaceId=? AND id=?').get(wid, hookId) as WebhookRow | undefined
+async function webhookInWorkspace(wid: string, hookId: string): Promise<WebhookRow> {
+  const row = await db.get<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? AND id=?', wid, hookId)
   if (!row) throw new HttpError(404, 'Webhook not found')
   return row
 }
-function automationInWorkspace(wid: string, automationId: string): AutomationRow {
-  const row = db.prepare('SELECT * FROM automations WHERE workspaceId=? AND id=?').get(wid, automationId) as AutomationRow | undefined
+async function automationInWorkspace(wid: string, automationId: string): Promise<AutomationRow> {
+  const row = await db.get<AutomationRow>('SELECT * FROM automations WHERE workspaceId=? AND id=?', wid, automationId)
   if (!row) throw new HttpError(404, 'Automation not found')
   return row
 }
 
-function insertSteps(wid: string, automationId: string, version: number, steps: { type: ProviderType; config: unknown }[], createdAt: string): void {
-  const insert = db.prepare('INSERT INTO automation_steps (id,workspaceId,automationId,version,position,type,config,createdAt) VALUES (?,?,?,?,?,?,?,?)')
-  steps.forEach((step, index) => insert.run(randomUUID(), wid, automationId, version, index + 1, step.type, JSON.stringify(step.config), createdAt))
+async function insertSteps(wid: string, automationId: string, version: number, steps: { type: ProviderType; config: unknown }[], createdAt: string): Promise<void> {
+  for (const [index, step] of steps.entries()) {
+    await db.run('INSERT INTO automation_steps (id,workspaceId,automationId,version,position,type,config,createdAt) VALUES (?,?,?,?,?,?,?,?)',
+      randomUUID(), wid, automationId, version, index + 1, step.type, JSON.stringify(step.config), createdAt)
+  }
 }
 
-function decodeRun(row: RunRow) {
+async function decodeRun(row: RunRow) {
   const steps = row.targetType === 'automation'
-    ? db.prepare('SELECT id,stepId,position,type,status,output,log,startedAt,completedAt FROM automation_step_runs WHERE workspaceId=? AND runId=? ORDER BY position').all(row.workspaceId, row.id) as StepRunRow[]
+    ? await db.all<StepRunRow>('SELECT id,stepId,position,type,status,output,log,startedAt,completedAt FROM automation_step_runs WHERE workspaceId=? AND runId=? ORDER BY position', row.workspaceId, row.id)
     : []
   const { event: _event, ...safe } = row
   return { ...safe, steps }
@@ -391,96 +405,97 @@ function decodeRun(row: RunRow) {
 export function registerAutomations(router: Router): void {
   router.group(() => {
     const user = (ctx: HttpContext) => authenticate(ctx)
-    router.get('/workspaces/:wid/webhooks', (ctx) => {
+    router.get('/workspaces/:wid/webhooks', async (ctx) => {
       const { wid } = ctx.params
-      requirePermission(user(ctx).id, wid, 'workspace:manage')
-      return (db.prepare('SELECT * FROM webhooks WHERE workspaceId=? ORDER BY createdAt,id').all(wid) as WebhookRow[]).map(decodeWebhook)
+      await requirePermission((await user(ctx)).id, wid, 'workspace:manage')
+      return (await db.all<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? ORDER BY createdAt,id', wid)).map(decodeWebhook)
     })
-    router.post('/workspaces/:wid/webhooks', (ctx) => {
+    router.post('/workspaces/:wid/webhooks', async (ctx) => {
       const { wid } = ctx.params
-      const userId = user(ctx).id
+      const userId = (await user(ctx)).id
       const data = webhookSchema.parse(ctx.request.body())
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        if ((db.prepare('SELECT count(*) AS count FROM webhooks WHERE workspaceId=?').get(wid) as { count: number }).count >= 20) throw new HttpError(400, 'Maximum 20 webhooks per workspace')
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        if (((await db.get('SELECT count(*) AS count FROM webhooks WHERE workspaceId=?', wid)) as { count: number }).count >= 20) throw new HttpError(400, 'Maximum 20 webhooks per workspace')
         const secret = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
         const hook = { id: randomUUID(), workspaceId: wid, ...data, secret, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        db.prepare('INSERT INTO webhooks (id,workspaceId,name,url,events,enabled,secret,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)')
-          .run(hook.id, wid, hook.name, hook.url, JSON.stringify(hook.events), Number(hook.enabled), secret, hook.createdAt, hook.updatedAt)
-        audit(userId, wid, 'webhook.create', hook.id, { events: hook.events })
+        await db.run('INSERT INTO webhooks (id,workspaceId,name,url,events,enabled,secret,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)',
+          hook.id, wid, hook.name, hook.url, JSON.stringify(hook.events), Number(hook.enabled), secret, hook.createdAt, hook.updatedAt)
+        await audit(userId, wid, 'webhook.create', hook.id, { events: hook.events })
         return { ...decodeWebhook({ ...hook, events: JSON.stringify(hook.events), enabled: Number(hook.enabled) }), secret }
-      })()
+      })
     })
-    router.patch('/workspaces/:wid/webhooks/:id', (ctx) => {
+    router.patch('/workspaces/:wid/webhooks/:id', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
+      const userId = (await user(ctx)).id
       const data = webhookSchema.partial().parse(ctx.request.body())
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        const previous = webhookInWorkspace(wid, id)
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        const previous = await webhookInWorkspace(wid, id)
         const next = {
           name: data.name ?? previous.name, url: data.url ?? previous.url,
           events: data.events ?? JSON.parse(previous.events), enabled: data.enabled ?? Boolean(previous.enabled),
         }
-        db.prepare('UPDATE webhooks SET name=?,url=?,events=?,enabled=?,updatedAt=? WHERE workspaceId=? AND id=?')
-          .run(next.name, next.url, JSON.stringify(next.events), Number(next.enabled), new Date().toISOString(), wid, id)
-        audit(userId, wid, 'webhook.update', id, { events: next.events })
-        return decodeWebhook(webhookInWorkspace(wid, id))
-      }).immediate()
+        await db.run('UPDATE webhooks SET name=?,url=?,events=?,enabled=?,updatedAt=? WHERE workspaceId=? AND id=?',
+          next.name, next.url, JSON.stringify(next.events), Number(next.enabled), new Date().toISOString(), wid, id)
+        await audit(userId, wid, 'webhook.update', id, { events: next.events })
+        return decodeWebhook(await webhookInWorkspace(wid, id))
+      })
     })
-    router.delete('/workspaces/:wid/webhooks/:id', (ctx) => {
+    router.delete('/workspaces/:wid/webhooks/:id', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        webhookInWorkspace(wid, id)
-        db.prepare("DELETE FROM automation_runs WHERE workspaceId=? AND targetType='webhook' AND targetId=?").run(wid, id)
-        db.prepare('DELETE FROM webhooks WHERE workspaceId=? AND id=?').run(wid, id)
-        audit(userId, wid, 'webhook.delete', id)
+      const userId = (await user(ctx)).id
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        await webhookInWorkspace(wid, id)
+        await db.run("DELETE FROM automation_runs WHERE workspaceId=? AND targetType='webhook' AND targetId=?", wid, id)
+        await db.run('DELETE FROM webhooks WHERE workspaceId=? AND id=?', wid, id)
+        await audit(userId, wid, 'webhook.delete', id)
         return { success: true }
-      })()
+      })
     })
-    router.post('/workspaces/:wid/webhooks/:id/rotate', (ctx) => {
+    router.post('/workspaces/:wid/webhooks/:id/rotate', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        webhookInWorkspace(wid, id)
+      const userId = (await user(ctx)).id
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        await webhookInWorkspace(wid, id)
         const secret = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
-        db.prepare('UPDATE webhooks SET secret=?,updatedAt=? WHERE workspaceId=? AND id=?').run(secret, new Date().toISOString(), wid, id)
-        audit(userId, wid, 'webhook.rotate', id)
+        await db.run('UPDATE webhooks SET secret=?,updatedAt=? WHERE workspaceId=? AND id=?', secret, new Date().toISOString(), wid, id)
+        await audit(userId, wid, 'webhook.rotate', id)
         return { secret }
-      })()
+      })
     })
-    router.get('/workspaces/:wid/automations', (ctx) => {
+    router.get('/workspaces/:wid/automations', async (ctx) => {
       const { wid } = ctx.params
-      requirePermission(user(ctx).id, wid, 'workspace:manage')
-      return (db.prepare('SELECT * FROM automations WHERE workspaceId=? ORDER BY createdAt,id').all(wid) as AutomationRow[]).map((row) => decodeAutomation(row))
+      await requirePermission((await user(ctx)).id, wid, 'workspace:manage')
+      const rows = await db.all<AutomationRow>('SELECT * FROM automations WHERE workspaceId=? ORDER BY createdAt,id', wid)
+      return Promise.all(rows.map(decodeAutomation))
     })
-    router.post('/workspaces/:wid/automations', (ctx) => {
+    router.post('/workspaces/:wid/automations', async (ctx) => {
       const { wid } = ctx.params
-      const userId = user(ctx).id
+      const userId = (await user(ctx)).id
       const data = automationSchema.parse(ctx.request.body())
       const steps = validateSteps(data.steps ?? [data.action!])
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        if ((db.prepare('SELECT count(*) AS count FROM automations WHERE workspaceId=?').get(wid) as { count: number }).count >= 50) throw new HttpError(400, 'Maximum 50 automations per workspace')
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        if (((await db.get('SELECT count(*) AS count FROM automations WHERE workspaceId=?', wid)) as { count: number }).count >= 50) throw new HttpError(400, 'Maximum 50 automations per workspace')
         const first = steps[0]!
         const automation = { id: randomUUID(), workspaceId: wid, name: data.name, event: data.event, version: 1, enabled: data.enabled, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        db.prepare('INSERT INTO automations (id,workspaceId,name,event,config,enabled,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?)')
-          .run(automation.id, wid, automation.name, automation.event, JSON.stringify(first), Number(automation.enabled), automation.createdAt, automation.updatedAt)
-        insertSteps(wid, automation.id, automation.version, steps, automation.createdAt)
-        audit(userId, wid, 'automation.create', automation.id, { event: automation.event, stepCount: steps.length, actionTypes: steps.map((step) => step.type) })
+        await db.run('INSERT INTO automations (id,workspaceId,name,event,config,enabled,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?)',
+          automation.id, wid, automation.name, automation.event, JSON.stringify(first), Number(automation.enabled), automation.createdAt, automation.updatedAt)
+        await insertSteps(wid, automation.id, automation.version, steps, automation.createdAt)
+        await audit(userId, wid, 'automation.create', automation.id, { event: automation.event, stepCount: steps.length, actionTypes: steps.map((step) => step.type) })
         return decodeAutomation({ ...automation, config: JSON.stringify(first), enabled: Number(automation.enabled) })
-      })()
+      })
     })
-    router.patch('/workspaces/:wid/automations/:id', (ctx) => {
+    router.patch('/workspaces/:wid/automations/:id', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
+      const userId = (await user(ctx)).id
       const data = automationPatchSchema.parse(ctx.request.body())
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        const previous = automationInWorkspace(wid, id)
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        const previous = await automationInWorkspace(wid, id)
         const requestedSteps = data.steps ?? (data.action ? [data.action] : undefined)
         const steps = requestedSteps ? validateSteps(requestedSteps) : undefined
         const name = data.name ?? previous.name
@@ -489,54 +504,55 @@ export function registerAutomations(router: Router): void {
         const version = steps ? previous.version + 1 : previous.version
         const timestamp = new Date().toISOString()
         const first = steps?.[0] ?? JSON.parse(previous.config) as { type: ProviderType; config: unknown }
-        db.prepare('UPDATE automations SET name=?,event=?,config=?,version=?,enabled=?,updatedAt=? WHERE workspaceId=? AND id=?')
-          .run(name, event, JSON.stringify(first), version, Number(enabled), timestamp, wid, id)
-        if (steps) insertSteps(wid, id, version, steps, timestamp)
-        audit(userId, wid, 'automation.update', id, { event, version, stepCount: steps?.length })
-        return decodeAutomation(automationInWorkspace(wid, id))
-      }).immediate()
+        await db.run('UPDATE automations SET name=?,event=?,config=?,version=?,enabled=?,updatedAt=? WHERE workspaceId=? AND id=?',
+          name, event, JSON.stringify(first), version, Number(enabled), timestamp, wid, id)
+        if (steps) await insertSteps(wid, id, version, steps, timestamp)
+        await audit(userId, wid, 'automation.update', id, { event, version, stepCount: steps?.length })
+        return decodeAutomation(await automationInWorkspace(wid, id))
+      })
     })
-    router.delete('/workspaces/:wid/automations/:id', (ctx) => {
+    router.delete('/workspaces/:wid/automations/:id', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
-      return db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        automationInWorkspace(wid, id)
-        db.prepare("DELETE FROM automation_runs WHERE workspaceId=? AND targetType='automation' AND targetId=?").run(wid, id)
-        db.prepare('DELETE FROM automations WHERE workspaceId=? AND id=?').run(wid, id)
-        audit(userId, wid, 'automation.delete', id)
+      const userId = (await user(ctx)).id
+      return db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        await automationInWorkspace(wid, id)
+        await db.run("DELETE FROM automation_runs WHERE workspaceId=? AND targetType='automation' AND targetId=?", wid, id)
+        await db.run('DELETE FROM automations WHERE workspaceId=? AND id=?', wid, id)
+        await audit(userId, wid, 'automation.delete', id)
         return { success: true }
-      })()
+      })
     })
-    router.get('/workspaces/:wid/automations/runs', (ctx) => {
+    router.get('/workspaces/:wid/automations/runs', async (ctx) => {
       const { wid } = ctx.params
-      requirePermission(user(ctx).id, wid, 'workspace:manage')
+      await requirePermission((await user(ctx)).id, wid, 'workspace:manage')
       const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(20), automationId: z.string().uuid().optional(), status: z.enum(['pending', 'running', 'delivered', 'failed']).optional() }).strict().parse(ctx.request.qs())
       const clauses = ['workspaceId=?'], values: unknown[] = [wid]
       if (query.automationId) { clauses.push("targetType='automation' AND automationId=?"); values.push(query.automationId) }
       if (query.status) { clauses.push('status=?'); values.push(query.status) }
       values.push(query.limit)
-      return (db.prepare(`SELECT * FROM automation_runs WHERE ${clauses.join(' AND ')} ORDER BY createdAt DESC,id DESC LIMIT ?`).all(...values) as RunRow[]).map(decodeRun)
+      const rows = await db.all<RunRow>(`SELECT * FROM automation_runs WHERE ${clauses.join(' AND ')} ORDER BY createdAt DESC,id DESC LIMIT ?`, ...values)
+      return Promise.all(rows.map(decodeRun))
     })
-    router.get('/workspaces/:wid/automations/runs/:runId', (ctx) => {
+    router.get('/workspaces/:wid/automations/runs/:runId', async (ctx) => {
       const { wid, runId } = ctx.params
-      requirePermission(user(ctx).id, wid, 'workspace:manage')
-      const row = db.prepare('SELECT * FROM automation_runs WHERE workspaceId=? AND id=?').get(wid, runId) as RunRow | undefined
+      await requirePermission((await user(ctx)).id, wid, 'workspace:manage')
+      const row = await db.get<RunRow>('SELECT * FROM automation_runs WHERE workspaceId=? AND id=?', wid, runId)
       if (!row) throw new HttpError(404, 'Automation run not found')
       return decodeRun(row)
     })
-    router.post('/workspaces/:wid/automations/:id/test', (ctx) => {
+    router.post('/workspaces/:wid/automations/:id/test', async (ctx) => {
       const { wid, id } = ctx.params
-      const userId = user(ctx).id
-      const result = db.transaction(() => {
-        requirePermission(userId, wid, 'workspace:manage')
-        const automation = automationInWorkspace(wid, id)
+      const userId = (await user(ctx)).id
+      const result = await db.transaction(async () => {
+        await requirePermission(userId, wid, 'workspace:manage')
+        const automation = await automationInWorkspace(wid, id)
         const payload: EventPayload = { event: eventSchema.parse(automation.event), workspaceId: wid, actorId: userId, at: new Date().toISOString() }
-        const runId = insertRun(wid, 'automation', automation.id, automation.version, eventJson(payload))
-        audit(userId, wid, 'automation.test', id, { runId, version: automation.version })
-        trimRuns(wid)
+        const runId = await insertRun(wid, 'automation', automation.id, automation.version, eventJson(payload))
+        await audit(userId, wid, 'automation.test', id, { runId, version: automation.version })
+        await trimRuns(wid)
         return { ok: true, event: automation.event, runId, status: 'pending' as const }
-      }).immediate()
+      })
       scheduleFlush()
       return result
     })

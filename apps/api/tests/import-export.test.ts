@@ -7,8 +7,8 @@ import { integrationServer } from './storage-sso-fixture.js'
 // export filters, CSV round-tripping and oversized payloads.
 test('task import/export endpoints', async (t) => {
   const api = await integrationServer(t)
-  const owner = api.user(true)
-  const outsider = api.user(true)
+  const owner = await api.user(true)
+  const outsider = await api.user(true)
   const post = async (path: string, body: unknown, token = owner.token) => {
     const response = await api.request(path, { method: 'POST', body, token })
     assert.ok(response.status === 200 || response.status === 201, `${path}: ${response.status} ${await response.clone().text()}`)
@@ -29,8 +29,8 @@ test('task import/export endpoints', async (t) => {
   const severity = await post(`${base}/fields`, { name: 'Severity', type: 'select', options: ['low', 'high'] })
   const stars = await post(`${base}/fields`, { name: 'Stars', type: 'rating', settings: { maxRating: 3 } })
 
-  const viewer = api.user()
-  const memberUser = api.user()
+  const viewer = await api.user()
+  const memberUser = await api.user()
   await post(`${base}/roles`, { name: 'Reader', permissions: ['items:read'] })
   const roles = await (await api.request(`${base}/roles`, { token: owner.token })).json() as { id: string; name: string }[]
   await post(`${base}/members`, { email: viewer.email, roleId: roles.find((role) => role.name === 'Reader')!.id })

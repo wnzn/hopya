@@ -22,8 +22,8 @@ test('automations enforce permissions, deliver ordered steps, redact output and 
   t.after(() => { hookServer.close() })
 
   const api = await integrationServer(t)
-  const owner = api.user(true)
-  const outsider = api.user(true)
+  const owner = await api.user(true)
+  const outsider = await api.user(true)
   const post = async (path: string, body: unknown, token = owner.token) => {
     const response = await api.request(path, { method: 'POST', body, token })
     assert.ok(response.status === 200 || response.status === 201, `${path}: ${response.status}`)
@@ -37,7 +37,7 @@ test('automations enforce permissions, deliver ordered steps, redact output and 
   for (const path of ['/webhooks', '/automations']) {
     assert.equal((await api.request(`${base}${path}`, { token: outsider.token })).status, 403)
   }
-  const reader = api.user()
+  const reader = await api.user()
   await post(`${base}/roles`, { name: 'Reader', permissions: ['items:read'] })
   const role = await (await api.request(`${base}/roles`, { token: owner.token })).json() as { id: string; name: string }[]
   const readerRole = role.find((value) => value.name === 'Reader')!.id

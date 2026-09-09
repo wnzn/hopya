@@ -18,8 +18,8 @@ const cookieOptions = { httpOnly: true, sameSite: 'lax' as const, secure: appUrl
 interface Flow { cookieHash: string; stateHash: string; nonce: string; codeVerifier: string; issuer: string; clientId: string; redirectUri: string; expiresAt: string }
 const pendingCallbacks = new Map<Flow, Set<string>>()
 
-function requireSetup(): void {
-  if (!db.prepare('SELECT id FROM users WHERE isAdmin=1 AND disabled=0 LIMIT 1').get()) throw new HttpError(503, 'Administrator setup required')
+async function requireSetup(): Promise<void> {
+  if (!await db.get('SELECT id FROM users WHERE isAdmin=1 AND disabled=0 LIMIT 1')) throw new HttpError(503, 'Administrator setup required')
 }
 function issuerUrl(value: string): URL {
   let url: URL
@@ -120,8 +120,8 @@ function configured(): Promise<oidc.Configuration> {
 
 export function registerSso(router: Router): void {
   router.get('/api/v1/auth/sso', async (ctx) => {
-    rateLimit(ctx, 'oidc-start')
-    requireSetup()
+    await rateLimit(ctx, 'oidc-start')
+    await requireSetup()
     const config = await configured()
     const cookie = randomBytes(32).toString('base64url')
     const state = oidc.randomState()
@@ -130,16 +130,17 @@ export function registerSso(router: Router): void {
     const challenge = await runSso(pkceChallengeEffect(codeVerifier))
     const url = oidc.buildAuthorizationUrl(config, { redirect_uri: redirectUri, response_type: 'code', response_mode: 'query', scope: 'openid email profile',
       code_challenge: challenge, code_challenge_method: 'S256', state, nonce })
-    db.transaction(() => {
-      requireSetup()
-      db.prepare('DELETE FROM oidc_flows WHERE expiresAt<=?').run(new Date().toISOString())
+    await db.transaction(async () => {
+      await requireSetup()
+      await db.run('DELETE FROM oidc_flows WHERE expiresAt<=?', new Date().toISOString())
       const previous: unknown = ctx.request.cookie(flowCookie)
-      if (typeof previous === 'string' && previous.length <= 256) db.prepare('DELETE FROM oidc_flows WHERE cookieHash=?').run(hashToken(previous))
-      if ((db.prepare('SELECT count(*) AS count FROM oidc_flows').get() as { count: number }).count >= 1000) throw new HttpError(429, 'Too many SSO attempts')
-      db.prepare(`INSERT INTO oidc_flows (cookieHash,stateHash,nonce,codeVerifier,issuer,clientId,redirectUri,expiresAt)
-        VALUES (?,?,?,?,?,?,?,?)`).run(hashToken(cookie), hashToken(state), nonce, codeVerifier, config.serverMetadata().issuer,
+      if (typeof previous === 'string' && previous.length <= 256) await db.run('DELETE FROM oidc_flows WHERE cookieHash=?', hashToken(previous))
+      const count = await db.get<{ count: number | string }>('SELECT count(*) AS count FROM oidc_flows')
+      if (Number(count?.count ?? 0) >= 1000) throw new HttpError(429, 'Too many SSO attempts')
+      await db.run(`INSERT INTO oidc_flows (cookieHash,stateHash,nonce,codeVerifier,issuer,clientId,redirectUri,expiresAt)
+        VALUES (?,?,?,?,?,?,?,?)`, hashToken(cookie), hashToken(state), nonce, codeVerifier, config.serverMetadata().issuer,
         config.clientMetadata().client_id, redirectUri, new Date(Date.now() + flowSeconds * 1000).toISOString())
-    })()
+    })
     ctx.response.cookie(flowCookie, cookie, { ...cookieOptions, maxAge: flowSeconds })
     ctx.response.header('Referrer-Policy', 'no-referrer')
     ctx.response.header('Cache-Control', 'no-store')
@@ -149,12 +150,15 @@ export function registerSso(router: Router): void {
     ctx.response.clearCookie(flowCookie, cookieOptions)
     ctx.response.header('Referrer-Policy', 'no-referrer')
     ctx.response.header('Cache-Control', 'no-store')
-    requireSetup()
+    await requireSetup()
     const cookie: unknown = ctx.request.cookie(flowCookie)
     if (typeof cookie !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(cookie)) throw new HttpError(401, 'Invalid or expired SSO flow')
     // Consume before any remote operation, including failed/error callbacks. Raw
     // cookie/state are never persisted; tokens and claims are never logged.
-    const flow = db.prepare('DELETE FROM oidc_flows WHERE cookieHash=? RETURNING *').get(hashToken(cookie)) as Flow | undefined
+    const flow = await db.get(db.sql({
+      sqlite: 'DELETE FROM oidc_flows WHERE cookieHash=? RETURNING *',
+      pg: 'DELETE FROM oidc_flows WHERE cookieHash=? RETURNING *',
+    }), hashToken(cookie)) as Flow | undefined
     if (!flow || flow.expiresAt <= new Date().toISOString()) throw new HttpError(401, 'Invalid or expired SSO flow')
     const rawUrl = ctx.request.url(true)
     if (rawUrl.length > 16384) throw new HttpError(400, 'Invalid SSO callback')
@@ -170,58 +174,63 @@ export function registerSso(router: Router): void {
       const tokens = await runSso(exchangeEffect(config, currentUrl, flow, states[0]))
       const claims = tokens.claims()
       if (!claims || claims.iss !== flow.issuer || typeof claims.sub !== 'string' || !claims.sub.length || claims.sub.length > 255) throw new HttpError(401, 'SSO authentication failed')
-      db.transaction(() => {
-        requireSetup()
+      await db.transaction(async () => {
+        await requireSetup()
         if (flow.expiresAt <= new Date().toISOString()) throw new HttpError(401, 'Invalid or expired SSO flow')
         if (revokedSubjects.has(claims.sub)) throw new HttpError(403, 'SSO identity was unlinked; start a new sign-in')
-        let user = db.prepare(`SELECT u.* FROM users u JOIN oidc_identities i ON i.userId=u.id
-          WHERE i.issuer=? AND i.subject=?`).get(claims.iss, claims.sub) as UserRow | undefined
+        let user = await db.get(`SELECT u.* FROM users u JOIN oidc_identities i ON i.userId=u.id
+          WHERE i.issuer=? AND i.subject=?`, claims.iss, claims.sub) as UserRow | undefined
         if (!user) {
           if (process.env.OIDC_AUTO_PROVISION !== 'true') throw new HttpError(403, 'SSO identity is not linked to an account')
           const email = emailSchema.safeParse(claims.email)
           if (claims.email_verified !== true || !email.success) throw new HttpError(403, 'SSO requires a verified email address')
-          if (db.prepare('SELECT id FROM users WHERE email=?').get(email.data)) throw new HttpError(409, 'SSO account requires administrator linking')
+          if (await db.get(db.sql({
+            sqlite: 'SELECT id FROM users WHERE email=? COLLATE NOCASE',
+            pg: 'SELECT id FROM users WHERE lower(email)=lower(?)',
+          }), email.data)) throw new HttpError(409, 'SSO account requires administrator linking')
           const name = z.string().trim().min(1).max(120).safeParse(claims.name)
           user = { id: randomUUID(), name: name.success ? name.data : email.data.slice(0, 120), email: email.data, passwordHash: null, isAdmin: 0, disabled: 0, createdAt: new Date().toISOString() }
-          db.prepare(`INSERT INTO users (id,name,email,passwordHash,isAdmin,disabled,createdAt)
-            VALUES (@id,@name,@email,@passwordHash,@isAdmin,@disabled,@createdAt)`).run(user)
-          db.prepare('INSERT INTO oidc_identities (id,userId,issuer,subject,createdAt) VALUES (?,?,?,?,?)').run(randomUUID(), user.id, claims.iss, claims.sub, user.createdAt)
-          audit(user.id, null, 'auth.sso.provision', user.id)
+          await db.run(`INSERT INTO users (id,name,email,passwordHash,isAdmin,disabled,createdAt)
+            VALUES (@id,@name,@email,@passwordHash,@isAdmin,@disabled,@createdAt)`, user)
+          await db.run('INSERT INTO oidc_identities (id,userId,issuer,subject,createdAt) VALUES (?,?,?,?,?)', randomUUID(), user.id, claims.iss, claims.sub, user.createdAt)
+          await audit(user.id, null, 'auth.sso.provision', user.id)
         }
         if (user.disabled) throw new HttpError(403, 'Account unavailable')
-        createSession(ctx, user.id)
-        audit(user.id, null, 'auth.sso.login', user.id)
-      }).immediate()
+        if (revokedSubjects.has(claims.sub)) throw new HttpError(403, 'SSO identity was unlinked; start a new sign-in')
+        await createSession(ctx, user.id)
+        if (revokedSubjects.has(claims.sub)) throw new HttpError(403, 'SSO identity was unlinked; start a new sign-in')
+        await audit(user.id, null, 'auth.sso.login', user.id)
+      })
       ctx.response.redirect(new URL('/app', appUrl).href)
     } finally {
       pendingCallbacks.delete(flow)
     }
   })
-  router.get('/api/v1/admin/oidc-identities', (ctx: HttpContext) => {
-    requireAdmin(ctx)
+  router.get('/api/v1/admin/oidc-identities', async (ctx: HttpContext) => {
+    await requireAdmin(ctx)
     const data = z.object({ userId: z.string().uuid().optional() }).strict().parse(ctx.request.qs())
     return data.userId
-      ? db.prepare('SELECT id,userId,issuer,subject,createdAt FROM oidc_identities WHERE userId=? ORDER BY createdAt,id').all(data.userId)
-      : db.prepare('SELECT id,userId,issuer,subject,createdAt FROM oidc_identities ORDER BY createdAt,id').all()
+      ? db.all('SELECT id,userId,issuer,subject,createdAt FROM oidc_identities WHERE userId=? ORDER BY createdAt,id', data.userId)
+      : db.all('SELECT id,userId,issuer,subject,createdAt FROM oidc_identities ORDER BY createdAt,id')
   })
-  router.delete('/api/v1/admin/oidc-identities/:id', (ctx: HttpContext) => {
-    requireAdmin(ctx)
+  router.delete('/api/v1/admin/oidc-identities/:id', async (ctx: HttpContext) => {
+    await requireAdmin(ctx)
     const id = z.string().uuid().parse(ctx.params.id)
-    const identity = db.transaction(() => {
-      const admin = requireAdmin(ctx)
-      const identity = db.prepare(`SELECT i.userId,i.issuer,i.subject,u.passwordHash FROM oidc_identities i
-        JOIN users u ON u.id=i.userId WHERE i.id=?`).get(id) as { userId: string; issuer: string; subject: string; passwordHash: string | null } | undefined
+    const identity = await db.transaction(async () => {
+      const admin = await requireAdmin(ctx)
+      const identity = await db.get<{ userId: string; issuer: string; subject: string; passwordHash: string | null }>(`SELECT i.userId,i.issuer,i.subject,u.passwordHash FROM oidc_identities i
+        JOIN users u ON u.id=i.userId WHERE i.id=?`, id)
       if (!identity) throw new HttpError(404, 'OIDC identity not found')
       if (identity.passwordHash === null && (!process.env.OIDC_ISSUER || !process.env.OIDC_CLIENT_ID ||
-        !db.prepare('SELECT id FROM oidc_identities WHERE userId=? AND id<>? AND issuer=? LIMIT 1').get(identity.userId, id, process.env.OIDC_ISSUER))) {
+        !await db.get('SELECT id FROM oidc_identities WHERE userId=? AND id<>? AND issuer=? LIMIT 1', identity.userId, id, process.env.OIDC_ISSUER))) {
         throw new HttpError(409, 'Cannot remove the last login method; link another identity for the configured OIDC issuer first, or disable the account to quarantine it while preserving recovery')
       }
-      db.prepare('DELETE FROM oidc_identities WHERE id=?').run(id)
-      const revokedSessions = db.prepare('DELETE FROM sessions WHERE userId=?').run(identity.userId).changes
-      const revokedTokens = db.prepare('DELETE FROM tokens WHERE userId=?').run(identity.userId).changes
-      audit(admin.id, null, 'admin.oidc.unlink', id, { userId: identity.userId, revokedSessions, revokedTokens })
+      await db.run('DELETE FROM oidc_identities WHERE id=?', id)
+      const revokedSessions = (await db.run('DELETE FROM sessions WHERE userId=?', identity.userId)).changes
+      const revokedTokens = (await db.run('DELETE FROM tokens WHERE userId=?', identity.userId)).changes
+      await audit(admin.id, null, 'admin.oidc.unlink', id, { userId: identity.userId, revokedSessions, revokedTokens })
       return identity
-    }).immediate()
+    })
     // Single-process API: invalidate matching exchanges only after commit. The
     // subject is unknown until token verification; do not let JIT undo an unlink.
     for (const [flow, revokedSubjects] of pendingCallbacks) {
@@ -229,20 +238,20 @@ export function registerSso(router: Router): void {
     }
     return { success: true }
   })
-  router.post('/api/v1/admin/oidc-identities', (ctx: HttpContext) => {
-    requireAdmin(ctx)
+  router.post('/api/v1/admin/oidc-identities', async (ctx: HttpContext) => {
+    await requireAdmin(ctx)
     const data = z.object({ userId: z.string().uuid(), issuer: z.string().min(1).max(2048), subject: z.string().min(1).max(255).refine((value) => !/[\x00-\x1f\x7f]/.test(value), 'Invalid subject') }).strict().parse(ctx.request.body())
     const issuer = issuerUrl(data.issuer)
     if (issuer.protocol !== 'https:' && !(process.env.OIDC_ALLOW_INSECURE_HTTP === 'true' && !production && loopback(issuer))) throw new HttpError(400, 'OIDC issuer requires HTTPS')
     const id = randomUUID()
     const createdAt = new Date().toISOString()
-    db.transaction(() => {
-      const admin = requireAdmin(ctx)
-      if (!db.prepare('SELECT id FROM users WHERE id=? AND disabled=0').get(data.userId)) throw new HttpError(404, 'Active user not found')
-      if (db.prepare('SELECT id FROM oidc_identities WHERE issuer=? AND subject=?').get(data.issuer, data.subject)) throw new HttpError(409, 'OIDC identity already linked')
-      db.prepare('INSERT INTO oidc_identities (id,userId,issuer,subject,createdAt) VALUES (?,?,?,?,?)').run(id, data.userId, data.issuer, data.subject, createdAt)
-      audit(admin.id, null, 'admin.oidc.link', id, { userId: data.userId })
-    }).immediate()
+    await db.transaction(async () => {
+      const admin = await requireAdmin(ctx)
+      if (!await db.get('SELECT id FROM users WHERE id=? AND disabled=0', data.userId)) throw new HttpError(404, 'Active user not found')
+      if (await db.get('SELECT id FROM oidc_identities WHERE issuer=? AND subject=?', data.issuer, data.subject)) throw new HttpError(409, 'OIDC identity already linked')
+      await db.run('INSERT INTO oidc_identities (id,userId,issuer,subject,createdAt) VALUES (?,?,?,?,?)', id, data.userId, data.issuer, data.subject, createdAt)
+      await audit(admin.id, null, 'admin.oidc.link', id, { userId: data.userId })
+    })
     ctx.response.status(201)
     return { id, userId: data.userId, createdAt }
   })
