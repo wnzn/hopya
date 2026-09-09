@@ -29,6 +29,8 @@ docker compose up -d --build --wait
 docker compose ps
 ```
 
+Tagged releases publish separate API and web images to GHCR as `ghcr.io/<owner>/<repository>-api:<tag>` and `ghcr.io/<owner>/<repository>-web:<tag>`. Set `HOPYA_API_IMAGE` and `HOPYA_WEB_IMAGE` to immutable release tags, run `docker compose pull api web`, then use `docker compose up -d --no-build --wait`. Images are published only from Git tags, never from ordinary branch pushes.
+
 Open `http://localhost:8888` and create the first administrator with `SETUP_TOKEN` from `.env`. There are no default accounts. Public registration is disabled unless `REGISTRATION_ENABLED=true`.
 
 ## Configuration

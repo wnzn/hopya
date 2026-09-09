@@ -15,7 +15,7 @@ x-app: &app
 services:
   api:
     <<: *app
-    image: hopya-api:local
+    image: ${HOPYA_API_IMAGE:-hopya-api:local}
     build:
       context: .
       target: api
@@ -80,7 +80,7 @@ services:
 
   web:
     <<: *app
-    image: hopya-web:local
+    image: ${HOPYA_WEB_IMAGE:-hopya-web:local}
     build:
       context: .
       target: web

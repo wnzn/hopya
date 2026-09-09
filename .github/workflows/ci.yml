@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - name: Install native build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 make g++
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Test API core
+        working-directory: apps/api
+        env:
+          HOPYA_JAPA_FILE: tests/core.test.ts
+        run: node --import tsx tests/runner.ts
+      - name: Test web utilities
+        run: npm test --workspace=@hopya/web
+      - name: Test operator initialization
+        run: npm run test:ops

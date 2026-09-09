@@ -55,6 +55,8 @@ docker compose up -d --build --wait
 docker compose down
 ```
 
+Each Git tag publishes `ghcr.io/<owner>/<repository>-api:<tag>` and `ghcr.io/<owner>/<repository>-web:<tag>`. To deploy those exact images instead of building locally, set `HOPYA_API_IMAGE` and `HOPYA_WEB_IMAGE` in `.env`, then run `docker compose pull api web` followed by `docker compose up -d --no-build --wait`. Branch pushes do not publish containers.
+
 `docker compose down` removes containers but leaves the ignored `./data` directory intact. Do not delete that directory unless you intentionally want to delete all Hopya data.
 
 ## First Workspace
