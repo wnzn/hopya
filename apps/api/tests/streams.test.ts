@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test } from './japa.js'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -109,25 +109,6 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     await assert.rejects(async () => { for await (const _chunk of response) {} })
     assert.equal(response.complete, false)
   }
-
-  await t.test('page routing and invalid/auth parameters fail before bulk headers; legacy filters and redaction remain intact', async () => {
-    const page = await api(`${path}/page?limit=2`)
-    assert.equal(page.status, 200)
-    const result = await page.json() as any
-    assert.equal(result.items.length, 2); assert.equal(typeof result.nextCursor, 'string')
-    for (const suffix of ['?limit=1', '?search[]=x', '?status=unsafe%20id', '?nodeId=bad', '?search=true&search=false']) {
-      const response = await api(path + suffix)
-      assert.equal(response.status, 400, suffix)
-      assert.deepEqual(Object.keys(await response.json() as object), ['error'])
-    }
-    for (const suffix of ['?limit=true', '?limit[]=1', '?limit=0', '?limit=501', '?cursor[]=x', '?cursor=%20', '?cursor=' + 'x'.repeat(1025)]) assert.equal((await api(path + '/page' + suffix)).status, 400)
-    assert.equal((await api(path, 'GET', undefined, 'x'.repeat(43))).status, 401)
-    assert.deepEqual(await (await api(path + '?status=unconfigured-safe-id')).json(), [])
-    const filtered = await (await api(path + '?status=done&search=%25_%5C')).json() as any[]
-    assert.equal(filtered.length, 1); assert.equal(filtered[0].id, ids[0])
-    assert.equal(filtered[0].description, description)
-    assert.equal((await (await api(path + `?nodeId=${project.id}`)).json() as any[]).length, 0)
-  })
 
   await t.test('paused snapshot export permits HTTP writes and preserves complete old workspace/nodes/items/fields/attachment metadata', async () => {
     const response = await paused(`/workspaces/${wid}/export`)

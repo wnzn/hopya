@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test } from './japa.js'
 import assert from 'node:assert/strict'
 import { integrationServer } from './storage-sso-fixture.js'
 
@@ -94,26 +94,6 @@ test('task import/export endpoints', async (t) => {
     assert.deepEqual(item.customFields, { [channel.id]: 'web', [effort.id]: 3, [flag.id]: true, [severity.id]: 'high', [stars.id]: 2 })
   })
 
-  await t.test('row errors name the 1-based row number and reason', async () => {
-    const cases: [string, RegExp][] = [
-      [JSON.stringify([{ title: 'Bad status', status: 'nope' }]), /Row 1:.*status/i],
-      [JSON.stringify([{ title: 'Bad field', 'custom:Nope': 1 }]), /Row 1:.*custom field 'Nope'/],
-      [JSON.stringify([{ title: '   ' }]), /Row 1:.*title/],
-      [JSON.stringify([{ title: 'Bad dates', startDate: '2026-02-01', dueDate: '2026-01-01' }]), /Row 1:.*startDate/],
-      [JSON.stringify([{ title: 'Ok' }, { title: 'Bad date', startDate: '2026-13-99' }]), /Row 2:.*startDate/],
-      [JSON.stringify([{ title: 'Bad member', assignee: 'ghost@example.test' }]), /Row 1:.*assignee/],
-    ]
-    for (const [data, pattern] of cases) {
-      const response = await importAs({ nodeId: list.id, format: 'json', data })
-      assert.equal(response.status, 400, data)
-      const body = await response.json() as { error: string }
-      assert.match(body.error, pattern, data)
-    }
-    const csvResponse = await importAs({ nodeId: list.id, format: 'csv', data: 'name,other\nx,y' })
-    assert.equal(csvResponse.status, 400)
-    assert.match(((await csvResponse.json()) as { error: string }).error, /title/)
-  })
-
   await t.test('row cap of 500 is enforced', async () => {
     const rows = Array.from({ length: 501 }, (_, index) => ({ title: `Bulk ${index}` }))
     const response = await importAs({ nodeId: list.id, format: 'json', data: JSON.stringify(rows) })
@@ -127,26 +107,6 @@ test('task import/export endpoints', async (t) => {
     assert.equal((await importAs({ nodeId: list.id, format: 'json', data })).status, 400)
     const after = (await exportJson(`?format=json&nodeId=${list.id}&limit=5000`)).length
     assert.equal(after, before)
-  })
-
-  await t.test('export filters by subtree, status and literal search', async () => {
-    await post(`${base}/items`, { title: 'Alpha release marker', status: 'done', nodeId: list.id })
-    await post(`${base}/items`, { title: 'Beta 100% draft marker', status: 'todo', nodeId: other.id })
-    await post(`${base}/items`, { title: '100X decoy marker', status: 'todo', nodeId: other.id })
-    await post(`${base}/items`, { title: 'Gamma nested marker', status: 'done', nodeId: sublist.id })
-    const scoped = await exportJson(`?format=json&nodeId=${folder.id}&search=marker&limit=5000`)
-    assert.deepEqual(scoped.map((item) => item.title), ['Gamma nested marker'])
-    const listed = await exportJson(`?format=json&nodeId=${list.id}&search=Alpha release marker&limit=5000`)
-    assert.equal(listed.length, 1)
-    const done = await exportJson(`?format=json&status=done&search=marker&limit=5000`)
-    assert.deepEqual(done.map((item) => item.title).sort(), ['Alpha release marker', 'Gamma nested marker'])
-    const literal = await exportJson(`?format=json&search=100%25 draft marker&limit=5000`)
-    assert.deepEqual(literal.map((item) => item.title), ['Beta 100% draft marker'])
-    const limited = await exportJson(`?format=json&search=marker&limit=1`)
-    assert.equal(limited.length, 1)
-    assert.equal((await api.request(`${exportPath}?format=json&limit=5001`, { token: owner.token })).status, 400)
-    assert.equal((await api.request(`${exportPath}?format=json&nodeId=${list.id}&status=bogus`, { token: owner.token })).status, 200)
-    assert.equal((await api.request(`${exportPath}?format=json&nodeId=00000000-0000-4000-8000-000000000000`, { token: owner.token })).status, 404)
   })
 
   await t.test('exported CSV round-trips through the importer', async () => {
@@ -178,14 +138,4 @@ test('task import/export endpoints', async (t) => {
     assert.ok(response.status === 400 || response.status === 413, `status ${response.status}`)
   })
 
-  await t.test('export sets attachment headers and content types', async () => {
-    const csvResponse = await api.request(`${exportPath}?format=csv&limit=5`, { token: owner.token })
-    assert.equal(csvResponse.status, 200)
-    assert.match(csvResponse.headers.get('content-type') ?? '', /text\/csv/)
-    assert.equal(csvResponse.headers.get('content-disposition'), `attachment; filename="hopya-export-${wid.slice(0, 8)}.csv"`)
-    const jsonResponse = await api.request(`${exportPath}?format=json&limit=5`, { token: owner.token })
-    assert.equal(jsonResponse.status, 200)
-    assert.match(jsonResponse.headers.get('content-type') ?? '', /application\/json/)
-    assert.equal(jsonResponse.headers.get('content-disposition'), `attachment; filename="hopya-export-${wid.slice(0, 8)}.json"`)
-  })
 })

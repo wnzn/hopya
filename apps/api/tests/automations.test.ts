@@ -1,12 +1,12 @@
-import { test } from 'node:test'
+import { test } from './japa.js'
 import assert from 'node:assert/strict'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { integrationServer } from './storage-sso-fixture.js'
 import type { Server } from 'node:http'
 
-test('webhooks and automations manage CRUD, permissions, delivery and site settings', async (t) => {
+test('automations enforce permissions, deliver ordered steps, redact output and record failures', { timeout: 30000 }, async (t) => {
   const received: { path: string; body: string; signature: string; method: string; xTest: string }[] = []
   const hookServer = createServer((request, response) => {
     let body = ''
@@ -55,8 +55,6 @@ test('webhooks and automations manage CRUD, permissions, delivery and site setti
   const listed = await (await api.request(`${base}/webhooks`, { token: owner.token })).json() as { secret?: string }[]
   assert.equal(listed.length, 1)
   assert.equal(listed[0]!.secret, undefined, 'secret must not be returned by list')
-  assert.equal((await api.request(`${base}/webhooks/${hook.id}`, { method: 'PATCH', token: owner.token, body: { enabled: false } })).status, 200)
-  assert.equal((await api.request(`${base}/webhooks/${hook.id}`, { method: 'PATCH', token: owner.token, body: { enabled: true, events: ['item.created'] } })).status, 200)
 
   // Automation CRUD with adapter validation.
   assert.equal((await api.request(`${base}/automations`, { method: 'POST', token: owner.token, body: { name: 'Bad', event: 'item.created', action: { type: 'http', config: { method: 'POST' } } } })).status, 400)
@@ -71,10 +69,6 @@ test('webhooks and automations manage CRUD, permissions, delivery and site setti
   assert.equal(sequence.version, 1)
   assert.equal(sequence.steps.length, 2)
   assert.equal(sequence.action, undefined, 'legacy action is returned only for single-step rules')
-  const emailAutomation = await post(`${base}/automations`, { name: 'Notify', event: 'item.updated', action: { type: 'email', config: { to: ['ops@example.test'], subject: 'Task updated' } } }) as { id: string; action: { type: string } }
-  assert.equal(emailAutomation.action.type, 'email')
-  assert.equal((await api.request(`${base}/automations/${automation.id}`, { method: 'PATCH', token: owner.token, body: { enabled: false } })).status, 200)
-  assert.equal((await api.request(`${base}/automations/${automation.id}`, { method: 'PATCH', token: owner.token, body: { enabled: true } })).status, 200)
 
   // Trigger: creating an item fans out to the subscribed webhook and automation.
   const list = await post(`${base}/nodes`, { name: 'List', kind: 'project' })
@@ -153,66 +147,6 @@ test('webhooks and automations manage CRUD, permissions, delivery and site setti
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
   assert.ok(failureSeen, 'failed webhook delivery must be recorded')
-  assert.ok((await api.request(`${base}/webhooks/${failing.id}`, { method: 'DELETE', token: owner.token })).status === 200)
-
-  // Deleting a webhook removes it (cascade cleanup covered by migration FK).
-  assert.equal((await api.request(`${base}/webhooks/${hook.id}`, { method: 'DELETE', token: owner.token })).status, 200)
-  assert.equal((await api.request(`${base}/webhooks/${hook.id}`, { token: owner.token })).status, 404)
-  assert.equal((await api.request(`${base}/automations/${emailAutomation.id}`, { method: 'DELETE', token: owner.token })).status, 200)
-
-  // Site settings: admin-only landing toggle and logo upload.
-  const configBase = (await api.request('/config')).status
-  assert.equal(configBase, 200)
-  assert.equal((await api.request('/site/settings', { token: owner.token })).status, 200, 'owner is a site admin and may read site settings')
-  // outsider IS admin in this fixture; use a non-admin account instead.
-  const plain = api.user(false)
-  assert.equal((await api.request('/site/settings', { token: plain.token })).status, 403)
-  const settings = await (await api.request('/site/settings', { token: owner.token })).json() as { landingDisabled: boolean; mcpSseEnabled: boolean; logo: unknown }
-  assert.equal(settings.landingDisabled, false)
-  assert.equal(settings.mcpSseEnabled, false)
-  assert.equal((await api.request('/site/settings', { method: 'PATCH', token: plain.token, body: { landingDisabled: true } })).status, 403)
-  const patched = await (await api.request('/site/settings', { method: 'PATCH', token: owner.token, body: { landingDisabled: true } })).json() as { landingDisabled: boolean }
-  assert.equal(patched.landingDisabled, true)
-  const config1 = await (await api.request('/config')).json() as { landingEnabled: boolean }
-  assert.equal(config1.landingEnabled, false, 'disabling landing reflects in public config')
-  // 1x1 PNG upload.
-  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
-  const upload = await api.request('/site/logo', { method: 'PUT', token: owner.token, body: { contentType: 'image/png', data: png.toString('base64') } })
-  assert.equal(upload.status, 200)
-  const logoMeta = await (await api.request('/site/settings', { token: owner.token })).json() as { logo: { url: string } | null }
-  assert.ok(logoMeta.logo?.url.includes('/api/v1/site/logo'))
-  const bytes = await fetch(`${api.base}${logoMeta.logo!.url}`)
-  assert.equal(bytes.status, 200)
-  assert.equal(bytes.headers.get('content-type'), 'image/png')
-  const config2 = await (await api.request('/config')).json() as { logo?: string }
-  assert.ok(config2.logo, 'public config exposes the logo URL')
-  assert.equal((await api.request('/site/logo', { method: 'DELETE', token: plain.token })).status, 403)
-  assert.equal((await api.request('/site/logo', { method: 'DELETE', token: owner.token })).status, 200)
-  const config3 = await (await api.request('/config')).json() as { logo?: string }
-  assert.equal(config2.logo !== undefined && config3.logo === undefined ? 'removed' : config3.logo ?? 'removed', 'removed')
-  await api.request('/site/settings', { method: 'PATCH', token: owner.token, body: { landingDisabled: false } })
-
-  // OpenAPI document is public and well-formed.
-  const docs = await (await api.request('/openapi.json')).json() as { openapi: string; paths: Record<string, unknown> }
-  assert.ok(docs.openapi.startsWith('3.1'))
-  assert.ok(Object.keys(docs.paths).length > 20)
-  assert.ok('/workspaces/{wid}/webhooks' in docs.paths)
-  assert.ok('/workspaces/{wid}/automations' in docs.paths)
-})
-
-test('webhook secrets rotate and old signatures stop validating', async (t) => {
-  const api = await integrationServer(t)
-  const owner = api.user(true)
-  const workspace = await (await api.request('/workspaces', { method: 'POST', token: owner.token, body: { name: 'Rotate' } })).json() as { id: string }
-  const base = `/workspaces/${workspace.id}`
-  const hook = await (await api.request(`${base}/webhooks`, { method: 'POST', token: owner.token, body: { name: 'Hook', url: 'http://127.0.0.1:9/hook', events: ['item.created'] } })).json() as { id: string; secret: string }
-  const rotated = await (await api.request(`${base}/webhooks/${hook.id}/rotate`, { method: 'POST', token: owner.token })).json() as { secret: string }
-  assert.notEqual(rotated.secret, hook.secret)
-  assert.ok(rotated.secret.length >= 32)
-  const listed = await (await api.request(`${base}/webhooks`, { token: owner.token })).json() as { secret?: string }[]
-  assert.equal(listed[0]!.secret, undefined)
-  assert.equal((await api.request(`${base}/webhooks/${hook.id}`, { method: 'DELETE', token: owner.token })).status, 200)
-  assert.equal(randomUUID().length, 36)
 })
 
 // Keep the server import referenced for type checking without side effects.

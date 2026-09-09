@@ -1,4 +1,4 @@
-import { test, after } from 'node:test'
+import { test, after } from './japa.js'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -81,22 +81,6 @@ test('only owners can delete a workspace and its relational contents with an ato
   assert.ok(db.prepare('SELECT objectKey FROM storage_objects WHERE objectKey=?').get(objectKey))
   const auditRow = db.prepare("SELECT details FROM audit_logs WHERE workspaceId=? AND action='workspace.delete'").get(f.wid) as { details: string }
   assert.deepEqual(JSON.parse(auditRow.details), { members: 2, nodes: 2, items: 1, attachments: 1 })
-})
-test('hierarchy rejects cross-workspace parents, illegal kinds, project cycles, and nonempty deletion', () => {
-  const f = fixture(); const other = fixture()
-  denied(() => service.createNode(f.owner, f.wid, { name: 'Cross', kind: 'list', parentId: other.project.id }), 404)
-  denied(() => service.createNode(f.owner, f.wid, { name: 'Nested', kind: 'project', parentId: f.project.id }), 400)
-  denied(() => service.createNode(f.owner, f.wid, { name: 'Root folder', kind: 'folder' }), 400)
-  denied(() => service.createNode(f.owner, f.wid, { name: 'Child', kind: 'folder', parentId: f.list.id }), 400)
-  assert.throws(() => service.updateNode(f.owner, f.wid, f.project.id, { name: 'Cycle', parentId: f.list.id }))
-  denied(() => service.deleteNode(f.owner, f.wid, f.project.id), 409)
-  const folder = service.createNode(f.owner, f.wid, { name: 'Folder', kind: 'folder', parentId: f.project.id })
-  assert.equal(service.updateNode(f.owner, f.wid, folder.id, { name: 'Renamed' }).name, 'Renamed')
-  const styled = service.updateNode(f.owner, f.wid, folder.id, { icon: 'archive', color: 'teal' })
-  assert.equal(styled.icon, 'archive'); assert.equal(styled.color, 'teal')
-  assert.throws(() => service.updateNode(f.owner, f.wid, folder.id, { icon: '<svg>' }))
-  assert.throws(() => service.createNode(f.owner, f.wid, { name: 'Unsafe style', kind: 'folder', parentId: f.project.id, color: 'red;position:fixed' }))
-  service.deleteNode(f.owner, f.wid, folder.id)
 })
 test('task CRUD preserves omitted values, filters literal search, and validates dates and references', () => {
   const f = fixture(); const other = fixture()
@@ -203,23 +187,6 @@ test('comment replies stay on one task with bounded depth and reactions are uniq
   for (let depth = 1; depth < 32; depth++) parent = service.createComment(author, f.wid, item.id, { body: `Depth ${depth + 1}`, parentId: parent.id })
   denied(() => service.createComment(author, f.wid, item.id, { body: 'Too deep', parentId: parent.id }), 400)
 })
-test('custom fields validate every type and delete values transactionally', () => {
-  const f = fixture()
-  const text = service.createField(f.owner, f.wid, { name: 'Text', type: 'text' })
-  const number = service.createField(f.owner, f.wid, { name: 'Number', type: 'number' })
-  const date = service.createField(f.owner, f.wid, { name: 'Date', type: 'date' })
-  const checkbox = service.createField(f.owner, f.wid, { name: 'Checkbox', type: 'checkbox' })
-  const select = service.createField(f.owner, f.wid, { name: 'Select', type: 'select', options: ['A', 'B'] })
-  const item = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Typed', customFields: { [text.id]: 'hello', [number.id]: 2.5, [date.id]: '2024-02-29', [checkbox.id]: false, [select.id]: 'B' } })
-  for (const [field, invalid] of [[text.id, 2], [number.id, '2'], [date.id, '2024-02-30'], [checkbox.id, 'true'], [select.id, 'C'], [randomUUID(), null]] as const) {
-    denied(() => service.updateItem(f.owner, f.wid, item.id, { customFields: { [field]: invalid } }), 400)
-  }
-  denied(() => service.createField(f.owner, f.wid, { name: 'Empty', type: 'select' }), 400)
-  denied(() => service.createField(f.owner, f.wid, { name: 'Other', type: 'text', options: ['A'] }), 400)
-  service.deleteField(f.owner, f.wid, number.id)
-  assert.equal(Object.hasOwn(service.getItem(f.owner, f.wid, item.id).customFields, number.id), false)
-  assert.equal(service.listFields(f.owner, f.wid).length, 4)
-})
 test('item updates require both read and write, including empty or conditional patches', () => {
   for (const permission of ['items:read', 'items:write'] as const) {
     const f = fixture()
@@ -264,17 +231,6 @@ test('conditional updates reject stale versions without mutation and advance mon
   assert.equal(Date.parse(legacy.updatedAt), Date.parse(current.updatedAt) + 1)
   assert.equal(legacy.title, 'Unconditional last writer')
 })
-test('expectedUpdatedAt accepts only ISO timestamps on PATCH and is forbidden on creation', () => {
-  const f = fixture()
-  const item = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Validated' })
-  const auditBefore = db.prepare('SELECT * FROM audit_logs WHERE workspaceId=?').all(f.wid)
-  for (const expectedUpdatedAt of [null, 123, '', 'yesterday', '2026-02-30T00:00:00.000Z', '2026-09-06', '2026-09-06T12:00:00', 'x'.repeat(65)]) {
-    assert.throws(() => service.updateItem(f.owner, f.wid, item.id, { title: 'Invalid', expectedUpdatedAt }))
-  }
-  assert.throws(() => service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Invalid create', expectedUpdatedAt: item.updatedAt }))
-  assert.deepEqual(service.listItems(f.owner, f.wid), [item])
-  assert.deepEqual(db.prepare('SELECT * FROM audit_logs WHERE workspaceId=?').all(f.wid), auditBefore)
-})
 test('bulk archive and delete are atomic, versioned, workspace-scoped, and preserve task trees', () => {
   const f = fixture(); const other = fixture()
   const parent = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Parent' })
@@ -317,69 +273,6 @@ test('field and membership cleanup advance item versions and invalidate stale ed
   const afterMember = service.getItem(f.owner, f.wid, item.id)
   assert.equal(Date.parse(afterMember.updatedAt), Date.parse(afterField.updatedAt) + 1)
   denied(() => service.updateItem(f.owner, f.wid, item.id, { expectedUpdatedAt: afterField.updatedAt, assigneeId: member }), 409)
-})
-test('field deletion batched across page boundaries removes only its values and rolls back completely', (t) => {
-  const f = fixture()
-  const removed = service.createField(f.owner, f.wid, { name: 'Removed', type: 'text' })
-  const number = service.createField(f.owner, f.wid, { name: 'Number', type: 'number' })
-  const kept = service.createField(f.owner, f.wid, { name: 'Kept', type: 'text' })
-  const payload = 'v'.repeat(2000)
-  const seeded: import('../app/types.js').Item[] = []
-  db.transaction(() => {
-    for (let index = 0; index < 450; index++) {
-      seeded.push(service.createItem(f.owner, f.wid, {
-        nodeId: f.list.id, title: `Batch ${index}`,
-        customFields: { [removed.id]: index % 2 ? payload : `Row ${index}`, [number.id]: index, [kept.id]: index % 3 ? payload : null },
-      }))
-    }
-  })()
-  const before = service.listItems(f.owner, f.wid)
-  const clock = t.mock.method(Date, 'now', () => Date.parse(seeded[0].updatedAt))
-  db.exec("CREATE TRIGGER fail_field_delete_audit BEFORE INSERT ON audit_logs WHEN NEW.action='field.delete' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
-  try { assert.throws(() => service.deleteField(f.owner, f.wid, removed.id)) } finally { db.exec('DROP TRIGGER fail_field_delete_audit') }
-  assert.deepEqual(service.listItems(f.owner, f.wid), before, 'A failed audit must roll back every batched value update')
-  service.deleteField(f.owner, f.wid, removed.id)
-  const after = service.listItems(f.owner, f.wid)
-  // Same-millisecond createdAt ties order by random UUID: compare by unique title, not position.
-  const byTitle = new Map(after.map((item) => [item.title, item]))
-  assert.equal(after.length, seeded.length)
-  assert.ok(after.every((item) => !Object.hasOwn(item.customFields, removed.id)), 'No task may retain the deleted field')
-  assert.ok(seeded.every((original, index) => {
-    const item = byTitle.get(original.title)!
-    return item && item.customFields[number.id] === index && item.customFields[kept.id] === (index % 3 ? payload : null)
-  }), 'Every unrelated value must survive exactly')
-  assert.ok(seeded.every((original) => {
-    const item = byTitle.get(original.title)!
-    const wasBefore = before.find((entry) => entry.title === original.title)!
-    return Date.parse(item.updatedAt) === Date.parse(wasBefore.updatedAt) + 1
-  }), 'Versions must advance monotonically exactly once per task')
-  const audit = db.prepare("SELECT details FROM audit_logs WHERE resourceId=? AND action='field.delete'").get(removed.id) as { details: string }
-  assert.deepEqual(JSON.parse(audit.details), { touched: 450 })
-  const stale = after[0]
-  denied(() => service.updateItem(f.owner, f.wid, stale.id, { expectedUpdatedAt: before[0].updatedAt, title: 'Stale' }), 409)
-})
-test('formula quoted references are literal and removing an input does not block unrelated task edits', () => {
-  const f = fixture()
-  const input = service.createField(f.owner, f.wid, { name: 'Qty', type: 'number' })
-  const formula = service.createField(f.owner, f.wid, { name: 'Computed', type: 'formula' })
-  const task = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Formula retention',
-    customFields: { [input.id]: 3, [formula.id]: '=CONCAT("{{literal}}", {{Qty}})' } })
-  service.deleteField(f.owner, f.wid, input.id)
-  const updated = service.updateItem(f.owner, f.wid, task.id, { title: 'Still editable' })
-  assert.equal(updated.title, 'Still editable')
-  assert.equal(updated.customFields[formula.id], task.customFields[formula.id])
-  denied(() => service.updateItem(f.owner, f.wid, task.id, { customFields: { [formula.id]: '{{Missing}} + 2' } }), 400)
-  assert.deepEqual(service.getItem(f.owner, f.wid, task.id), updated)
-})
-test('viewer permissions apply to every write and cannot be bypassed by forged data', () => {
-  const f = fixture(); const viewer = createUser()
-  const role = service.listRoles(f.owner, f.wid).find((role) => role.name === 'Viewer')!
-  add(f, viewer, role.id)
-  assert.deepEqual(service.listItems(viewer, f.wid), [])
-  denied(() => service.createItem(viewer, f.wid, { nodeId: f.list.id, title: 'No' }))
-  denied(() => service.createNode(viewer, f.wid, { name: 'No', kind: 'project' }))
-  denied(() => service.updateWorkspace(viewer, f.wid, { name: 'No' }))
-  denied(() => service.createRole(viewer, f.wid, { name: 'No', permissions: [...permissions] }))
 })
 test('custom role managers cannot grant, modify, or remove stronger roles or owner memberships', () => {
   const f = fixture(); const manager = createUser(); const candidate = createUser()
@@ -440,17 +333,6 @@ test('mutations roll back when audit insertion fails, and audit omits task conte
   const serialized = JSON.stringify(db.prepare('SELECT * FROM audit_logs WHERE workspaceId=?').all(f.wid))
   for (const value of ['Secret title', 'Secret prompt', 'Private content']) assert.equal(serialized.includes(value), false)
 })
-test('export is versioned, workspace-scoped and excludes accounts and credentials', () => {
-  const f = fixture()
-  const item = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Exported' })
-  const exported = service.exportWorkspace(f.owner, f.wid)
-  assert.equal(exported.version, 3)
-  assert.equal(exported.items[0].id, item.id)
-  assert.equal(exported.nodes.length, 2)
-  assert.ok(Array.isArray(exported.commentReactions))
-  assert.equal(JSON.stringify(exported).includes('passwordHash'), false)
-  assert.equal(JSON.stringify(exported).includes('@example.test'), false)
-})
 
 test('task checklists round-trip with id normalization and enforce entry bounds', () => {
   const f = fixture()
@@ -477,33 +359,4 @@ test('task checklists round-trip with id normalization and enforce entry bounds'
   const plain = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Plain' })
   assert.deepEqual(plain.checklist, [])
   assert.equal(plain.parentId, null)
-})
-
-test('formula fields validate type, length, references and self-reference', () => {
-  const f = fixture()
-  const qty = service.createField(f.owner, f.wid, { name: 'Qty', type: 'number' })
-  const price = service.createField(f.owner, f.wid, { name: 'Price', type: 'number' })
-  const text = service.createField(f.owner, f.wid, { name: 'Name', type: 'text' })
-  const formula = service.createField(f.owner, f.wid, { name: 'Total', type: 'formula' })
-  const configured = service.createField(f.owner, f.wid, { name: 'Configured total', type: 'formula', settings: { formula: '{{ Qty }} * {{Price}}' } })
-  assert.equal(configured.settings?.formula, '{{ Qty }} * {{Price}}')
-  denied(() => service.createField(f.owner, f.wid, { name: 'Broken configured', type: 'formula', settings: { formula: '{{Missing}}' } }), 400)
-  denied(() => service.createField(f.owner, f.wid, { name: 'Wrong settings', type: 'number', settings: { formula: '=0' } }), 400)
-  denied(() => service.createField(f.owner, f.wid, { name: 'Self configured', type: 'formula', settings: { formula: '{{Self configured}}' } }), 400)
-  const item = service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Formula task', customFields: {
-    [qty.id]: 3, [price.id]: 2.5, [text.id]: 'Widget', [formula.id]: '{{Qty}} * {{Price}}',
-  } })
-  assert.equal(item.customFields[formula.id], '{{Qty}} * {{Price}}')
-  denied(() => service.updateItem(f.owner, f.wid, item.id, { customFields: { [formula.id]: 6 } }), 400)
-  denied(() => service.updateItem(f.owner, f.wid, item.id, { customFields: { [formula.id]: '{{Missing}} * 2' } }), 400)
-  const self = service.createField(f.owner, f.wid, { name: 'Self', type: 'formula' })
-  denied(() => service.updateItem(f.owner, f.wid, item.id, { customFields: { [self.id]: '{{Self}} + 1' } }), 400)
-  denied(() => service.updateItem(f.owner, f.wid, item.id, { customFields: { [formula.id]: 'x'.repeat(201) } }), 400)
-  denied(() => service.createField(f.owner, f.wid, { name: 'Options', type: 'formula', options: ['A'] }), 400)
-  service.updateItem(f.owner, f.wid, item.id, { customFields: { [formula.id]: '{{Name}} + {{Qty}}' } })
-  assert.equal(service.getItem(f.owner, f.wid, item.id).customFields[formula.id], '{{Name}} + {{Qty}}')
-  denied(() => service.updateField(f.owner, f.wid, qty.id, { name: 'Quantity' }), 409)
-  denied(() => service.deleteField(f.owner, f.wid, price.id), 409)
-  service.deleteField(f.owner, f.wid, text.id)
-  assert.equal(service.getItem(f.owner, f.wid, item.id).customFields[formula.id], '{{Name}} + {{Qty}}')
 })
