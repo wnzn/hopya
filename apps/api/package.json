@@ -12,7 +12,7 @@
     "start": "node build/bin/console.js migration:run --no-schema-generate --force && node build/bin/server.js",
     "mcp": "node build/bin/mcp.js",
     "ace": "node ace.js",
-    "build": "tsc && node scripts/copy-assets.mjs",
+    "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsx tests/run.ts"
   },
