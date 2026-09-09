@@ -28,7 +28,7 @@ services:
       APP_URL: ${APP_URL:-http://localhost:8888}
       APP_KEY: ${APP_KEY:?Set APP_KEY in .env}
       SETUP_TOKEN: ${SETUP_TOKEN:?Set SETUP_TOKEN in .env}
-      LANDING_ENABLED: ${LANDING_ENABLED:-true}
+      LANDING_ENABLED: ${LANDING_ENABLED:-false}
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-filesystem}
       S3_BUCKET: ${S3_BUCKET:-}
@@ -57,7 +57,7 @@ services:
       - ./data:/data
 
   # Optional Postgres. Enable with COMPOSE_PROFILES=postgres in .env plus
-  # DB_CONNECTION=pg and DATABASE_URL=postgres://hopya:...@postgres:5432/hopya.
+  # DB_CONNECTION=pg and the generated DATABASE_URL.
   postgres:
     <<: *app
     image: postgres:17-alpine
@@ -68,7 +68,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hopya}
       POSTGRES_USER: ${POSTGRES_USER:-hopya}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -90,7 +90,7 @@ services:
       PORT: "4321"
       INTERNAL_API_URL: http://api:3333
       ASTRO_TELEMETRY_DISABLED: "1"
-      LANDING_ENABLED: ${LANDING_ENABLED:-true}
+      LANDING_ENABLED: ${LANDING_ENABLED:-false}
 
   proxy:
     <<: *app
@@ -112,5 +112,4 @@ services:
       retries: 3
 
 volumes:
-  data:
   postgres-data:

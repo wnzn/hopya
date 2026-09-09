@@ -29,12 +29,18 @@ test('Docker initialization generates independent private secrets and keeps inte
   assert.equal(data.HTTP_PORT, '8088')
   assert.equal(data.BIND_ADDRESS, '127.0.0.1')
   assert.equal(data.DATA_DIR, '/data')
+  assert.equal(data.LANDING_ENABLED, 'false')
   assert.equal(data.REGISTRATION_ENABLED, 'false')
+  assert.equal(data.COMPOSE_PROFILES, '')
+  assert.equal(data.DB_CONNECTION, 'sqlite')
+  assert.match(data.POSTGRES_PASSWORD, /^[a-f0-9]{64}$/)
+  assert.equal(data.DATABASE_URL, `postgres://hopya:${data.POSTGRES_PASSWORD}@postgres:5432/hopya`)
   assert.equal(data.OIDC_AUTO_PROVISION, 'false')
   assert.equal(data.OIDC_ALLOW_INSECURE_HTTP, 'false')
   assert.equal(data.STORAGE_DRIVER, 'filesystem')
   for (const key of ['AI_PROVIDER', 'AI_API_KEY', 'OIDC_ISSUER', 'OIDC_CLIENT_SECRET', 'AWS_SECRET_ACCESS_KEY']) assert.equal(data[key], '')
-  assert.deepEqual(await readdir(root), ['.env'])
+  assert.equal((await lstat(join(root, 'data'))).mode & 0o777, 0o700)
+  assert.deepEqual((await readdir(root)).sort(), ['.env', 'data'])
   assert.equal(JSON.stringify(result).includes(data.APP_KEY), false)
 })
 
@@ -79,7 +85,7 @@ test('racing initializers publish exactly one complete configuration and leave n
   assert.ok(data.APP_KEY && data.SETUP_TOKEN)
   assert.match(data.APP_KEY, /^[a-f0-9]{64}$/)
   assert.match(data.SETUP_TOKEN, /^[a-f0-9]{64}$/)
-  assert.deepEqual(await readdir(root), ['.env'])
+  assert.deepEqual((await readdir(root)).sort(), ['.env', 'data'])
 })
 
 test('invalid modes, ports and development port collisions create no files', async (t) => {
@@ -107,7 +113,7 @@ test('the dependency-free CLI supports help, private initialization and safe dup
   const data = parseEnv(await readFile(join(root, '.env'), 'utf8'))
   assert.ok(data.APP_KEY && data.SETUP_TOKEN)
   assert.match(output.stdout, /no accounts were created/)
-  for (const secret of [data.APP_KEY, data.SETUP_TOKEN]) assert.equal((output.stdout + output.stderr).includes(secret), false)
+  for (const secret of [data.APP_KEY, data.SETUP_TOKEN, data.POSTGRES_PASSWORD]) assert.equal((output.stdout + output.stderr).includes(secret), false)
   const before = await readFile(join(root, '.env'), 'utf8')
   await assert.rejects(execute(process.execPath, ['--experimental-strip-types', script], { cwd: root, env }), (error: unknown) => {
     assert.match((error as { stderr: string }).stderr, /already exists and was left unchanged/)
@@ -122,6 +128,7 @@ test('private owner-readable permissions do not depend on the caller umask', asy
   try {
     const result = await initializeEnvironment({ directory: root })
     assert.equal((await lstat(result.path)).mode & 0o777, 0o600)
+    assert.equal((await lstat(join(root, 'data'))).mode & 0o777, 0o700)
     assert.ok(parseEnv(await readFile(result.path, 'utf8')).APP_KEY)
   } finally { process.umask(previous) }
 })

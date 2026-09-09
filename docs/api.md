@@ -73,7 +73,7 @@ curl --fail-with-body --get "$HOPYA_URL/api/v1/workspaces/$WORKSPACE_ID/items/pa
 
 For a subsequent page, also pass `--data-urlencode "cursor=$NEXT_CURSOR"` after taking the non-null value from the previous response. Each request checks current permissions. The `(createdAt,id)` seek avoids offset drift if an earlier item is deleted; multiple pages are not a frozen snapshot across concurrent changes. Use a complete bulk stream when you need one consistent dataset snapshot.
 
-`GET /workspaces/:wid/items` retains the existing complete JSON-array response and `nodeId`, `search`, `status`, `archived` filters. It streams a read-only SQLite snapshot. `/workspaces/:wid/export` likewise streams the complete versioned workspace document and always includes archives. Neither silently limits rows. At most eight bulk reads globally and two per account may run at once; excess requests receive `429` with `Retry-After: 1`. Snapshots expire after 30 seconds and are released on cancellation, finish or error. HEAD validates access but holds no stream slot.
+`GET /workspaces/:wid/items` retains the existing complete JSON-array response and `nodeId`, `search`, `status`, `archived` filters. It streams a consistent read snapshot on SQLite or PostgreSQL. `/workspaces/:wid/export` likewise streams the complete versioned workspace document and always includes archives. Neither silently limits rows. At most eight bulk reads globally and two per account may run at once; excess requests receive `429` with `Retry-After: 1`. Snapshots expire after 30 seconds and are released on cancellation, finish or error. HEAD validates access but holds no stream slot.
 
 Streams recheck authentication and task-read permission before each chunk. Errors detected before headers return sanitized JSON; revocation, timeout or corruption after headers aborts the connection. Treat an interrupted download as failed, not as an importable partial export. Already delivered bytes cannot be recalled. Settings downloads stream directly through the browser rather than buffering and reserializing exports in JavaScript.
 
@@ -90,11 +90,13 @@ Streams recheck authentication and task-read permission before each chunk. Error
   "dueDate": "2026-09-10",
   "tags": ["operations"],
   "assigneeId": null,
+  "checklist": [{"text": "Verify task data", "done": false}],
+  "parentId": null,
   "customFields": {}
 }
 ```
 
-`GET`, `PATCH` and `DELETE /workspaces/:wid/items/:id` address a single workspace-scoped task. PATCH preserves omitted fields. Null clears nullable dates and assignee; empty string clears description. Status must match an ID in the destination list's effective configuration on create, update and move. An explicit list workflow is effective; otherwise the root project's configuration is effective. Standalone lists always define explicit statuses. Omitted create status defaults to the first effective status. Priority: `none`, `low`, `medium`, `high`, `urgent`. Title is 1-300 characters, description at most 50,000, tags at most 30 distinct values of 1-60 characters. Start cannot follow due date. The assignee must be an active workspace member.
+`GET`, `PATCH` and `DELETE /workspaces/:wid/items/:id` address a single workspace-scoped task. PATCH preserves omitted fields. Null clears nullable dates, assignee, or parent; empty string clears description. Status must match an ID in the destination list's effective configuration on create, update and move. An explicit list workflow is effective; otherwise the root project's configuration is effective. Standalone lists always define explicit statuses. Omitted create status defaults to the first effective status. Priority: `none`, `low`, `medium`, `high`, `urgent`. Title is 1-300 characters, description at most 50,000, tags at most 30 distinct values of 1-60 characters. A checklist has at most 100 entries with server-normalized IDs and 1-200 character text. `parentId` must identify another task in the same workspace and cannot create a cycle or exceed the subtask-depth limit. Start cannot follow due date. The assignee must be an active workspace member.
 
 Responses add `id`, `workspaceId`, `archivedAt`, `createdAt` and `updatedAt`. Server-generated identity/timestamps and archive state cannot be overwritten through ordinary task create/update. Updates require both `items:read` and `items:write`; deletion requires `items:delete`.
 
@@ -196,7 +198,7 @@ Task transfer uses `POST /workspaces/:wid/items/import` (requires `items:write`)
 
 ## Site Settings
 
-- `GET /site/settings` and `PATCH /site/settings` (site admin): read or toggle `landingDisabled`. The public `/config` `landingEnabled` is false when the operator sets `LANDING_ENABLED=false` or the admin disables the page; the landing page itself renders from the editable `apps/web/src/landing.json` template.
+- `GET /site/settings` and `PATCH /site/settings` (site admin): read or toggle `landingDisabled` and `mcpSseEnabled`; GET also reports whether the operator set `LANDING_ENABLED=true`. The public `/config` `landingEnabled` is false by default and remains false when the operator disables it or an administrator disables the page. The landing page itself renders from the editable `apps/web/src/landing.json` template.
 - `PUT /site/logo` (site admin): upload `{contentType,data}` where data is base64 PNG, JPEG, WebP or SVG up to 300 KB. `GET /site/logo` serves the public bytes with a 300-second cache; `DELETE /site/logo` removes it. `/config` exposes the current `logo` URL when set.
 
 ## Errors

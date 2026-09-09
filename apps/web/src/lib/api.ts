@@ -87,6 +87,7 @@ export type AutomationRun = {
 };
 export type SiteSettings = {
   landingDisabled: boolean;
+  landingOperatorEnabled: boolean;
   mcpSseEnabled: boolean;
   logo: { updatedAt: string; url: string } | null;
 };

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { link, open, readFile, unlink } from 'node:fs/promises'
+import { chmod, link, mkdir, open, readFile, unlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
@@ -18,9 +18,10 @@ export async function initializeEnvironment(options: { directory?: string; mode?
   const path = join(directory, '.env')
   let template = await readFile(new URL('../.env.example', import.meta.url), 'utf8')
   const example = parseEnv(template)
-  for (const key of ['APP_KEY', 'SETUP_TOKEN', 'SMTP_URL', 'AI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'OIDC_CLIENT_SECRET']) {
+  for (const key of ['APP_KEY', 'SETUP_TOKEN', 'DATABASE_URL', 'POSTGRES_PASSWORD', 'SMTP_URL', 'AI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'OIDC_CLIENT_SECRET']) {
     if (example[key]) throw new Error('The example configuration must not contain credentials')
   }
+  const postgresPassword = randomBytes(32).toString('hex')
   const values = {
     APP_KEY: randomBytes(32).toString('hex'),
     SETUP_TOKEN: randomBytes(32).toString('hex'),
@@ -32,10 +33,15 @@ export async function initializeEnvironment(options: { directory?: string; mode?
     PORT: String(mode === 'development' ? port : 4321),
     DATA_DIR: mode === 'development' ? '../../data' : '/data',
     TRUST_PROXY_HOPS: '0',
+    LANDING_ENABLED: 'false',
     REGISTRATION_ENABLED: 'false',
-    STORAGE_DRIVER: 'filesystem',
+    COMPOSE_PROFILES: '',
     DB_CONNECTION: 'sqlite',
-    DATABASE_URL: 'postgres://hopya:hopya@postgres:5432/hopya',
+    DATABASE_URL: `postgres://hopya:${postgresPassword}@postgres:5432/hopya`,
+    POSTGRES_DB: 'hopya',
+    POSTGRES_USER: 'hopya',
+    POSTGRES_PASSWORD: postgresPassword,
+    STORAGE_DRIVER: 'filesystem',
     OIDC_ISSUER: '', OIDC_AUTO_PROVISION: 'false', OIDC_ALLOW_INSECURE_HTTP: 'false',
     AI_PROVIDER: '',
   }
@@ -59,6 +65,8 @@ export async function initializeEnvironment(options: { directory?: string; mode?
     // A same-directory hard link publishes only complete bytes and never replaces
     // an existing file, directory or symlink, including racing initializers.
     await link(temporary, path)
+    const createdData = await mkdir(join(directory, 'data'), { recursive: true, mode: 0o700 })
+    if (createdData) await chmod(createdData, 0o700)
   } finally {
     await handle?.close()
     if (created) await unlink(temporary)

@@ -1,15 +1,15 @@
 # Deployment
 
-Hopya runs as one API replica with SQLite on local persistent storage. Do not place the data volume on NFS or run multiple API replicas against the same database.
+Hopya runs as one API replica with either SQLite on local persistent storage or PostgreSQL. Do not place SQLite on NFS or run multiple API replicas; multi-replica operation is not a supported topology even with PostgreSQL.
 
 ## Architecture
 
 ```text
 Browser -> 127.0.0.1:8888 -> Nginx -> Astro
-                                  -> AdonisJS -> /data
+                                  -> AdonisJS -> SQLite /data or PostgreSQL
 ```
 
-`docker-compose.yml` builds separate API and web images, runs every service with a read-only root filesystem and dropped capabilities, and publishes only the Nginx proxy. The API is the only service with access to application secrets and the `hopya_data` volume.
+`docker-compose.yml` builds separate API and web images, runs every service with a read-only root filesystem and dropped capabilities, and publishes only the Nginx proxy. The API is the only service with access to application secrets and the ignored `./data` host directory.
 
 ## Install
 
@@ -19,7 +19,7 @@ Generate a private configuration file:
 npm run init:env
 ```
 
-The initializer creates independent `APP_KEY` and `SETUP_TOKEN` values, writes `.env` with owner-only permissions, and refuses to replace an existing file. The README includes a Docker-only initializer command for hosts without Node.js.
+The initializer creates independent `APP_KEY` and `SETUP_TOKEN` values, writes `.env` with owner-only permissions, creates a private writable `./data` directory, and refuses to replace an existing configuration. The README includes a Docker-only initializer command for hosts without Node.js.
 
 Validate and start the stack:
 
@@ -41,12 +41,14 @@ Open `http://localhost:8888` and create the first administrator with `SETUP_TOKE
 | `APP_KEY` | Stable application secret; do not rotate during routine upgrades |
 | `SETUP_TOKEN` | Secret accepted only while creating the first account |
 | `BIND_ADDRESS`, `HTTP_PORT` | Proxy listener, default `127.0.0.1:8888` |
-| `LANDING_ENABLED` | Show the public landing page |
+| `LANDING_ENABLED` | Enable the optional public landing page; defaults to `false` |
 | `REGISTRATION_ENABLED` | Allow public local-account registration |
 | `SMTP_URL`, `SMTP_FROM` | Enable password recovery and email automation |
 | `STORAGE_DRIVER`, `S3_*`, `AWS_*` | Configure filesystem or S3-compatible attachments |
 | `OIDC_*` | Configure optional OpenID Connect sign-in |
 | `AI_*` | Configure the optional AI assistant |
+| `DB_CONNECTION`, `DATABASE_URL` | Select `sqlite` (default) or a PostgreSQL connection |
+| `COMPOSE_PROFILES`, `POSTGRES_*` | Enable and configure the optional bundled PostgreSQL service |
 
 After changing environment values, recreate affected services:
 
@@ -56,6 +58,17 @@ docker compose up -d --force-recreate api web proxy
 
 `docker compose restart` does not load changed environment values.
 
+### PostgreSQL
+
+The initializer generates a private PostgreSQL password and matching URL but leaves SQLite selected. For a new PostgreSQL deployment, set these two values in `.env` before first startup:
+
+```dotenv
+COMPOSE_PROFILES=postgres
+DB_CONNECTION=pg
+```
+
+The generated `DATABASE_URL` points to the bundled `postgres` service. For an external PostgreSQL server, leave `COMPOSE_PROFILES` empty and set `DATABASE_URL` to that server instead. Treat switching engines as a data migration; changing the variables does not copy an existing SQLite or PostgreSQL database.
+
 ## Customize The Landing Page
 
 The intentionally basic public page reads four plain-text values from `apps/web/src/landing.json`: `title`, `tagline`, `callToAction`, and `footerNote`. Edit those strings without adding HTML, keep the file valid JSON, then rebuild the web image:
@@ -64,7 +77,7 @@ The intentionally basic public page reads four plain-text values from `apps/web/
 docker compose up -d --build web
 ```
 
-Source edits are copied into the server build and do not update an already-built container. To skip the landing page, set `LANDING_ENABLED=false` in `.env` and recreate the web service. A site administrator can also enable or disable it from **Settings**.
+Source edits are copied into the server build and do not update an already-built container. The landing page is off by default. To show it, set `LANDING_ENABLED=true` in `.env`, recreate the API and web services, then use **Administration > Site settings** if an administrator previously disabled it. Setting the variable to `false` forces the page off regardless of the administrator setting.
 
 ## HTTPS
 
@@ -76,7 +89,7 @@ Secure cookies and same-origin mutation checks depend on an accurate `APP_URL`. 
 
 ## Attachments
 
-The default `STORAGE_DRIVER=filesystem` stores private objects in `hopya_data`. For S3-compatible storage, configure a private bucket and least-privilege credentials with `S3_BUCKET`, `S3_REGION`, optional `S3_ENDPOINT`, and the required `AWS_*` values.
+The default `STORAGE_DRIVER=filesystem` stores private objects under `./data`. For S3-compatible storage, configure a private bucket and least-privilege credentials with `S3_BUCKET`, `S3_REGION`, optional `S3_ENDPOINT`, and the required `AWS_*` values.
 
 Changing storage backends is not a data migration. Transfer and verify existing objects before changing configuration. Remote object versions and lifecycle rules need a separate backup policy.
 
@@ -98,7 +111,7 @@ The AI assistant is disabled when `AI_PROVIDER` is empty. Enabling it can send a
 
 ## Backup And Restore
 
-A workspace export is portable task data, not a full backup. A full local backup needs the complete `/data` volume and the original `.env`.
+A workspace export is portable task data, not a full backup. SQLite deployments need the complete `./data` directory. PostgreSQL deployments need a consistent database dump plus `./data` when filesystem attachments are enabled. Both require the original `.env`.
 
 Create a cold backup:
 
@@ -107,10 +120,7 @@ mkdir -p backups
 chmod 700 backups
 umask 077
 docker compose stop proxy api
-docker run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --mount type=volume,src=hopya_data,dst=/data,readonly \
-  hopya-api:local tar -czf - -C /data . > backups/hopya-data.tgz
+tar -czf backups/hopya-data.tgz -C data .
 tar -tzf backups/hopya-data.tgz
 sha256sum backups/hopya-data.tgz
 docker compose up -d --wait
@@ -118,24 +128,24 @@ docker compose up -d --wait
 
 Store the archive and an encrypted `.env` backup off-host. For S3 storage, back up remote objects at the same logical point as the database.
 
-Restore into a new volume rather than overwriting the old one:
+For PostgreSQL, stop API writes and use the server's supported `pg_dump`/`pg_restore` workflow instead of treating its data volume as a portable archive. Verify the dump before restarting Hopya and back up filesystem or S3 objects at the same logical point.
+
+Restore into a new directory rather than overwriting the old one:
 
 ```sh
 docker compose stop proxy api
-docker volume create hopya_restore_data
-docker run --rm -i --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --mount type=volume,src=hopya_restore_data,dst=/data \
-  hopya-api:local tar --no-same-owner -xzf - -C /data < backups/hopya-data.tgz
+mkdir -p restore-data
+chmod 700 restore-data
+tar --no-same-owner -xzf backups/hopya-data.tgz -C restore-data
 ```
 
 Create an ignored `compose.restore.yaml`:
 
 ```yaml
-volumes:
-  data:
-    external: true
-    name: hopya_restore_data
+services:
+  api:
+    volumes:
+      - ./restore-data:/data
 ```
 
 Then validate and start with both files:
@@ -155,7 +165,7 @@ Verify login, workspace counts, task writes, permissions, and private attachment
 4. Start with `docker compose up -d --wait`.
 5. Verify health, login, task writes, and attachments.
 
-Migrations run automatically when the API starts. Never use `docker compose down -v` during a normal upgrade because it deletes the data volume.
+Migrations run automatically when the API starts. Keep the selected database and `./data` attachment storage in place during upgrades; the removed pre-Lucid SQL migration runner is not an upgrade path for older databases.
 
 ## Troubleshooting
 

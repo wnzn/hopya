@@ -63,6 +63,7 @@ function compose(...args: string[]): Promise<Buffer> {
   const override = JSON.stringify({
     services: Object.fromEntries(['api', 'web', 'proxy'].map(service => [service, {
       labels: { [label]: owner },
+      ...(service === 'api' ? { volumes: ['data:/data'] } : {}),
       ...(service === 'proxy' ? {} : {
         image: images[service as keyof typeof images],
         build: { labels: { [label]: owner } },
@@ -256,12 +257,33 @@ try {
   console.log('Verified generated credentials, session value and query secret are absent from container logs')
 
   phase = 'runtime landing and DNS refresh'
+  const defaultLanding = await fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+  assert.equal(defaultLanding.status, 302)
+  assert.equal(defaultLanding.headers.get('location'), '/login')
+  await request('/site/settings', 'PATCH', { landingDisabled: false })
+  assert.equal((await fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })).status, 302)
+  console.log('Verified the landing page defaults off and an administrator cannot override the operator gate')
+  env.LANDING_ENABLED = 'true'
+  await compose('up', '-d', '--no-build', '--force-recreate', '--wait', 'api', 'web')
+  let enabledLanding = false
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      const [response, configResponse] = await Promise.all([
+        fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) }),
+        fetch(`${origin}/api/v1/config`, { signal: AbortSignal.timeout(5000) }),
+      ])
+      enabledLanding = response.status === 200 && configResponse.ok && (await configResponse.json()).landingEnabled === true
+      if (enabledLanding) break
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  assert.ok(enabledLanding, 'Operator landing opt-in did not reach both upstreams')
   await request('/site/settings', 'PATCH', { landingDisabled: true })
   const disabledLanding = await fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
   assert.equal(disabledLanding.status, 302)
   assert.equal(disabledLanding.headers.get('location'), '/login')
   await request('/site/settings', 'PATCH', { landingDisabled: false })
-  assert.equal((await fetch(`${origin}/`, { signal: AbortSignal.timeout(5000) })).status, 200)
+  assert.equal((await fetch(`${origin}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })).status, 200)
   console.log('Verified administrator landing visibility applies without rebuilding')
   env.LANDING_ENABLED = 'false'
   await compose('up', '-d', '--no-build', '--force-recreate', '--wait', 'api', 'web')

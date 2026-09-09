@@ -1,6 +1,6 @@
 # Hopya
 
-Hopya is a self-hosted task manager for teams that want a private, straightforward workspace without a mandatory cloud service. Organize work into projects, folders, and lists, then use List, Board, Calendar, Table, or Timeline views over the same tasks.
+Hopya is a self-hosted task manager for teams that want a private, straightforward workspace without a mandatory cloud service. Organize work into projects, folders, and lists, then use List, Board, Calendar, Gallery, or Timeline views over the same tasks.
 
 > Hopya is an early release. Back up your data and review the [security](docs/security.md) and [deployment](docs/deployment.md) guidance before using it for important workloads.
 
@@ -10,7 +10,7 @@ Hopya is a self-hosted task manager for teams that want a private, straightforwa
 - Projects, folders, lists, tasks, subtasks, checklists, statuses, priorities, tags, dates, and assignees
 - Workspace Inbox notifications, user/task/structure mentions, threaded comments, and emoji reactions
 - Configurable text, number, date, datetime, checkbox, select, checklist, rating, and formula fields
-- List, Board, Calendar, Table, Timeline, and Gallery views
+- List, Board, Calendar, Gallery, and Timeline views
 - Private attachments on local storage or an optional S3-compatible service
 - Local accounts, optional OIDC sign-in, password recovery, revocable API tokens, and audit records
 - JSON/CSV task import and export, plus complete workspace JSON exports
@@ -51,12 +51,11 @@ Useful commands:
 ```sh
 docker compose ps
 docker compose logs -f api web proxy
-docker compose pull
 docker compose up -d --build --wait
 docker compose down
 ```
 
-Do not use `docker compose down -v` unless you intentionally want to delete all Hopya data.
+`docker compose down` removes containers but leaves the ignored `./data` directory intact. Do not delete that directory unless you intentionally want to delete all Hopya data.
 
 ## First Workspace
 
@@ -78,18 +77,21 @@ The generated `.env` contains the required private values. Keep it out of Git an
 | `APP_KEY` | Stable application secret; changing it invalidates signed state |
 | `SETUP_TOKEN` | One-time secret used to create the first administrator |
 | `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8888` |
-| `LANDING_ENABLED` | Show or skip the public landing page |
+| `LANDING_ENABLED` | Enable the optional public landing page; off by default |
 | `REGISTRATION_ENABLED` | Allow public local-account registration; off by default |
 | `SMTP_URL`, `SMTP_FROM` | Enable password recovery and email delivery |
 | `STORAGE_DRIVER`, `S3_*`, `AWS_*` | Select filesystem or private S3-compatible attachments |
 | `OIDC_*` | Configure an optional standards-compliant OIDC provider |
 | `AI_*` | Configure an optional AI provider and model |
+| `DB_CONNECTION`, `DATABASE_URL` | Select SQLite (default) or PostgreSQL |
 
-All integrations are optional. Empty provider settings keep the cloud-free core operational. See [deployment](docs/deployment.md), [integrations](docs/integrations.md), and [OIDC setup](docs/oidc-setup.md) for details.
+All integrations are optional. Empty provider settings keep the cloud-free core operational. SQLite needs no database configuration. To use the bundled PostgreSQL profile, set `COMPOSE_PROFILES=postgres` and `DB_CONNECTION=pg`; the initializer already generates matching private `DATABASE_URL` and `POSTGRES_PASSWORD` values. See [deployment](docs/deployment.md), [integrations](docs/integrations.md), and [OIDC setup](docs/oidc-setup.md) for details.
 
 ## Landing Page
 
-The public root page is intentionally basic. To change its headline, description, button label, or footer note, edit the four plain-text values in `apps/web/src/landing.json`. Keep the file valid JSON; HTML is not supported.
+The public landing page is disabled by default, so `/` redirects to sign-in. To enable it, set `LANDING_ENABLED=true` in `.env`, recreate the API and web services, and enable **Landing page** under **Administration > Site settings** if an administrator previously disabled it.
+
+To change its headline, description, button label, or footer note, edit the four plain-text values in `apps/web/src/landing.json`. Keep the file valid JSON; HTML is not supported.
 
 Rebuild the web image after editing:
 
@@ -97,16 +99,16 @@ Rebuild the web image after editing:
 docker compose up -d --build web
 ```
 
-Set `LANDING_ENABLED=false` in `.env` and recreate the web service to redirect `/` to sign-in instead. Site administrators can also control landing-page visibility from **Settings**.
+Set `LANDING_ENABLED=false` and recreate the API and web services to force the landing page off again. The operator setting takes precedence over the administrator control.
 
 ## Data And Backups
 
-Application data is stored in the `hopya_data` Docker volume. Workspace exports do not include account credentials or attachment bytes and are not complete backups.
+Filesystem attachments and the default SQLite database are stored in the ignored `./data` directory. PostgreSQL data uses the `hopya_postgres-data` volume. Workspace exports do not include account credentials or attachment bytes and are not complete backups.
 
 For a reliable backup:
 
-1. Stop Hopya so SQLite and attachment writes are closed.
-2. Archive the entire `/data` volume.
+1. Stop Hopya so database and attachment writes are closed.
+2. Archive `./data` and, when selected, take a consistent PostgreSQL backup.
 3. Store an encrypted copy of `.env` separately.
 4. Test restoration into a new volume before relying on the backup.
 
@@ -153,7 +155,7 @@ Environment:
 
 MCP is read-only by default. For Docker Compose, set `HOPYA_MCP_ALLOW_WRITES=true` in `.env` and recreate the API service to expose mutation tools; the MCP client must still obtain explicit human approval for each write.
 
-Site administrators may also enable the disabled-by-default SSE transport in **Settings > Site settings**. Connect an SSE-compatible MCP client to `https://your-hopya.example/api/v1/mcp/sse` and configure `Authorization: Bearer <personal token>` as a header. Never place the token in the URL. Disabling SSE immediately closes active sessions; sessions otherwise expire after 30 minutes. Both transports expose the same tools and enforce the token owner's current workspace permissions.
+Site administrators may also enable the disabled-by-default SSE transport in **Administration > Site settings**. Connect an SSE-compatible MCP client to `https://your-hopya.example/api/v1/mcp/sse` and configure `Authorization: Bearer <personal token>` as a header. Never place the token in the URL. Disabling SSE immediately closes active sessions; sessions otherwise expire after 30 minutes. Both transports expose the same tools and enforce the token owner's current workspace permissions.
 
 ## Documentation
 

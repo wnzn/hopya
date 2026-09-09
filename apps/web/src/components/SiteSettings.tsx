@@ -160,11 +160,17 @@ export default function SiteSettingsSection() {
                 <small className="muted">
                   {settings.landingDisabled
                     ? "Disabled — visitors go straight to sign-in."
+                    : !settings.landingOperatorEnabled
+                      ? "Disabled by LANDING_ENABLED=false. The operator must enable it first."
                     : "Enabled — visitors see the public landing page."}
                 </small>
               </div>
-              <button disabled={busy} onClick={() => void toggleLanding()}>
-                {settings.landingDisabled ? "Enable landing page" : "Disable landing page"}
+              <button disabled={busy || !settings.landingOperatorEnabled} onClick={() => void toggleLanding()}>
+                {!settings.landingOperatorEnabled
+                  ? "Operator-disabled"
+                  : settings.landingDisabled
+                    ? "Enable landing page"
+                    : "Disable landing page"}
               </button>
             </div>
             <div className="setting-row">

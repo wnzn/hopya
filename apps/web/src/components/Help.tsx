@@ -36,9 +36,9 @@ export default function Help() {
                   </li>
                   <li>
                     The <strong>account menu</strong> (your avatar, bottom of
-                    the sidebar) links to Field management, Import &amp; export,
-                    Webhooks &amp; automations, API docs, Help, Settings, and
-                    Administration for site admins, plus Sign out.
+                    the sidebar) links to Account settings, Field management,
+                    Import &amp; export, Webhooks &amp; automations, API docs, Help,
+                    Settings, and Administration for site admins, plus Sign out.
                   </li>
                   <li>
                     The workspace <strong>Inbox</strong> sits below the workspace
@@ -72,10 +72,12 @@ export default function Help() {
                     folder&apos;s tasks use its project&apos;s fields.
                   </li>
                   <li>
-                    <strong>Lists</strong> hold tasks. A list follows its
-                    project&apos;s statuses unless it defines an override. Use a
-                    node&apos;s Manage action to choose its shared icon and color;
-                    list management also configures colors for exact tag names.
+                    <strong>Lists</strong> hold tasks. A standalone list can sit
+                    at the workspace root and owns its fields and statuses. A
+                    list inside a project follows that project&apos;s statuses unless
+                    it defines an override. Use a node&apos;s Manage action to choose
+                    its shared icon and color; list management also configures
+                    colors for exact tag names.
                   </li>
                 </ul>
               </div>
@@ -99,12 +101,8 @@ export default function Help() {
                     provide pointer and keyboard alternatives.
                   </li>
                   <li>
-                    The <strong>list view</strong> can reorder its columns with
-                    a drag-and-drop bar and matching Move buttons. When you
-                    have permission to manage fields and the view covers a
-                    single project, the order saves for that project; in mixed
-                    or multi-project scopes the order lasts for the current
-                    session only and resets when you leave.
+                    List column order, visibility, and sorting are saved for
+                    your account in the current workspace and project scope.
                   </li>
                   <li>
                     Each List section ends with an <strong>Add task</strong> row
@@ -134,7 +132,7 @@ export default function Help() {
                 <ul>
                   <li>
                     Select a task title to open its <strong>details</strong>{" "}
-                    dialog with the full editor: title, description, status,
+                    dialog with the full editor: title, Body, status,
                     priority, dates, assignee, tags, and custom fields.
                   </li>
                   <li>
@@ -147,8 +145,8 @@ export default function Help() {
                   </li>
                   <li>
                     Use <strong>Add fields</strong> (the options dialog) to
-                    assign workspace fields to the project without leaving the
-                    task.
+                    configure workspace fields for the task&apos;s project or
+                    standalone list without leaving the task.
                   </li>
                   <li>
                     Track steps with <strong>checklists</strong> and break big
@@ -186,15 +184,15 @@ export default function Help() {
             </section>
             <section className="settings-section" aria-labelledby="help-descriptions-heading">
               <div className="section-intro">
-                <h2 id="help-descriptions-heading">Descriptions</h2>
+                <h2 id="help-descriptions-heading">Body</h2>
                 <p>Rich text for context and notes.</p>
               </div>
               <div className="stack">
                 <ul>
                   <li>
-                    The description editor toolbar offers bold, italic,
+                    The Body editor toolbar offers bold, italic,
                     strikethrough, code, headings, bulleted and numbered lists,
-                    links, and clear-formatting.
+                    quotes, code blocks, and links.
                   </li>
                   <li>Links are checked before they apply; unsafe targets are rejected.</li>
                 </ul>
@@ -203,18 +201,18 @@ export default function Help() {
             <section className="settings-section" aria-labelledby="help-fields-heading">
               <div className="section-intro">
                 <h2 id="help-fields-heading">Fields &amp; Field Management</h2>
-                <p>Custom data and status workflows, per project.</p>
+                <p>Custom data and status workflows for projects and standalone lists.</p>
               </div>
               <div className="stack">
                 <ul>
                   <li>
                     <strong>Assignment:</strong> uncheck a field to remove it
-                    from a project. Saved task values are retained, and core
+                    from a project or standalone list. Saved task values are retained, and core
                     task details remain available in the task editor.
                   </li>
                   <li>
-                    <strong>Creation:</strong> creating a field in a project
-                    dialog adds a workspace catalog field to that project only,
+                    <strong>Creation:</strong> creating a field in the field
+                    dialog adds a workspace catalog field to that field owner only,
                     with no default task values set.
                   </li>
                   <li>
@@ -264,9 +262,11 @@ export default function Help() {
                     Imports accept <strong>CSV and JSON formats</strong>.
                   </li>
                   <li>
-                    <strong>Exports</strong> bundle tasks, hierarchy, and custom
-                    fields. Attachment files are not bundled, so keep the
-                    download private: it contains workspace data.
+                    <strong>Task exports</strong> contain filtered tasks and
+                    custom fields. Use <strong>Download workspace JSON</strong>
+                    in Settings for hierarchy, workspace configuration, and
+                    attachment metadata. Neither export bundles attachment
+                    files, so keep downloads private.
                   </li>
                 </ul>
               </div>
@@ -313,8 +313,9 @@ export default function Help() {
               <div className="stack">
                 <ul>
                   <li>
-                    <strong>Profile:</strong> update your display name and, with
-                    your current password, set a new one.
+                    <strong>Profile:</strong> update your display name, sign-in
+                    email, or local password. Credential changes require your
+                    current password and revoke other sessions and tokens.
                   </li>
                   <li>
                     <strong>Tokens:</strong> personal access tokens act as you
@@ -343,8 +344,9 @@ export default function Help() {
                     keeping its four values as plain JSON strings. Docker
                     operators apply changes with{" "}
                     <code>docker compose up -d --build web</code>. Set{" "}
-                    <code>LANDING_ENABLED=false</code> in <code>.env</code> and
-                    recreate the web service to send visitors directly to sign-in.
+                    <code>LANDING_ENABLED=true</code> in <code>.env</code> and
+                    recreate the API and web services to make the disabled-by-default
+                    page available. Administrators can then disable or enable it here.
                   </li>
                   <li>
                     <strong>Administration</strong> (admins) manages accounts,
@@ -368,8 +370,8 @@ export default function Help() {
                     them.
                   </li>
                   <li>
-                    Column reorder and resize, board drag and drop, and menus
-                    all have keyboard-accessible alternatives.
+                    Column reorder, board drag and drop, and menus all have
+                    keyboard-accessible alternatives.
                   </li>
                   <li>
                     Press unmodified <strong>C</strong> from the workspace to

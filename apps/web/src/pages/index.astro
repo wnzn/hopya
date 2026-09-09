@@ -18,7 +18,7 @@ try {
   // Keep the built-in defaults when the template is unreadable or invalid.
 }
 Astro.response.headers.set('Cache-Control', 'no-store');
-let landingEnabled = process.env.LANDING_ENABLED !== 'false';
+let landingEnabled = process.env.LANDING_ENABLED === 'true';
 if (landingEnabled) {
   try {
     const response = await fetch(`${process.env.INTERNAL_API_URL || 'http://127.0.0.1:3333'}/api/v1/config`, {
