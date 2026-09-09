@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { createServer } from 'node:net'
 import { randomBytes, randomUUID, createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import type { TestContext } from 'node:test'
+import type { TestContext } from './japa.js'
 import Database from 'better-sqlite3'
 
 export async function integrationServer(t: TestContext, env: Record<string, string> = {}) {

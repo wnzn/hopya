@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID, scryptSync } from 'node:crypto'
 import { once } from 'node:events'
 import { createServer, request, type IncomingHttpHeaders, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
-import { test, type TestContext } from 'node:test'
+import { test, type TestContext } from './japa.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { integrationServer } from './storage-sso-fixture.js'
 

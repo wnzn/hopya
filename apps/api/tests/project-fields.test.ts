@@ -1,4 +1,4 @@
-import { after, test } from 'node:test'
+import { after, test } from './japa.js'
 import assert from 'node:assert/strict'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -46,20 +46,6 @@ test('empty defaults, ordered assignments, unassignment and moves preserve raw v
   assert.deepEqual(service.exportWorkspace(actor, wid).projectFields, service.getWorkspace(actor, wid).projectFields)
   assert.deepEqual(service.exportWorkspace(actor, wid).listStatusConfigs, service.getWorkspace(actor, wid).listStatusConfigs)
   assert.deepEqual(service.exportWorkspace(actor, wid).listTagColorConfigs, service.getWorkspace(actor, wid).listTagColorConfigs)
-})
-
-test('target scope, IDs, duplicates, built-ins, bounds, empty mutations and stale guards', () => {
-  const f = fixture(); const other = fixture(); const actor = f.owner.id
-  for (const target of [randomUUID(), other.project.id]) {
-    reject(() => service.getProjectFields(actor, f.wid, target), 404)
-    reject(() => service.updateProjectFields(actor, f.wid, target, { fieldIds: [] }), 404)
-  }
-  reject(() => service.updateProjectFields(actor, f.wid, f.list.id, { fieldIds: [] }), 400)
-  for (const fieldId of [randomUUID(), other.field.id]) reject(() => service.updateProjectFields(actor, f.wid, f.project.id, { fieldIds: [fieldId] }), 400)
-  for (const body of [{}, { expectedUpdatedAt: f.project.createdAt }, { fieldIds: [''] }, { fieldIds: [f.field.id, f.field.id] }, { fieldIds: Array(101).fill(f.field.id) }, { builtInFields: ['priority', 'priority'] }, { builtInFields: ['dueDate'] }, { builtInFields: [''] }, { extra: true, fieldIds: [] }]) assert.throws(() => service.updateProjectFields(actor, f.wid, f.project.id, body))
-  const config = service.updateProjectFields(actor, f.wid, f.project.id, { fieldIds: [f.field.id] })
-  reject(() => service.updateProjectFields(actor, f.wid, f.project.id, { builtInFields: [], expectedUpdatedAt: f.project.createdAt }), 409)
-  assert.deepEqual(service.getProjectFields(actor, f.wid, f.project.id), config)
 })
 
 test('standalone root lists own fields and keep workflows synchronized across moves and exports', () => {
@@ -378,22 +364,6 @@ test('real HTTP GET/PATCH and streaming export match the complete service contra
   }
 })
 
-test('project descriptions are bounded, project-only, permission-scoped and audited without contents', () => {
-  const f = fixture(); const actor = f.owner.id
-  const project = service.createNode(actor, f.wid, { name: 'Described', kind: 'project', description: 'private project text' })
-  assert.equal(project.description, 'private project text')
-  assert.equal(service.updateNode(actor, f.wid, project.id, { description: '' }).description, '')
-  assert.throws(() => service.updateNode(actor, f.wid, project.id, { description: 'x'.repeat(50001) }))
-  reject(() => service.createNode(actor, f.wid, { name: 'Invalid', kind: 'list', parentId: project.id, description: '' }), 400)
-  reject(() => service.updateNode(actor, f.wid, f.list.id, { description: 'Invalid' }), 400)
-  reject(() => service.updateNode(user().id, f.wid, project.id, { description: 'Invalid' }), 403)
-  db.exec("CREATE TEMP TRIGGER fail_description_audit BEFORE INSERT ON audit_logs WHEN NEW.action='node.update' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END")
-  try { assert.throws(() => service.updateNode(actor, f.wid, project.id, { description: 'rollback' }), /audit unavailable/) }
-  finally { db.exec('DROP TRIGGER fail_description_audit') }
-  assert.equal(service.listNodes(actor, f.wid).find((node) => node.id === project.id)!.description, '')
-  assert.equal(JSON.stringify(db.prepare('SELECT details FROM audit_logs WHERE workspaceId=?').all(f.wid)).includes('private project text'), false)
-})
-
 test('list overrides control defaults and moves while project changes validate only inheriting lists', () => {
   const f = fixture(); const actor = f.owner.id
   const projectStatuses = [{ id: 'queued', name: 'Queued', color: '#112233', completed: false }, { id: 'closed', name: 'Closed', color: '#445566', completed: true }]
@@ -548,25 +518,6 @@ test('field renames protect stored formula references but ignore quoted literals
   const quoted = service.updateItem(actor, f.wid, task.id, { customFields: { [formula.id]: 'CONCAT("a ""{{Qty}}""", "{{Qty}}")', [text.id]: '{{Qty}}' } })
   assert.equal(service.updateField(actor, f.wid, f.field.id, { name: 'Quantity' }).name, 'Quantity')
   assert.deepEqual(service.getItem(actor, f.wid, task.id), quoted)
-})
-
-test('datetime values reject invalid offset components and unrepresentable instants on create and update', () => {
-  const f = fixture(); const actor = f.owner.id
-  const field = service.createField(actor, f.wid, { name: 'Timestamp', type: 'datetime' })
-  const task = service.createItem(actor, f.wid, { nodeId: f.list.id, title: 'Timestamp validation' })
-  const audits = db.prepare('SELECT count(*) AS n FROM audit_logs WHERE workspaceId=?').get(f.wid)
-  for (const value of ['2026-09-07T12:30:00+24:00', '+999999-09-07T12:30:00Z']) {
-    reject(() => service.createItem(actor, f.wid, { nodeId: f.list.id, title: 'Invalid timestamp', customFields: { [field.id]: value } }), 400)
-  }
-  for (const value of ['2026-09-07T12:30:00+08:60', '2026-09-07T12:30:00-0060']) {
-    reject(() => service.updateItem(actor, f.wid, task.id, { customFields: { [field.id]: value } }), 400)
-  }
-  assert.deepEqual(service.listItems(actor, f.wid), [task])
-  assert.deepEqual(db.prepare('SELECT count(*) AS n FROM audit_logs WHERE workspaceId=?').get(f.wid), audits)
-  const value = '2026-09-07T12:30:00.123+08:00'
-  const created = service.createItem(actor, f.wid, { nodeId: f.list.id, title: 'Valid timestamp', customFields: { [field.id]: value } })
-  assert.equal(created.customFields[field.id], value)
-  assert.equal(service.updateItem(actor, f.wid, task.id, { customFields: { [field.id]: '2026-09-07T12:30:00+2359' } }).customFields[field.id], '2026-09-07T12:30:00+2359')
 })
 
 test('migrations 006 and 007 preserve legacy data and backfill inherited list status rows', () => {

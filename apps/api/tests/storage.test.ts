@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test } from './japa.js'
 import assert from 'node:assert/strict'
 import { readFileSync, statSync, existsSync, symlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'

@@ -1,4 +1,4 @@
-import { after, test } from 'node:test'
+import { after, test } from './japa.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'

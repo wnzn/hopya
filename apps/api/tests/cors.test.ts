@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test } from './japa.js'
 import assert from 'node:assert/strict'
 import { integrationServer } from './storage-sso-fixture.js'
 
