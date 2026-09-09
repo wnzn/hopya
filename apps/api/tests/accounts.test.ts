@@ -5,10 +5,12 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import type { HttpContext } from '@adonisjs/core/http'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-accounts-'))
 process.env.DATA_DIR = directory
 process.env.REGISTRATION_ENABLED = 'true'
+migrateDatabase()
 const { db, HttpError, service, authenticate } = await import('../app/core.js')
 const { accounts } = await import('../app/accounts.js')
 const { verifyPassword, hashPassword, hashToken } = await import('../app/security.js')

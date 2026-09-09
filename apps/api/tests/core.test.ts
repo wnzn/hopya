@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-core-'))
 process.env.DATA_DIR = directory
+migrateDatabase()
 const { db, service, requirePermission, permissions, HttpError } = await import('../app/core.js')
 const { hashPassword, verifyPassword } = await import('../app/security.js')
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })
@@ -27,8 +29,8 @@ function add(f: ReturnType<typeof fixture>, userId: string, roleId: string) {
   return service.addMember(f.owner, f.wid, { email: `${userId}@example.test`, roleId })
 }
 
-test('numbered migrations are recorded and SQLite integrity is enabled', () => {
-  assert.ok(db.prepare('SELECT name FROM schema_migrations WHERE name=?').get('001_core.sql'))
+test('the Lucid baseline migration is recorded and SQLite integrity is enabled', () => {
+  assert.ok(db.prepare('SELECT name FROM adonis_schema WHERE name=?').get('database/migrations/0000_baseline'))
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1)
   assert.equal(db.pragma('journal_mode', { simple: true }), 'wal')
   assert.equal(db.pragma('integrity_check', { simple: true }), 'ok')

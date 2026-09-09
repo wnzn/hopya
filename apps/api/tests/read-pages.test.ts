@@ -4,9 +4,11 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-pages-'))
 process.env.DATA_DIR = directory
+migrateDatabase()
 const { db, service } = await import('../app/core.js')
 const { PAGE_BYTES, RECORD_BYTES, decodeCursor, encodeCursor, itemQuery } = await import('../app/task_reads.js')
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })

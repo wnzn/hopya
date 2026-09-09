@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { HttpContext } from '@adonisjs/core/http'
+import { migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-limiter-'))
 process.env.DATA_DIR = directory
+migrateDatabase()
 const { rateLimit } = await import('../app/security.js')
 const { db, HttpError } = await import('../app/core.js')
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })
