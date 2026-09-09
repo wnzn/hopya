@@ -54,7 +54,7 @@ services:
       DB_CONNECTION: ${DB_CONNECTION:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
     volumes:
-      - data:/data
+      - ./data:/data
 
   # Optional Postgres. Enable with COMPOSE_PROFILES=postgres in .env plus
   # DB_CONNECTION=pg and DATABASE_URL=postgres://hopya:...@postgres:5432/hopya.

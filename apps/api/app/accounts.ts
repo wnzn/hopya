@@ -291,7 +291,7 @@ export const accounts = {
       users: (db.prepare('SELECT count(*) AS count FROM users').get() as { count: number }).count,
       workspaces: (db.prepare('SELECT count(*) AS count FROM workspaces').get() as { count: number }).count,
       items: (db.prepare('SELECT count(*) AS count FROM items').get() as { count: number }).count,
-      migrations: db.prepare('SELECT name,appliedAt FROM schema_migrations ORDER BY name').all(),
+      migrations: db.prepare('SELECT name,migration_time AS appliedAt FROM adonis_schema ORDER BY name').all(),
       storageDriver: process.env.STORAGE_DRIVER || 'filesystem',
       pendingStorageCleanup: (db.prepare('SELECT count(*) AS count FROM storage_objects o WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey)').get() as { count: number }).count,
       aiEnabled: Boolean(process.env.AI_PROVIDER), ssoEnabled: Boolean(process.env.OIDC_ISSUER),

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "node ace.js migration:run --no-schema-generate && tsx watch bin/server.ts",
-    "start": "node build/bin/console.js migration:run --no-schema-generate && node build/bin/server.js",
+    "start": "node build/bin/console.js migration:run --no-schema-generate --force && node build/bin/server.js",
     "mcp": "node build/bin/mcp.js",
     "ace": "node ace.js",
     "build": "tsc && node scripts/copy-assets.mjs",
