@@ -10,7 +10,7 @@ type Mode = 'docker' | 'development'
 export async function initializeEnvironment(options: { directory?: string; mode?: Mode; port?: number } = {}) {
   const mode = options.mode ?? 'docker'
   if (mode !== 'docker' && mode !== 'development') throw new Error('Choose docker or development mode')
-  const port = options.port ?? (mode === 'docker' ? 8080 : 4321)
+  const port = options.port ?? (mode === 'docker' ? 8888 : 4321)
   if (!Number.isInteger(port) || port < 1 || port > 65535 || mode === 'development' && port === 3333) {
     throw new Error('Choose a valid web port distinct from the development API port 3333')
   }

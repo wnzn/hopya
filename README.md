@@ -42,7 +42,7 @@ You need Docker Engine and Docker Compose. Node.js 24 is optional and only neede
    docker compose up -d --build --wait
    ```
 
-3. Open [http://localhost:8080](http://localhost:8080), then create the first administrator using `SETUP_TOKEN` from `.env`.
+3. Open [http://localhost:8888](http://localhost:8888), then create the first administrator using `SETUP_TOKEN` from `.env`.
 
 The default deployment listens only on `127.0.0.1`. For remote access, place Hopya behind a trusted HTTPS reverse proxy and set `APP_URL` to the exact public origin. Do not expose the private API or web containers directly.
 
@@ -77,7 +77,7 @@ The generated `.env` contains the required private values. Keep it out of Git an
 | `APP_URL` | Exact browser origin, including HTTPS and a nonstandard port if used |
 | `APP_KEY` | Stable application secret; changing it invalidates signed state |
 | `SETUP_TOKEN` | One-time secret used to create the first administrator |
-| `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8080` |
+| `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Show or skip the public landing page |
 | `REGISTRATION_ENABLED` | Allow public local-account registration; off by default |
 | `SMTP_URL`, `SMTP_FROM` | Enable password recovery and email delivery |
@@ -147,7 +147,7 @@ Command: node
 Arguments: apps/api/build/bin/mcp.js
 Working directory: /absolute/path/to/hopya
 Environment:
-  HOPYA_API_URL=http://localhost:8080
+  HOPYA_API_URL=http://localhost:8888
   HOPYA_API_TOKEN=<personal token>
 ```
 

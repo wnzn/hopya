@@ -5,7 +5,7 @@ Hopya runs as one API replica with SQLite on local persistent storage. Do not pl
 ## Architecture
 
 ```text
-Browser -> 127.0.0.1:8080 -> Nginx -> Astro
+Browser -> 127.0.0.1:8888 -> Nginx -> Astro
                                   -> AdonisJS -> /data
 ```
 
@@ -29,7 +29,7 @@ docker compose up -d --build --wait
 docker compose ps
 ```
 
-Open `http://localhost:8080` and create the first administrator with `SETUP_TOKEN` from `.env`. There are no default accounts. Public registration is disabled unless `REGISTRATION_ENABLED=true`.
+Open `http://localhost:8888` and create the first administrator with `SETUP_TOKEN` from `.env`. There are no default accounts. Public registration is disabled unless `REGISTRATION_ENABLED=true`.
 
 ## Configuration
 
@@ -40,7 +40,7 @@ Open `http://localhost:8080` and create the first administrator with `SETUP_TOKE
 | `APP_URL` | Exact public browser origin, without a path prefix |
 | `APP_KEY` | Stable application secret; do not rotate during routine upgrades |
 | `SETUP_TOKEN` | Secret accepted only while creating the first account |
-| `BIND_ADDRESS`, `HTTP_PORT` | Proxy listener, default `127.0.0.1:8080` |
+| `BIND_ADDRESS`, `HTTP_PORT` | Proxy listener, default `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Show the public landing page |
 | `REGISTRATION_ENABLED` | Allow public local-account registration |
 | `SMTP_URL`, `SMTP_FROM` | Enable password recovery and email automation |

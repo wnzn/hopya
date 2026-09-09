@@ -49,7 +49,7 @@ MCP supports local stdio forwarding and an administrator-controlled SSE endpoint
 
 ## Container Controls
 
-The supplied stack uses non-root processes, read-only root filesystems, bounded temporary storage, dropped Linux capabilities and `no-new-privileges`. It never mounts the Docker socket or publishes the API/web ports. The only default host listener is loopback port 8080. `/data` remains writable by the API, so an API compromise could still change or erase its data. Private networking is not isolation from other compromised containers sharing that network.
+The supplied stack uses non-root processes, read-only root filesystems, bounded temporary storage, dropped Linux capabilities and `no-new-privileges`. It never mounts the Docker socket or publishes the API/web ports. The only default host listener is loopback port 8888. `/data` remains writable by the API, so an API compromise could still change or erase its data. Private networking is not isolation from other compromised containers sharing that network.
 
 Keep the host kernel, Docker, pinned images and dependencies patched; digest pinning does not apply future fixes automatically. Do not run privileged containers or give application users Docker access. Review [OWASP Docker Security](https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html), including its warning that Docker-published ports can bypass assumptions about host firewall rules.
 
