@@ -8,7 +8,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 ASTRO_DEV_BACKGROUND=0 astro dev",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro build && node -e \"require('node:fs').copyFileSync('src/landing.json', 'dist/server/landing.json')\"",
     "start": "node dist/server/entry.mjs",
     "typecheck": "ASTRO_TELEMETRY_DISABLED=1 astro check",
