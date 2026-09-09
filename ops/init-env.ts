@@ -34,6 +34,8 @@ export async function initializeEnvironment(options: { directory?: string; mode?
     TRUST_PROXY_HOPS: '0',
     REGISTRATION_ENABLED: 'false',
     STORAGE_DRIVER: 'filesystem',
+    DB_CONNECTION: 'sqlite',
+    DATABASE_URL: 'postgres://hopya:hopya@postgres:5432/hopya',
     OIDC_ISSUER: '', OIDC_AUTO_PROVISION: 'false', OIDC_ALLOW_INSECURE_HTTP: 'false',
     AI_PROVIDER: '',
   }

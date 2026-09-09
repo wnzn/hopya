@@ -51,8 +51,32 @@ services:
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-2048}
       HOPYA_MCP_ALLOW_WRITES: ${HOPYA_MCP_ALLOW_WRITES:-false}
+      DB_CONNECTION: ${DB_CONNECTION:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
     volumes:
       - data:/data
+
+  # Optional Postgres. Enable with COMPOSE_PROFILES=postgres in .env plus
+  # DB_CONNECTION=pg and DATABASE_URL=postgres://hopya:...@postgres:5432/hopya.
+  postgres:
+    <<: *app
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    read_only: false
+    pids_limit: 256
+    user: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hopya}
+      POSTGRES_USER: ${POSTGRES_USER:-hopya}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
 
   web:
     <<: *app
@@ -89,3 +113,4 @@ services:
 
 volumes:
   data:
+  postgres-data:
