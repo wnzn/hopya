@@ -9,6 +9,7 @@ import { siteConfig } from '../app/site_settings.js'
 import { handleExport, importItems } from '../app/import_export.js'
 import { openApiDocument } from '../app/openapi.js'
 import { scheduleFlush } from '../app/automations.js'
+import { documentService } from '../app/documents.js'
 
 // Automation events flush only after the mutation commits successfully.
 async function flushed<T>(operation: () => Promise<T>): Promise<T> {
@@ -50,6 +51,18 @@ router.group(() => {
   router.post('/workspaces/:wid/nodes', async (ctx) => created(ctx, () => flushed(async () => service.createNode((await authenticate(ctx)).id, ctx.params.wid, ctx.request.body()))))
   router.patch('/workspaces/:wid/nodes/:id', async (ctx) => flushed(async () => service.updateNode((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body())))
   router.delete('/workspaces/:wid/nodes/:id', async (ctx) => flushed(async () => service.deleteNode((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id)))
+  router.get('/workspaces/:wid/documents', async (ctx) => documentService.listDocuments((await authenticate(ctx)).id, ctx.params.wid))
+  router.post('/workspaces/:wid/documents', async (ctx) => created(ctx, async () => documentService.createDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.request.body())))
+  router.get('/workspaces/:wid/documents/:id', async (ctx) => documentService.getDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.patch('/workspaces/:wid/documents/:id', async (ctx) => documentService.updateDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body()))
+  router.delete('/workspaces/:wid/documents/:id', async (ctx) => documentService.deleteDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.get('/workspaces/:wid/documents/:id/pages', async (ctx) => documentService.listPages((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.post('/workspaces/:wid/documents/:id/pages', async (ctx) => created(ctx, async () => documentService.linkPage((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body())))
+  router.delete('/workspaces/:wid/documents/:id/pages/:itemId', async (ctx) => documentService.unlinkPage((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.params.itemId))
+  router.get('/workspaces/:wid/documents/:id/comments', async (ctx) => documentService.listComments((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.post('/workspaces/:wid/documents/:id/comments', async (ctx) => created(ctx, async () => documentService.createComment((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body())))
+  router.delete('/workspaces/:wid/documents/:id/comments/:commentId', async (ctx) => documentService.deleteComment((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.params.commentId))
+  router.patch('/workspaces/:wid/documents/:id/comments/:commentId/reaction', async (ctx) => documentService.updateCommentReaction((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.params.commentId, ctx.request.body()))
   router.get('/workspaces/:wid/items', (ctx) => streamTasks(ctx, false))
   router.post('/workspaces/:wid/items', async (ctx) => created(ctx, () => flushed(async () => service.createItem((await authenticate(ctx)).id, ctx.params.wid, ctx.request.body()))))
   router.post('/workspaces/:wid/items/import', async (ctx) => created(ctx, () => flushed(async () => importItems((await authenticate(ctx)).id, ctx.params.wid, ctx.request.body()))))

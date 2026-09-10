@@ -49,7 +49,8 @@ function keyset(keys: Key[], cursor: unknown[]): { clause: string; values: unkno
 export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise<void> {
   const userId = (await authenticate(ctx)).id
   const wid: string = ctx.params.wid
-  await requirePermission(userId, wid, 'items:read')
+  const membership = await requirePermission(userId, wid, 'items:read')
+  const canReadDocuments = membership.permissions.includes('documents:read')
   const query = await itemQuery(db, wid, exporting ? { archived: 'include' } : ctx.request.qs())
   ctx.response.type('application/json')
   if (ctx.request.method() === 'HEAD') { ctx.response.status(200).send(''); return }
@@ -101,6 +102,7 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
     const current = await authenticate(ctx)
     if (current.id !== userId) throw bulkReadHttpError(new BulkReadAuth())
     await requirePermission(current.id, wid, 'items:read')
+    if (exporting && canReadDocuments) await requirePermission(current.id, wid, 'documents:read')
     if (closed || request.aborted || response.destroyed) throw bulkReadHttpError(new BulkReadClosed())
     if (Date.now() >= deadline) throw bulkReadHttpError(new BulkReadDeadline())
   }
@@ -146,9 +148,13 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
 
   async function* parts(workspace: unknown): AsyncGenerator<string> {
     if (exporting) {
-      yield `{"version":3,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
+      yield `{"version":4,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
       yield* records('SELECT id,workspaceId,name,kind,parentId,createdAt,description,icon,color',
         'FROM nodes WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+      yield '],"documents":['
+      if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+      yield '],"documentPages":['
+      if (canReadDocuments) yield* records('SELECT documentId,itemId,position,createdAt', 'FROM document_pages WHERE workspaceId=?', [wid], ['documentId', 'position', 'createdAt', 'itemId'])
       yield '],"items":['
     } else yield '['
 
@@ -207,9 +213,13 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
         listId: row.listId, colors: JSON.parse(row.colors), updatedAt: row.updatedAt,
       }))
     yield '],"comments":['
-    yield* records('SELECT id,itemId,authorId,body,parentId,createdAt,deletedAt', 'FROM comments WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+    yield* records('SELECT id,itemId,authorId,body,parentId,createdAt,deletedAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState', 'FROM comments WHERE workspaceId=?', [wid], ['createdAt', 'id'])
     yield '],"commentReactions":['
     yield* records('SELECT itemId,commentId,userId,emoji,createdAt', 'FROM comment_reactions WHERE workspaceId=?', [wid], ['createdAt', 'commentId', 'userId', 'emoji'])
+    yield '],"documentComments":['
+    if (canReadDocuments) yield* records('SELECT id,documentId,authorId,body,parentId,createdAt,deletedAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState', 'FROM document_comments WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+    yield '],"documentCommentReactions":['
+    if (canReadDocuments) yield* records('SELECT documentId,commentId,userId,emoji,createdAt', 'FROM document_comment_reactions WHERE workspaceId=?', [wid], ['createdAt', 'commentId', 'userId', 'emoji'])
     yield '],"attachments":['
     yield* records('SELECT id,itemId,name,size,contentType,createdAt', 'FROM attachments WHERE workspaceId=?', [wid], ['createdAt', 'id'])
     yield ']}'
