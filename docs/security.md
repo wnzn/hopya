@@ -5,11 +5,11 @@ Hopya is an early implementation, not an audited or production-ready security pr
 ## Trust Boundaries
 
 - AdonisJS owns authentication, authorization, validation and data mutations. Astro pages and React controls are not authorization controls.
-- Tasks, hierarchy, custom fields, comments, reactions, notifications and attachments belong to a workspace. User-supplied IDs, parent/comment IDs, roles and AI arguments must pass server-side membership and permission checks on every operation. Notification ownership always comes from authentication, never a request user ID.
+- Tasks, documents, hierarchy, custom fields, comments, reactions, notifications and attachments belong to a workspace. User-supplied workspace/resource/parent/comment IDs, roles, anchors and AI arguments pass server-side scoping, permission, and bounded-input checks on every operation. Notification ownership always comes from authentication, never a request user ID.
 - Site administration manages accounts and restricted audit information; being a site administrator does not implicitly grant membership in another user's workspace.
 - The workspace Owner role is protected. Role management must not grant privileges the caller cannot delegate, and the last active owner cannot be removed.
 - SQL uses bound parameters; relational mutations and their audit entries are transactional. Audit records should identify actions/resources without storing task bodies, credentials or full AI prompts.
-- Assignment and user-mention notifications contain task/comment references and actor metadata, not copied task/comment bodies. Mention targets must be active same-workspace readers, are limited to 20 per document, and do not let same-origin links bypass authorization when opened. Comment moderation is a workspace permission (`comments:manage`); site-administrator status alone grants no task discussion access.
+- Assignment and task user-mention notifications contain task/comment references and actor metadata, not copied bodies. Mention targets must be active same-workspace task readers, are limited to 20 per body, and do not let same-origin links bypass authorization when opened. Document comments currently offer task/structure links but not user-mention notifications. `comments:create` is separate from write permission; moderation is `comments:manage`. Site-administrator status alone grants no workspace discussion access.
 
 ## Authentication
 
