@@ -37,11 +37,21 @@ export type Webhook = {
   url: string;
   events: WebhookEvent[];
   enabled: boolean;
+  signingVersion: 1 | 2;
   createdAt: string;
   updatedAt: string;
   secret?: string;
 };
-export type AutomationProvider = "webhook" | "email" | "http" | "log";
+export type AutomationNodeType =
+  | "trigger"
+  | "http"
+  | "webhook"
+  | "email"
+  | "log"
+  | "update_item"
+  | "condition"
+  | "switch";
+export type AutomationProvider = Exclude<AutomationNodeType, "trigger" | "condition" | "switch" | "update_item">;
 export type AutomationAction = {
   // Keep this open to render automations created by a provider no longer
   // available in the current frontend without silently rewriting the step.
@@ -54,9 +64,48 @@ export type Automation = {
   name: string;
   event: WebhookEvent;
   version: number;
-  steps: AutomationAction[];
+  steps?: AutomationAction[];
   action?: AutomationAction;
+  graph?: boolean;
   enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type AutomationGraphNode = {
+  id: string;
+  type: AutomationNodeType;
+  position: { x: number; y: number };
+  config: Record<string, unknown>;
+};
+export type AutomationGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  branch?: string;
+};
+export type AutomationGraph = { nodes: AutomationGraphNode[]; edges: AutomationGraphEdge[] };
+export type AutomationDataDescriptor = string | { [key: string]: AutomationDataDescriptor };
+export type AutomationCatalog = {
+  limits: { maxNodes: number; maxEdges: number; maxGraphBytes: number; maxNodeConfigBytes: number; maxExecutionNodes: number };
+  events: { type: WebhookEvent; output: Record<string, AutomationDataDescriptor> }[];
+  nodes: { type: AutomationNodeType; kind: "trigger" | "action" | "control"; inputs: Record<string, unknown>; outputs: Record<string, AutomationDataDescriptor>; config: Record<string, unknown> }[];
+};
+export type AutomationDraft = { revision: number; graph: AutomationGraph; updatedAt: string | null };
+export type AutomationValidation = { valid: boolean; errors: string[] };
+export type AutomationPreview = AutomationValidation & {
+  uncertain: boolean;
+  path: { nodeId: string; type: AutomationNodeType; branch?: string; effect: "none"; output?: unknown; uncertain?: boolean; candidateBranches?: string[] }[];
+};
+export type AutomationVersion = { version: number; format: "linear" | "graph"; publisherId: string | null; publishedAt: string };
+export type AutomationCredentialType = "bearer" | "api_key" | "basic" | "custom_headers" | "oauth2";
+export type AutomationCredential = {
+  id: string;
+  name: string;
+  type: AutomationCredentialType;
+  origin: string;
+  pathPrefix: string | null;
+  version: number;
+  status: "active" | "revoked";
   createdAt: string;
   updatedAt: string;
 };
@@ -66,6 +115,17 @@ export type AutomationStepRun = {
   position: number;
   type: AutomationAction["type"];
   status: "pending" | "running" | "delivered" | "failed" | "skipped";
+  output: string;
+  log: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+export type AutomationNodeRun = {
+  id: string;
+  nodeId: string;
+  type: AutomationNodeType;
+  status: "pending" | "running" | "delivered" | "failed" | "skipped";
+  attempt: number;
   output: string;
   log: string;
   startedAt: string | null;
@@ -84,6 +144,7 @@ export type AutomationRun = {
   startedAt: string | null;
   completedAt: string | null;
   steps: AutomationStepRun[];
+  nodes: AutomationNodeRun[];
 };
 export type SiteSettings = {
   landingDisabled: boolean;
@@ -117,6 +178,8 @@ export const permissions = [
   "members:manage",
   "roles:manage",
   "workspace:manage",
+  "automations:manage",
+  "credentials:manage",
   "agent:use",
 ] as const;
 export type Workspace = { id: string; name: string };

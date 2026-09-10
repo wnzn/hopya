@@ -18,13 +18,14 @@ export async function initializeEnvironment(options: { directory?: string; mode?
   const path = join(directory, '.env')
   let template = await readFile(new URL('../.env.example', import.meta.url), 'utf8')
   const example = parseEnv(template)
-  for (const key of ['APP_KEY', 'SETUP_TOKEN', 'DATABASE_URL', 'POSTGRES_PASSWORD', 'SMTP_URL', 'AI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'OIDC_CLIENT_SECRET']) {
+  for (const key of ['APP_KEY', 'SETUP_TOKEN', 'AUTOMATION_KEYRING', 'DATABASE_URL', 'POSTGRES_PASSWORD', 'SMTP_URL', 'AI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'OIDC_CLIENT_SECRET']) {
     if (example[key]) throw new Error('The example configuration must not contain credentials')
   }
   const postgresPassword = randomBytes(32).toString('hex')
   const values = {
     APP_KEY: randomBytes(32).toString('hex'),
     SETUP_TOKEN: randomBytes(32).toString('hex'),
+    AUTOMATION_KEYRING: JSON.stringify({ active: 'key-1', keys: { 'key-1': randomBytes(32).toString('base64') } }),
     APP_URL: `http://localhost:${port}`,
     BIND_ADDRESS: '127.0.0.1',
     HTTP_PORT: String(mode === 'docker' ? port : 8080),

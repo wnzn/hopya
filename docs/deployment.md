@@ -19,7 +19,7 @@ Generate a private configuration file:
 npm run init:env
 ```
 
-The initializer creates independent `APP_KEY` and `SETUP_TOKEN` values, writes `.env` with owner-only permissions, creates a private writable `./data` directory, and refuses to replace an existing configuration. The README includes a Docker-only initializer command for hosts without Node.js.
+The initializer creates independent `APP_KEY` and `SETUP_TOKEN` values plus a valid JSON `AUTOMATION_KEYRING` containing one random 32-byte base64 AES key. It writes `.env` with owner-only permissions, creates a private writable `./data` directory, refuses to replace existing configuration, and never prints generated secrets. The README includes a Docker-only initializer command for hosts without Node.js.
 
 Validate and start the stack:
 
@@ -42,6 +42,8 @@ Open `http://localhost:8888` and create the first administrator with `SETUP_TOKE
 | `APP_URL` | Exact public browser origin, without a path prefix |
 | `APP_KEY` | Stable application secret; do not rotate during routine upgrades |
 | `SETUP_TOKEN` | Secret accepted only while creating the first account |
+| `AUTOMATION_KEYRING` | API-only JSON keyring for encrypted automation credentials |
+| `AUTOMATION_NETWORK_EXCEPTIONS` | Optional comma-separated exact origins exempted from automation address/HTTPS blocks |
 | `BIND_ADDRESS`, `HTTP_PORT` | Proxy listener, default `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Enable the optional public landing page; defaults to `false` |
 | `REGISTRATION_ENABLED` | Allow public local-account registration |
@@ -59,6 +61,20 @@ docker compose up -d --force-recreate api web proxy
 ```
 
 `docker compose restart` does not load changed environment values.
+
+### Automation Credential Keys And Network
+
+`AUTOMATION_KEYRING` has this JSON shape, with every value a base64 encoding of exactly 32 random bytes:
+
+```json
+{"active":"key-1","keys":{"key-1":"<32-byte-base64-key>"}}
+```
+
+The initializer supplies this for new environments. For an existing installation upgraded from a release without the setting, generate the key privately, add the complete one-line JSON value to `.env`, and recreate the API before creating or connecting automation credentials. Do not put this value in the web service, application UI, logs or source control. If it is absent, ordinary task management remains available, but credential creation/use and OAuth connection fail explicitly as unavailable.
+
+To rotate, generate another independent 32-byte key, add it under a new unique ID, and change `active` to that ID in one edit. Recreate the API, then replace/reconnect credentials when practical so new versions use the active key. Keep every prior key while any encrypted credential or OAuth-flow row may reference it: changing `active` does not bulk re-encrypt old versions, and removing an old key makes those versions undecryptable. Back up the complete keyring together with the database and test restoration before retiring any key. Loss of the last copy is not recoverable from encrypted database values.
+
+Automation requests allow RFC1918 and IPv6 ULA private services but block unspecified, loopback, link-local, multicast and special mapped forms; public credential destinations require HTTPS and redirects are rejected. `AUTOMATION_NETWORK_EXCEPTIONS` is a high-trust escape hatch such as `http://service.internal:8080,https://special.example`. Matching is by exact URL origin, including scheme and port. An exception does not loosen a credential's exact origin/path binding. Prefer network-level allowlists and do not add broad or user-controlled origins.
 
 ### PostgreSQL
 
@@ -113,7 +129,7 @@ The AI assistant is disabled when `AI_PROVIDER` is empty. Enabling it can send a
 
 ## Backup And Restore
 
-A workspace export is portable task data, not a full backup. SQLite deployments need the complete `./data` directory. PostgreSQL deployments need a consistent database dump plus `./data` when filesystem attachments are enabled. Both require the original `.env`.
+A workspace export is portable task data, not a full backup. SQLite deployments need the complete `./data` directory. PostgreSQL deployments need a consistent database dump plus `./data` when filesystem attachments are enabled. Both require the original `.env`, including every automation keyring key needed by retained credential versions.
 
 Create a cold backup:
 
@@ -128,7 +144,7 @@ sha256sum backups/hopya-data.tgz
 docker compose up -d --wait
 ```
 
-Store the archive and an encrypted `.env` backup off-host. For S3 storage, back up remote objects at the same logical point as the database.
+Store the archive and an encrypted `.env` backup off-host. Verify that the backup contains the complete `AUTOMATION_KEYRING` without printing it. For S3 storage, back up remote objects at the same logical point as the database.
 
 For PostgreSQL, stop API writes and use the server's supported `pg_dump`/`pg_restore` workflow instead of treating its data volume as a portable archive. Verify the dump before restarting Hopya and back up filesystem or S3 objects at the same logical point.
 
@@ -162,12 +178,12 @@ Verify login, workspace counts, task writes, permissions, and private attachment
 ## Upgrades
 
 1. Read the release notes and take a verified cold backup.
-2. Keep the existing `.env`, especially `APP_KEY`.
+2. Keep the existing `.env`, especially `APP_KEY` and any existing `AUTOMATION_KEYRING`; when first upgrading to automation graphs, add a new private keyring as described above rather than rerunning the initializer.
 3. Update the checkout and run `docker compose build --pull`.
 4. Start with `docker compose up -d --wait`.
-5. Verify health, login, task writes, and attachments.
+5. Verify health, login, task writes, attachments and, when configured, automation credential decryption with a non-destructive destination.
 
-Migrations run automatically when the API starts. Keep the selected database and `./data` attachment storage in place during upgrades; the removed pre-Lucid SQL migration runner is not an upgrade path for older databases.
+Migrations run automatically when the API starts. Migration 0001 preserves existing linear automation versions and grants `automations:manage` plus `credentials:manage` to roles that already had `workspace:manage`; review those role assignments after startup. Existing webhook rows keep legacy signing version 1 until explicitly rotated, while new/rotated hooks use HMAC signing version 2. Keep the selected database and `./data` attachment storage in place during upgrades; the removed pre-Lucid SQL migration runner is not an upgrade path for older databases.
 
 ## Troubleshooting
 

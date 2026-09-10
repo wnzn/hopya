@@ -151,7 +151,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal((await request('/admin/users', { method: 'POST', cookie: otherCookie, body: { name: 'Bad', email: 'bad@example.test', password, isAdmin: true } })).status, 403)
     const status = await request('/admin/status', { cookie: adminCookie })
     assert.equal(status.status, 200)
-    assert.deepEqual(status.data.migrations.map((migration: { name: string }) => migration.name), ['database/migrations/0000_baseline'])
+    assert.deepEqual(status.data.migrations.map((migration: { name: string }) => migration.name), ['database/migrations/0000_baseline', 'database/migrations/0001_automation_graphs'])
     assert.ok(status.data.migrations[0].appliedAt)
   })
   await t.test('workspace structure, role and item endpoints follow the REST contract', async () => {
