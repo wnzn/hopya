@@ -13,6 +13,7 @@ import {
 import { ErrorNotice, Modal } from "./Shared";
 import ProjectFields from "./ProjectFields";
 import { FieldEditor, FieldSettings, fieldSettings } from "./FieldSettings";
+import Select from "./Select";
 
 export default function WorkspaceSettings({
   detail: incomingDetail,
@@ -148,7 +149,7 @@ export default function WorkspaceSettings({
               </label>
               <label>
                 Role
-                <select name="roleId" required defaultValue="">
+                <Select name="roleId" required defaultValue="">
                   <option value="" disabled>
                     Choose a role
                   </option>
@@ -157,7 +158,7 @@ export default function WorkspaceSettings({
                       {r.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <div>
                 <button className="primary" disabled={busy}>
@@ -174,7 +175,7 @@ export default function WorkspaceSettings({
                   </div>
                   <label>
                     <span className="sr-only">Role for {member.name}</span>
-                    <select
+                    <Select
                       value={member.roleId}
                       disabled={busy}
                       onChange={(e) =>
@@ -188,7 +189,7 @@ export default function WorkspaceSettings({
                           {r.name}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <button
                     className="danger"
@@ -304,7 +305,7 @@ export default function WorkspaceSettings({
               </label>
               <label>
                 Type
-                <select
+                <Select
                   value={fieldType}
                   onChange={(e) =>
                     setFieldType(e.target.value as Field["type"])
@@ -319,7 +320,7 @@ export default function WorkspaceSettings({
                   <option value="checkbox">Checkbox</option>
                   <option value="select">Dropdown</option>
                   <option value="formula">Formula</option>
-                </select>
+                </Select>
               </label>
               <FieldSettings type={fieldType} settings={settings} onChange={setSettings} />
               {["select", "checklist"].includes(fieldType) && (

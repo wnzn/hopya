@@ -32,7 +32,8 @@ import NodeGlyph from "./NodeGlyph";
 import TaskViews, { type View } from "./TaskViews";
 import TaskEditor from "./TaskEditor";
 import ProjectFields from "./ProjectFields";
-import { fieldOwnerForNode, projectForNode } from "../lib/project-fields";
+import Select from "./Select";
+import { fieldOwnerForNode } from "../lib/project-fields";
 import { projectStatuses } from "../lib/project-statuses";
 import StructureEditor from "./StructureEditor";
 import Agent from "./Agent";
@@ -84,6 +85,7 @@ export default function Dashboard() {
     node?: TreeNode;
     initialKind?: TreeNode["kind"];
     initialParentId?: string;
+    mode?: "rename" | "details";
   } | null>(null);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
@@ -271,6 +273,14 @@ export default function Dashboard() {
     setStructure(null);
     setRevision((r) => r + 1);
   }
+  async function deleteHierarchyNode(node: TreeNode) {
+    if (!detail) return;
+    setError("");
+    try {
+      await api(`${workspacePath(detail.workspace.id)}/${node.kind === "document" ? "documents" : "nodes"}/${node.id}`, "DELETE");
+      refresh();
+    } catch (cause) { setError(message(cause)); }
+  }
   function updateMetadata(fresh: Detail) {
     if (fresh.workspace.id !== activeWorkspace.current) return;
     setDetail(fresh);
@@ -316,7 +326,6 @@ export default function Dashboard() {
   const hierarchyEntries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(documentNode)] : [];
   const selectedNode = hierarchyEntries.find((n) => n.id === nodeId);
   const selectedDocument = detail?.documents?.find(document => document.id === nodeId);
-  const selectedProject = detail ? projectForNode(detail.nodes, nodeId) : undefined;
   const selectedFieldOwner = detail ? fieldOwnerForNode(detail.nodes, nodeId) : undefined;
   useEffect(() => {
     setEditingNodeName(false);
@@ -398,6 +407,17 @@ export default function Dashboard() {
   const documentWritable = detail?.permissions.includes("documents:write") || false;
   const defaultTaskNode = selectedNode?.kind === "list" ? selectedNode.id : scopedLists[0]?.id;
   useEffect(() => {
+    if (!detail) return;
+    const query = new URLSearchParams(window.location.search);
+    const action = query.get("structure");
+    if (action !== "create" && action !== "rename" && action !== "details") return;
+    const target = action === "create" ? undefined : hierarchyEntries.find(node => node.id === query.get("node"));
+    if (action === "create") setStructure({ initialKind: structureWritable ? "project" : "document" });
+    else if (target) setStructure({ node: target, mode: action });
+    query.delete("structure");
+    history.replaceState(null, "", `${window.location.pathname}?${query}`);
+  }, [detail?.workspace.id]);
+  useEffect(() => {
     if (!writable || !defaultTaskNode) return;
     const createWithKeyboard = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "c" || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) return;
@@ -427,8 +447,11 @@ export default function Dashboard() {
         setCreatingWorkspace(true);
       },
       onCreateNode: structureWritable || documentWritable ? () => setStructure({ initialKind: structureWritable ? "project" : "document" }) : undefined,
-      onEditNode: structureWritable || documentWritable ? (node) => setStructure({ node }) : undefined,
+      onRenameNode: structureWritable || documentWritable ? (node) => setStructure({ node, mode: "rename" }) : undefined,
+      onEditNode: structureWritable || documentWritable ? (node) => setStructure({ node, mode: "details" }) : undefined,
+      onDeleteNode: structureWritable || detail?.permissions.includes("documents:delete") ? deleteHierarchyNode : undefined,
       canEditNode: node => node.kind === "document" ? documentWritable : structureWritable,
+      canDeleteNode: node => node.kind === "document" ? Boolean(detail?.permissions.includes("documents:delete")) : structureWritable,
     }}>
       <header className="page-top">
         <Breadcrumbs detail={detail} nodeId={nodeId} />
@@ -437,16 +460,23 @@ export default function Dashboard() {
         </a>
       </header>
       <div className="workspace-body">
-        <section className="workspace-heading">
+        {!selectedDocument && <section className="workspace-heading">
           <div>
             {selectedNode && (selectedNode.kind === "document" ? documentWritable : structureWritable) ? editingNodeName ? (
-              <form className="hierarchy-title-editor" onSubmit={saveNodeName}>
+              <form className="hierarchy-title-editor inline-title-editor" onSubmit={saveNodeName}>
                 <label className="sr-only" htmlFor="hierarchy-title">{`Rename ${selectedNode.kind}`}</label>
                 <input id="hierarchy-title" autoFocus value={nodeName} maxLength={selectedNode.kind === "document" ? 300 : 120} required
-                  disabled={nodeNameBusy} onChange={event => setNodeName(event.target.value)} />
-                <button type="submit" className="inline-save" aria-label={`Save ${selectedNode.kind} name`}
+                  disabled={nodeNameBusy} onChange={event => setNodeName(event.target.value)} onKeyDown={event => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setEditingNodeName(false);
+                      setNodeName(selectedNode.name);
+                      setNodeNameError("");
+                    }
+                  }} />
+                <button type="submit" className="inline-title-action inline-save" aria-label={`Save ${selectedNode.kind} name`}
                   disabled={nodeNameBusy || !nodeName.trim()}><span aria-hidden="true">✓</span></button>
-                <button type="button" aria-label={`Cancel renaming ${selectedNode.kind}`} disabled={nodeNameBusy}
+                <button type="button" className="inline-title-action" aria-label={`Cancel renaming ${selectedNode.kind}`} disabled={nodeNameBusy}
                   onClick={() => { setEditingNodeName(false); setNodeName(selectedNode.name); setNodeNameError(""); }}>×</button>
               </form>
             ) : (
@@ -494,7 +524,7 @@ export default function Dashboard() {
               </button>
             )}
           </div>
-        </section>
+        </section>}
         <ErrorNotice error={authError || error} />
         {error && (
           <button
@@ -540,7 +570,12 @@ export default function Dashboard() {
             <section className="notice" aria-labelledby="document-access-heading"><h2 id="document-access-heading">Document access is not included in your role</h2><p>You can see this hierarchy entry but cannot read its contents.</p></section>
           ) : (
             <DocumentEditor key={selectedDocument.id} detail={detail} summary={selectedDocument} items={items} currentUserId={user?.id}
-              onOpenTask={openTask} onChanged={() => setRevision(value => value + 1)} />
+              onOpenDocument={document => {
+                setDetail(current => current && !current.documents?.some(candidate => candidate.id === document.id)
+                  ? { ...current, documents: [...(current.documents ?? []), document] } : current);
+                selectNode(document.id);
+              }} onDocumentDeleted={fallbackId => { setRevision(value => value + 1); selectNode(fallbackId); }}
+              onChanged={() => setRevision(value => value + 1)} />
           ) : !readable ? (
             <section className="notice" aria-labelledby="task-access-heading">
               <h2 id="task-access-heading">
@@ -607,8 +642,8 @@ export default function Dashboard() {
                 </div>
                 <div className="filters">
                   {view === "list" && structureWritable && (
-                    <button type="button" disabled={!detail.nodes.some(node => node.kind === "project" || node.kind === "list")}
-                      onClick={() => setFieldTarget(selectedNode?.kind === "list" ? selectedNode.id : selectedProject?.id ?? "")}>Add fields</button>
+                    <button type="button" disabled={!selectedNode || selectedNode.kind === "document" || !selectedFieldOwner}
+                      onClick={() => { if (selectedNode && selectedNode.kind !== "document" && selectedFieldOwner) setFieldTarget(selectedNode.id); }}>Add fields</button>
                   )}
                   <label className="search">
                     <span className="sr-only">Search tasks</span>
@@ -623,7 +658,7 @@ export default function Dashboard() {
                   </label>
                   <label>
                     <span className="sr-only">Filter status</span>
-                    <select
+                    <Select
                       value={effectiveStatus}
                       onChange={(e) => setStatus(e.target.value)}
                     >
@@ -633,7 +668,7 @@ export default function Dashboard() {
                           {[...names].join(" / ")}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 </div>
               </div>

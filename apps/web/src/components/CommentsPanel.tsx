@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, message, workspacePath, type Comment, type CommentAnchor, type Detail, type DocumentRecord, type Item } from "../lib/api";
-import { markdownToHtml } from "../lib/rich-text";
+import { markdownToHtml, plainText } from "../lib/rich-text";
 import RichTextEditor, { type MentionTarget } from "./RichTextEditor";
 import { ErrorNotice } from "./Shared";
 
@@ -32,10 +32,13 @@ export function mentionTargets(detail: Detail, items: Item[], document = false):
       id: member.userId, kind: "user" as const, label: member.name,
       href: `/app?workspace=${workspace}&mentionUser=${encodeURIComponent(member.userId)}`,
     }))),
-    ...items.filter(item => !item.archivedAt).map(item => ({
+    ...(document ? (detail.documents ?? []).map(page => ({
+      id: page.id, kind: "task" as const, label: page.title,
+      href: `/app?workspace=${workspace}&node=${encodeURIComponent(page.id)}`,
+    })) : items.filter(item => !item.archivedAt).map(item => ({
       id: item.id, kind: "task" as const, label: item.title,
       href: `/app?workspace=${workspace}&task=${encodeURIComponent(item.id)}`,
-    })),
+    }))),
     ...detail.nodes.map(node => ({
       id: node.id, kind: "node" as const, label: node.name,
       href: `/app?workspace=${workspace}&node=${encodeURIComponent(node.id)}`,
@@ -45,7 +48,7 @@ export function mentionTargets(detail: Detail, items: Item[], document = false):
 
 export default function CommentsPanel({ detail, item, document: documentTarget, items, currentUserId, anchor, onAnchorUsed, onCommentsChange }: {
   detail: Detail; item?: Item; document?: DocumentRecord; items: Item[]; currentUserId?: string;
-  anchor?: CommentAnchor | null; onAnchorUsed?: () => void;
+  anchor?: Omit<CommentAnchor, "state"> | null; onAnchorUsed?: () => void;
   onCommentsChange?: (comments: Comment[]) => void;
 }) {
   const base = `${workspacePath(detail.workspace.id)}/${documentTarget ? `documents/${documentTarget.id}` : `items/${item!.id}`}/comments`;
@@ -60,7 +63,7 @@ export default function CommentsPanel({ detail, item, document: documentTarget, 
   useEffect(() => onCommentsChange?.(comments), [comments]);
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setComments([]);
     api<Comment[]>(base, "GET", undefined, controller.signal)
       .then(setComments).catch(cause => { if (!controller.signal.aborted) setError(message(cause)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -70,14 +73,26 @@ export default function CommentsPanel({ detail, item, document: documentTarget, 
     if (loading) return;
     const commentId = new URLSearchParams(location.search).get("comment");
     if (!commentId) return;
-    requestAnimationFrame(() => document.getElementById(`comment-${CSS.escape(commentId)}`)?.scrollIntoView({ block: "center" }));
+    requestAnimationFrame(() => {
+      const target = document.getElementById(`comment-${CSS.escape(commentId)}`);
+      target?.scrollIntoView({ block: "center" });
+      target?.focus({ preventScroll: true });
+    });
   }, [comments, loading]);
   async function post(parentId: string | null = null) {
     const value = parentId ? replyBody : body;
     if (!value.trim() || busy) return;
     setBusy(true); setError("");
     try {
-      const created = await api<Comment>(base, "POST", { body: value, ...(parentId ? { parentId } : {}), ...(!parentId && anchor ? { anchor } : {}) });
+      const anchorInput = anchor ? {
+        revision: anchor.revision,
+        start: anchor.start,
+        end: anchor.end,
+        exact: anchor.exact,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+      } : null;
+      const created = await api<Comment>(base, "POST", { body: value, ...(parentId ? { parentId } : {}), ...(!parentId && anchorInput ? { anchor: anchorInput } : {}) });
       setComments(current => [...current, created]);
       if (parentId) { setReplyBody(""); setReplyingTo(null); } else { setBody(""); onAnchorUsed?.(); }
       window.dispatchEvent(new Event("hopya-notifications-changed"));
@@ -117,11 +132,11 @@ export default function CommentsPanel({ detail, item, document: documentTarget, 
     <ErrorNotice error={error} />
     {loading ? <p role="status">Loading comments...</p> : comments.length === 0 ? <p className="muted">No comments yet.</p> : (
       <ol className="comment-list">
-        {thread(comments).map(({ comment, depth }) => <li key={comment.id} id={`comment-${comment.id}`} className={depth ? "comment-reply" : undefined} style={{ marginInlineStart: `${Math.min(depth, 4) * 18}px` }}>
+        {thread(comments).map(({ comment, depth }) => <li key={comment.id} id={`comment-${comment.id}`} tabIndex={-1} className={depth ? "comment-reply" : undefined} style={{ marginInlineStart: `${Math.min(depth, 4) * 18}px` }}>
           <div className="comment-meta"><strong>{comment.authorName}</strong><time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time></div>
           {comment.anchor && <blockquote className={`comment-anchor ${comment.anchor.state}`}>
             <span>{comment.anchor.state === "orphaned" ? "Original selection" : "Commented text"}</span>
-            <q>{comment.anchor.exact}</q>
+            <q>{plainText(comment.anchor.exact)}</q>
           </blockquote>}
           {comment.deletedAt ? <p className="muted"><em>Comment deleted</em></p> : <div className="comment-body" dangerouslySetInnerHTML={{ __html: markdownToHtml(comment.body) }} />}
           {comment.deletedAt && manager && <div className="comment-actions"><button type="button" className="quiet-button" disabled={busy} onClick={() => void remove(comment)}>Remove entry</button></div>}
@@ -141,9 +156,9 @@ export default function CommentsPanel({ detail, item, document: documentTarget, 
       </ol>
     )}
     {writable && <div className="comment-composer">
-      {anchor && <div className="pending-comment-anchor"><span>Commenting on</span><q>{anchor.exact}</q><button type="button" className="quiet-button" onClick={onAnchorUsed}>Clear selection</button></div>}
+      {anchor && <div className="pending-comment-anchor"><span>Commenting on</span><q>{plainText(anchor.exact)}</q><button type="button" className="quiet-button" onClick={onAnchorUsed}>Clear selection</button></div>}
       <RichTextEditor aria-label="New comment" value={body} onChange={value => setBody(value.slice(0, 10000))}
-        placeholder={documentTarget ? "Write a comment. Use @@ for tasks or @@@ for structure." : "Write a comment. Use @ for people, @@ for tasks, or @@@ for structure."} mentionTargets={targets} />
+        placeholder={documentTarget ? "Write a comment. Use @@ for pages or @@@ for structure." : "Write a comment. Use @ for people, @@ for tasks, or @@@ for structure."} mentionTargets={targets} />
       <button type="button" className="primary" disabled={busy || !body.trim()} onClick={() => void post(null)}>{busy ? "Posting..." : "Post comment"}</button>
     </div>}
   </aside>;

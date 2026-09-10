@@ -129,6 +129,7 @@
 .task-table .task-column-resize:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
 .task-table .task-cell-editor { display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; min-height: 40px; }
 .task-table .task-cell-editor input, .task-table .task-cell-editor select, .task-table .task-cell-editor textarea { width: 100%; min-width: 0; min-height: 40px; padding: 6px; }
+.task-table .task-cell-editor .custom-select { --control-min-height: 40px; --control-padding: 6px; }
 .task-table .task-cell-editor ul { list-style: none; padding: 0; margin: 0; }
 .task-table .task-cell-editor li { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .task-table .task-cell-editor li span { white-space: pre-wrap; }
@@ -174,15 +175,15 @@
   min-width: 170px;
   padding: 5px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--paper);
-  box-shadow: var(--shadow);
+  box-shadow: 0 12px 30px color-mix(in srgb, #000 42%, transparent);
 }
 .task-sort-menu button {
   justify-content: flex-start;
   width: 100%;
-  min-height: 36px;
-  padding: 7px 9px;
+  min-height: 34px;
+  padding: 6px 9px;
   border-color: transparent;
   background: transparent;
   text-align: left;

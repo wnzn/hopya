@@ -21,7 +21,7 @@ export interface Comment {
 }
 export interface DocumentRecord {
   id: string; workspaceId: string; parentId: string | null; title: string; body: string
-  bodyRevision: number; createdAt: string; updatedAt: string
+  bodyRevision: number; createdAt: string; updatedAt: string; createdByName: string | null; updatedByName: string | null
 }
 export interface CommentReaction { emoji: string; count: number; reactedByMe: boolean }
 export interface Notification {

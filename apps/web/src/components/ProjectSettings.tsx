@@ -3,6 +3,7 @@ import { api, ApiError, message, workspacePath, type DateFormat, type Detail, ty
 import { defaultStatuses, statusStyle } from "../lib/project-statuses";
 import { dateFormats } from "../lib/field-values";
 import { ErrorNotice } from "./Shared";
+import Select from "./Select";
 
 export function StatusEditor({ statuses, onChange }: { statuses: ProjectStatus[]; onChange: (statuses: ProjectStatus[]) => void }) {
   function change(id: string, patch: Partial<ProjectStatus>) { onChange(statuses.map(value => value.id === id ? { ...value, ...patch } : value)); }
@@ -76,7 +77,7 @@ export default function ProjectSettings({ detail, projectId, onUpdated, localCon
       } finally { if (!signal.aborted) setBusy(false); }
     }}><fieldset disabled={busy || blocked || !baseline} className="stack bare-fieldset">
       <legend>{dateOnly ? "Date display" : "Status and date display"}</legend>
-      <label>{scope} date format<select value={dateFormat} onChange={event => setDateFormat(event.target.value as DateFormat | "")}><option value="">Default (yyyy-MM-dd)</option>{dateFormats.map(format => <option key={format}>{format}</option>)}</select></label>
+      <label>{scope} date format<Select value={dateFormat} onChange={event => setDateFormat(event.target.value as DateFormat | "")}><option value="">Default (yyyy-MM-dd)</option>{dateFormats.map(format => <option key={format}>{format}</option>)}</Select></label>
       {!dateOnly && <StatusEditor statuses={statuses} onChange={setStatuses} />}
       <button type="submit">Save {scope.toLowerCase()} settings</button>
     </fieldset></form>

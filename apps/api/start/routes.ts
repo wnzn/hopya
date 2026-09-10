@@ -56,6 +56,8 @@ router.group(() => {
   router.get('/workspaces/:wid/documents/:id', async (ctx) => documentService.getDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
   router.patch('/workspaces/:wid/documents/:id', async (ctx) => documentService.updateDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body()))
   router.delete('/workspaces/:wid/documents/:id', async (ctx) => documentService.deleteDocument((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.get('/workspaces/:wid/documents/:id/subpages', async (ctx) => documentService.listSubpages((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
+  router.post('/workspaces/:wid/documents/:id/subpages', async (ctx) => created(ctx, async () => documentService.createSubpage((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body())))
   router.get('/workspaces/:wid/documents/:id/pages', async (ctx) => documentService.listPages((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id))
   router.post('/workspaces/:wid/documents/:id/pages', async (ctx) => created(ctx, async () => documentService.linkPage((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.request.body())))
   router.delete('/workspaces/:wid/documents/:id/pages/:itemId', async (ctx) => documentService.unlinkPage((await authenticate(ctx)).id, ctx.params.wid, ctx.params.id, ctx.params.itemId))

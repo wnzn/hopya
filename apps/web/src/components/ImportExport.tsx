@@ -20,6 +20,7 @@ import {
 } from "../lib/api";
 import { parseCsv, toCsv } from "../lib/csv";
 import { ErrorNotice, Loading, Shell, useSession } from "./Shared";
+import Select from "./Select";
 
 function listOptions(nodes: TreeNode[]) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -514,7 +515,7 @@ export default function ImportExport() {
                 ) : null}
                 <label>
                   Destination list
-                  <select
+                  <Select
                     value={resolvedNode}
                     disabled={!lists.length}
                     onChange={(event) => setNodeId(event.target.value)}
@@ -528,7 +529,7 @@ export default function ImportExport() {
                     ) : (
                       <option value="">No lists yet</option>
                     )}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Import file
@@ -574,7 +575,7 @@ export default function ImportExport() {
                               </span>
                             ) : null}
                           </span>
-                          <select
+                          <Select
                             aria-label={`Map ${column.name || `column ${index + 1}`} to`}
                             value={effectiveTarget(index)}
                             onChange={(event) =>
@@ -589,7 +590,7 @@ export default function ImportExport() {
                                 {option.label}
                               </option>
                             ))}
-                          </select>
+                          </Select>
                         </label>
                       ))}
                     </div>
@@ -624,7 +625,7 @@ export default function ImportExport() {
               <div className="stack">
                 <label>
                   Scope
-                  <select
+                  <Select
                     value={resolvedScope}
                     onChange={(event) => setScope(event.target.value)}
                   >
@@ -634,11 +635,11 @@ export default function ImportExport() {
                         {list.label}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Status
-                  <select
+                  <Select
                     value={status}
                     onChange={(event) => setStatus(event.target.value)}
                   >
@@ -648,7 +649,7 @@ export default function ImportExport() {
                         {label(value)}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Search

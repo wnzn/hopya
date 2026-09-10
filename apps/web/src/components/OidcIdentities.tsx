@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, message, type OidcIdentity, type User } from "../lib/api";
 import { ErrorNotice } from "./Shared";
+import Select from "./Select";
 
 export default function OidcIdentities({
   users,
@@ -26,7 +27,7 @@ export default function OidcIdentities({
       <div className="stack">
         <label>
           Identity account
-          <select
+          <Select
             value={userId}
             onChange={(event) => setUserId(event.target.value)}
           >
@@ -36,7 +37,7 @@ export default function OidcIdentities({
                 {user.name} ({user.email}){user.disabled ? " - Disabled" : ""}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         {account ? (
           <AccountIdentities

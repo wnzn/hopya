@@ -46,7 +46,7 @@ export default function ListStatusSettings({ detail, listId, onUpdated, localCon
     return () => controller.abort();
   }, [path, listId, reload, standalone]);
 
-  return <section className="stack"><h3>List statuses</h3>
+  return <section className="stack list-status-settings"><h3>List statuses</h3>
     <ErrorNotice error={error} />{notice && <p role="status">{notice}</p>}
     {blocked && <button type="button" disabled={busy} onClick={() => {
       if (window.confirm("Discard the list status draft and reload?")) setReload(value => value + 1);
@@ -73,12 +73,20 @@ export default function ListStatusSettings({ detail, listId, onUpdated, localCon
         }
       } finally { if (!signal.aborted) setBusy(false); }
     }}>
-      <fieldset className="stack bare-fieldset" disabled={busy || blocked || !baseline}>
+      <fieldset className="stack bare-fieldset list-status-fieldset" disabled={busy || blocked || !baseline}>
         <legend>{standalone ? "Standalone list workflow" : "Status source"}</legend>
         {standalone
           ? <p className="muted">This list is at the workspace root and defines its own statuses.</p>
-          : <><label><input type="radio" name="list-status-source" checked={!override} onChange={() => setOverride(false)} />Use project statuses</label>
-            <label><input type="radio" name="list-status-source" checked={override} onChange={() => { setOverride(true); if (!statuses.length) setStatuses(structuredClone(inherited)); }} />Override statuses for this list</label></>}
+          : <div className="list-status-source-options">
+            <label>
+              <input type="radio" name="list-status-source" aria-label="Use project statuses" checked={!override} onChange={() => setOverride(false)} />
+              <span><strong>Use project statuses</strong><small>Stay synchronized with the project's workflow.</small></span>
+            </label>
+            <label>
+              <input type="radio" name="list-status-source" aria-label="Override statuses for this list" checked={override} onChange={() => { setOverride(true); if (!statuses.length) setStatuses(structuredClone(inherited)); }} />
+              <span><strong>Override for this list</strong><small>Customize statuses only for this list.</small></span>
+            </label>
+          </div>}
         {(standalone || override) && <StatusEditor statuses={statuses} onChange={setStatuses} />}
         <button type="submit">Save list statuses</button>
       </fieldset>

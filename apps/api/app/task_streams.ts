@@ -148,13 +148,15 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
 
   async function* parts(workspace: unknown): AsyncGenerator<string> {
     if (exporting) {
-      yield `{"version":4,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
+      yield `{"version":5,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
       yield* records('SELECT id,workspaceId,name,kind,parentId,createdAt,description,icon,color',
         'FROM nodes WHERE workspaceId=?', [wid], ['createdAt', 'id'])
       yield '],"documents":['
-      if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+      if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt,createdById,updatedById', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])
       yield '],"documentPages":['
       if (canReadDocuments) yield* records('SELECT documentId,itemId,position,createdAt', 'FROM document_pages WHERE workspaceId=?', [wid], ['documentId', 'position', 'createdAt', 'itemId'])
+      yield '],"documentSubpages":['
+      if (canReadDocuments) yield* records('SELECT documentId,pageDocumentId,position,placement,createdAt', 'FROM document_subpages WHERE workspaceId=?', [wid], ['documentId', 'position', 'createdAt', 'pageDocumentId'])
       yield '],"items":['
     } else yield '['
 

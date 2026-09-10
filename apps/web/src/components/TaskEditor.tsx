@@ -12,15 +12,16 @@ import {
   type Item,
   type ItemInput,
   type Proposal,
-  type CommentAnchor,
 } from "../lib/api";
 import { ErrorNotice, Modal } from "./Shared";
-import RichTextEditor, { type TextSelection } from "./RichTextEditor";
+import RichTextEditor, { type TextAnnotation, type TextSelection } from "./RichTextEditor";
 import CommentsPanel, { mentionTargets } from "./CommentsPanel";
 import ProjectFields from "./ProjectFields";
 import TypedFieldInput from "./TypedFieldInput";
+import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 import { projectStatuses, projectDateFormat, statusStyle } from "../lib/project-statuses";
-import { formatFieldDate } from "../lib/field-values";
+import { formatFieldDate, localDateTime } from "../lib/field-values";
 import { fieldOwnerForNode, hierarchyLabels, projectBuiltIns, projectCustomFields } from "../lib/project-fields";
 
 type Attachment = {
@@ -145,7 +146,8 @@ export default function TaskEditor({
   const [childBusy, setChildBusy] = useState(false);
   const statusChoices = projectStatuses(detail, creatingChild && childDraft ? childDraft.nodeId : draft.nodeId);
   const dateFormat = projectDateFormat(detail, creatingChild && childDraft ? childDraft.nodeId : draft.nodeId);
-  const fieldOwner = fieldOwnerForNode(detail.nodes, active?.nodeId || draft.nodeId);
+  const fieldContext = detail.nodes.find(node => node.id === (active?.nodeId || draft.nodeId));
+  const fieldOwner = fieldOwnerForNode(detail.nodes, fieldContext?.id);
   const fieldsHintId = useId();
   const fields = fieldOwner || detail.projectFields === undefined ? projectCustomFields(detail, fieldOwner?.id) : [];
   const builtIns = fieldOwner || detail.projectFields === undefined ? projectBuiltIns(detail, fieldOwner?.id) : [];
@@ -154,8 +156,8 @@ export default function TaskEditor({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
-  const [commentAnchor, setCommentAnchor] = useState<CommentAnchor | null>(null);
-  const [commentAnnotations, setCommentAnnotations] = useState<CommentAnchor[]>([]);
+  const [commentAnchor, setCommentAnchor] = useState<TextSelection | null>(null);
+  const [commentAnnotations, setCommentAnnotations] = useState<TextAnnotation[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -178,7 +180,17 @@ export default function TaskEditor({
   const isNew = !active && !creatingChild;
   const shownItem = active;
   function selectForComment(selection: TextSelection) {
-    setCommentAnchor({ ...selection, state: "attached" });
+    setCommentAnchor(selection);
+  }
+  function openComment(commentId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("comment", commentId);
+    window.history.replaceState({}, "", url);
+    requestAnimationFrame(() => {
+      const target = document.getElementById(`comment-${CSS.escape(commentId)}`);
+      target?.scrollIntoView({ block: "center", behavior: "smooth" });
+      target?.focus({ preventScroll: true });
+    });
   }
   const richMentionTargets = mentionTargets(detail, active && !mentionItems.some(candidate => candidate.id === active.id) ? [...mentionItems, active] : mentionItems);
   useEffect(() => {
@@ -262,6 +274,25 @@ export default function TaskEditor({
     setNewTag("");
     setEditing(null);
   }
+  useEffect(() => {
+    if (!editing || !current) return;
+    const customId = editing.startsWith("custom:") ? editing.slice("custom:".length) : null;
+    const customType = customId ? detail.fields.find(field => field.id === customId)?.type : null;
+    const unchanged = editing === "startDate" ? draft.startDate === current.startDate
+      : editing === "dueDate" ? draft.dueDate === current.dueDate
+      : customId && (customType === "date" || customType === "datetime")
+        ? JSON.stringify(draft.customFields[customId] ?? null) === JSON.stringify(current.customFields[customId] ?? null)
+        : false;
+    if (!unchanged) return;
+    function dismissDateEditor(event: PointerEvent) {
+      const input = document.activeElement;
+      if (!(input instanceof HTMLInputElement) || !["date", "datetime-local"].includes(input.type)) return;
+      if (event.target === input) return;
+      cancelEditing();
+    }
+    document.addEventListener("pointerdown", dismissDateEditor);
+    return () => document.removeEventListener("pointerdown", dismissDateEditor);
+  }, [editing, current, detail.fields, draft.startDate, draft.dueDate, draft.customFields]);
   useEffect(() => {
     const controller = new AbortController();
     context.current = controller;
@@ -382,32 +413,32 @@ export default function TaskEditor({
       if (!signal.aborted) setBusy(false);
     }
   }
-  async function save() {
+  async function save(nextDraft: DraftEx = draft) {
     if (busy || attachmentBusy || !writable || conflict || !current) return;
     setError("");
     if (newTag) {
       setError("Add the pending tag or clear its input before saving.");
       return;
     }
-    if (draft.startDate && draft.dueDate && draft.startDate > draft.dueDate) {
+    if (nextDraft.startDate && nextDraft.dueDate && nextDraft.startDate > nextDraft.dueDate) {
       setError("The due date must be on or after the start date.");
       return;
     }
     setBusy(true);
     try {
       const input: Record<string, unknown> = {
-        title: draft.title,
-        description: draft.description,
-        nodeId: draft.nodeId,
-        status: draft.status,
-        priority: draft.priority,
-        startDate: draft.startDate,
-        dueDate: draft.dueDate,
-        tags: draft.tags,
-        customFields: draft.customFields,
-        assigneeId: draft.assigneeId,
-        checklist: draft.checklist,
-        parentId: draft.parentId,
+        title: nextDraft.title,
+        description: nextDraft.description,
+        nodeId: nextDraft.nodeId,
+        status: nextDraft.status,
+        priority: nextDraft.priority,
+        startDate: nextDraft.startDate,
+        dueDate: nextDraft.dueDate,
+        tags: nextDraft.tags,
+        customFields: nextDraft.customFields,
+        assigneeId: nextDraft.assigneeId,
+        checklist: nextDraft.checklist,
+        parentId: nextDraft.parentId,
       };
       const baseInput: Record<string, unknown> = {
         title: current.title,
@@ -441,6 +472,7 @@ export default function TaskEditor({
       setCurrent(updated);
       setActive(updated);
       setDraft(toDraft(updated) as DraftEx);
+      if (Object.hasOwn(changed, "description")) setCommentAnchor(null);
       setEditing(null);
       setConflict(false);
       setBusy(false);
@@ -450,6 +482,11 @@ export default function TaskEditor({
       if (active && e instanceof ApiError && e.status === 409) setConflict(true);
       setBusy(false);
     }
+  }
+  function saveDirect<K extends keyof DraftEx>(key: K, value: DraftEx[K]) {
+    const next = { ...draft, [key]: value };
+    setDraft(next);
+    void save(next);
   }
   async function saveNew() {
     if (busy || attachmentBusy || !writable || conflict) return;
@@ -529,6 +566,8 @@ export default function TaskEditor({
     setConflict(false);
     setError("");
     setConfirmDelete(false);
+    setCommentAnchor(null);
+    setCommentAnnotations([]);
     setNewTag("");
     setNewChecklist("");
     setMenuOpen(false);
@@ -546,6 +585,8 @@ export default function TaskEditor({
       setConflict(false);
       setError("");
       setConfirmDelete(false);
+      setCommentAnchor(null);
+      setCommentAnnotations([]);
       setNewTag("");
       setNewChecklist("");
       setUploadOpen(false);
@@ -695,11 +736,21 @@ export default function TaskEditor({
     return String(value) || "Not set";
   }
   function renderCustomEditor(field: Field) {
+    const direct = ["select", "checkbox", "date", "datetime"].includes(field.type);
+    const compact = direct || field.type === "checklist";
     if (["datetime", "checklist", "rating"].includes(field.type))
-      return <TypedFieldInput field={field} value={draft.customFields[field.id] ?? null} disabled={!writable || busy}
-        onChange={value => change("customFields", { ...draft.customFields, [field.id]: value })} />;
+      return <TypedFieldInput field={field} compact={compact} value={draft.customFields[field.id] ?? null} disabled={!writable || busy}
+        onBlur={field.type === "datetime" ? event => {
+          const original = current?.customFields[field.id];
+          const originalLocal = typeof original === "string" ? localDateTime(original) : "";
+          if (event.currentTarget.value === originalLocal) cancelEditing();
+        } : undefined}
+        onKeyDown={field.type === "datetime" ? event => {
+          if (event.key === "Escape") { event.stopPropagation(); cancelEditing(); }
+        } : undefined}
+        onChange={value => (direct ? saveDirect : change)("customFields", { ...draft.customFields, [field.id]: value })} />;
     return <label>
-      {field.name}
+      <span className={direct ? "sr-only" : undefined}>{field.name}</span>
       {field.type === "checkbox" ? (
         <input
           type="checkbox"
@@ -708,19 +759,21 @@ export default function TaskEditor({
           aria-describedby={`custom-${field.id}-state`}
           checked={draft.customFields[field.id] === true}
           onChange={(e) =>
-            change("customFields", {
+            saveDirect("customFields", {
               ...draft.customFields,
               [field.id]: e.target.checked,
             })
           }
         />
       ) : field.type === "select" ? (
-        <select
+        <Select
           autoFocus
+          openOnMount
+          onDismiss={cancelEditing}
           disabled={!writable || busy}
           value={String(draft.customFields[field.id] ?? "")}
           onChange={(e) =>
-            change("customFields", {
+            saveDirect("customFields", {
               ...draft.customFields,
               [field.id]: e.target.value || null,
             })
@@ -730,7 +783,7 @@ export default function TaskEditor({
           {field.options?.map((option) => (
             <option key={option}>{option}</option>
           ))}
-        </select>
+        </Select>
       ) : field.type === "formula" && field.settings?.formula !== undefined ? (
         <output aria-label={`${field.name} calculated value`}>{formulaDisplay(field, draft) || "Not set"}</output>
       ) : field.type === "formula" ? (
@@ -789,8 +842,15 @@ export default function TaskEditor({
           step={field.type === "number" ? "any" : undefined}
           maxLength={2000}
           value={String(draft.customFields[field.id] ?? "")}
+          onFocus={(e) => { if (field.type === "date") { try { e.currentTarget.showPicker(); } catch {} } }}
+          onBlur={(e) => {
+            if (field.type === "date" && (e.currentTarget.value || null) === (current?.customFields[field.id] ?? null)) cancelEditing();
+          }}
+          onKeyDown={(e) => {
+            if (field.type === "date" && e.key === "Escape") { e.stopPropagation(); cancelEditing(); }
+          }}
           onChange={(e) =>
-            change("customFields", {
+            (field.type === "date" ? saveDirect : change)("customFields", {
               ...draft.customFields,
               [field.id]:
                 e.target.value === ""
@@ -830,12 +890,24 @@ export default function TaskEditor({
     );
   }
   function renderTaskHeading() {
-    const title = editing === "title" ? <div className="task-detail-title-editor">
+    const title = editing === "title" ? <div className="task-detail-title-editor inline-title-editor">
         <label className="sr-only" htmlFor="task-detail-title">Title</label>
         <input id="task-detail-title" autoFocus name="title" readOnly={!writable} value={draft.title}
           onChange={(event) => change("title", event.target.value)} required maxLength={300}
+          onKeyDown={event => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (!busy && !attachmentBusy && !conflict && draft.title.trim()) void save();
+            }
+            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelEditing(); }
+          }}
           placeholder="What needs to happen?" />
-        {renderInlineActions()}
+        <div className="inline-title-actions">
+          <button type="button" className="inline-title-action inline-save" aria-label="Save title"
+            disabled={busy || attachmentBusy || conflict || !draft.title.trim()} onClick={() => void save()}>✓</button>
+          <button type="button" className="inline-title-action" aria-label="Cancel editing title" disabled={busy}
+            onClick={cancelEditing}>×</button>
+        </div>
       </div> : <h2 className="task-detail-heading-title">
       <button type="button" aria-label="Edit title" disabled={busy || !writable} onClick={() => openEditor("title")}>
         {draft.title || "No title yet"}
@@ -850,14 +922,14 @@ export default function TaskEditor({
       </div>}
     </div>;
   }
-  function renderValueRow(key: string, fieldLabel: string, display: string, editor: React.ReactNode) {
+  function renderValueRow(key: string, fieldLabel: string, display: string, editor: React.ReactNode, direct = false) {
     const isOpen = editing === key;
     if (isOpen) {
       return (
         <div className={`stack task-detail-field task-detail-field-${key}`}>
           {editor}
           {(fieldLabel === "Start date" || fieldLabel === "Due date") && null}
-          {renderInlineActions()}
+          {!direct && renderInlineActions()}
         </div>
       );
     }
@@ -927,7 +999,7 @@ export default function TaskEditor({
             <div className="form-grid">
               {!fixedDestination && <label>
                 List
-                <select
+                <Select
                   disabled={!writable}
                   value={draft.nodeId}
                   required
@@ -941,11 +1013,11 @@ export default function TaskEditor({
                       {listLabels.get(n.id)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>}
               <label>
                 Assignee
-                <select
+                <Select
                   disabled={!writable}
                   value={draft.assigneeId || ""}
                   onChange={(e) => change("assigneeId", e.target.value || null)}
@@ -956,11 +1028,11 @@ export default function TaskEditor({
                       {m.name} ({m.email}){m.disabled ? " - disabled" : ""}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label>
                 Status
-                <select
+                <Select
                   disabled={!writable}
                   value={draft.status}
                   style={statusStyle(statusChoices.find(status => status.id === draft.status)?.color ?? "#64748b")}
@@ -974,11 +1046,11 @@ export default function TaskEditor({
                       {s.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               {(builtIns.includes("priority") || proposal?.priority !== undefined) && <label>
                 Priority
-                <select
+                <Select
                   disabled={!writable}
                   value={draft.priority}
                   onChange={(e) =>
@@ -990,7 +1062,7 @@ export default function TaskEditor({
                       {label(p)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>}
               {builtIns.includes("startDate") && <label>
                 Start date
@@ -1071,17 +1143,17 @@ export default function TaskEditor({
             </section>}
             <details>
               <summary>Checklist</summary>
-              <ul aria-label="Checklist items">
+              <ul className="task-checklist" aria-label="Checklist items">
                 {draft.checklist.map(entry => (
                   <li key={entry.id}>
                     <label>
-                      <input type="checkbox" checked={entry.done}
+                      <input type="checkbox" checked={entry.done} aria-label={`Mark ${entry.text} complete`}
                         onChange={e => change("checklist", draft.checklist.map(v => v.id === entry.id ? { ...v, done: e.target.checked } : v))} />
-                      {entry.text}
+                      <span>{entry.text}</span>
                     </label>
-                    <button type="button" aria-label={`Delete checklist item ${entry.text}`}
+                    <button type="button" className="task-checklist-delete" aria-label={`Delete checklist item ${entry.text}`}
                       onClick={() => change("checklist", draft.checklist.filter(v => v.id !== entry.id))}>
-                      Delete
+                      <SolidIcon name="trash" />
                     </button>
                   </li>
                 ))}
@@ -1138,7 +1210,7 @@ export default function TaskEditor({
                             }
                           />
                         ) : field.type === "select" ? (
-                          <select
+                          <Select
                             disabled={!writable}
                             value={String(draft.customFields[field.id] ?? "")}
                             onChange={(e) =>
@@ -1152,7 +1224,7 @@ export default function TaskEditor({
                             {field.options?.map((option) => (
                               <option key={option}>{option}</option>
                             ))}
-                          </select>
+                          </Select>
                         ) : field.type === "formula" && field.settings?.formula !== undefined ? (
                           <output aria-label={`${field.name} calculated value`}>{formulaDisplay(field, draft) || "Not set"}</output>
                         ) : field.type === "formula" ? (
@@ -1288,9 +1360,9 @@ export default function TaskEditor({
           </div>
         </form>
       </Modal>
-        {fieldsOpen && fieldOwner && structureWritable && <ProjectFields
+        {fieldsOpen && fieldContext && fieldOwner && structureWritable && <ProjectFields
           key={`${detail.workspace.id}:${draft.nodeId}`}
-          detail={detail} targetId={draft.nodeId} onClose={() => setFieldsOpen(false)}
+          detail={detail} targetId={fieldContext.id} onClose={() => setFieldsOpen(false)}
           onUpdated={fresh => { setDetail(fresh); onMetadataChange?.(fresh); }}
         />}
       </>
@@ -1370,12 +1442,14 @@ export default function TaskEditor({
         <div className="form-grid task-detail-metadata">
           {renderValueRow("assigneeId", "Assignee", memberName(draft.assigneeId), (
             <label>
-              Assignee
-              <select
+              <span className="sr-only">Assignee</span>
+              <Select
                 autoFocus
+                openOnMount
+                onDismiss={cancelEditing}
                 disabled={!writable || busy}
                 value={draft.assigneeId || ""}
-                onChange={(e) => change("assigneeId", e.target.value || null)}
+                onChange={(e) => saveDirect("assigneeId", e.target.value || null)}
               >
                 <option value="">Unassigned</option>
                 {detail.members.map((m) => (
@@ -1383,18 +1457,20 @@ export default function TaskEditor({
                     {m.name} ({m.email}){m.disabled ? " - disabled" : ""}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
-          ))}
+          ), true)}
           {renderValueRow("status", "Status", statusName(draft.status), (
             <label>
-              Status
-              <select
+              <span className="sr-only">Status</span>
+              <Select
                 autoFocus
+                openOnMount
+                onDismiss={cancelEditing}
                 disabled={!writable || busy}
                 value={draft.status}
                 style={statusStyle(statusChoices.find(status => status.id === draft.status)?.color ?? "#64748b")}
-                onChange={(e) => change("status", e.target.value as Item["status"])}
+                onChange={(e) => saveDirect("status", e.target.value as Item["status"])}
               >
                 {!statusChoices.some(status => status.id === draft.status) && <option value={draft.status} disabled>{label(draft.status)} (unavailable in this project)</option>}
                 {statusChoices.map((s) => (
@@ -1402,43 +1478,47 @@ export default function TaskEditor({
                     {s.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
-          ))}
+          ), true)}
           {(builtIns.includes("priority") || draft.priority !== "none") && renderValueRow("priority", "Priority", label(draft.priority), (
             <label>
-              Priority
-              <select
+              <span className="sr-only">Priority</span>
+              <Select
                 autoFocus
+                openOnMount
+                onDismiss={cancelEditing}
                 disabled={!writable || busy}
                 value={draft.priority}
-                onChange={(e) => change("priority", e.target.value as Item["priority"])}
+                onChange={(e) => saveDirect("priority", e.target.value as Item["priority"])}
               >
                 {priorities.map((p) => (
                   <option key={p} value={p}>
                     {label(p)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
-          ))}
+          ), true)}
           {(builtIns.includes("startDate") || draft.startDate) && renderValueRow("startDate", "Start date", draft.startDate ? formatFieldDate(draft.startDate, dateFormat) : "Not set", (
             <label>
-              Start date
+              <span className="sr-only">Start date</span>
               <input
                 autoFocus
                 aria-label="Start date"
                 type="date"
                 readOnly={!writable}
                 value={draft.startDate || ""}
-                onChange={(e) => change("startDate", e.target.value || null)}
+                onFocus={(e) => { try { e.currentTarget.showPicker(); } catch {} }}
+                onBlur={(e) => { if ((e.currentTarget.value || null) === (current?.startDate ?? null)) cancelEditing(); }}
+                onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancelEditing(); } }}
+                onChange={(e) => saveDirect("startDate", e.target.value || null)}
               />
-              <small>{draft.startDate && formatFieldDate(draft.startDate, dateFormat)}</small>
             </label>
-          ))}
+          ), true)}
           {renderValueRow("dueDate", "Due date", draft.dueDate ? formatFieldDate(draft.dueDate, dateFormat) : "Not set", (
             <label>
-              Due date
+              <span className="sr-only">Due date</span>
               <input
                 autoFocus
                 aria-label="Due date"
@@ -1446,14 +1526,24 @@ export default function TaskEditor({
                 readOnly={!writable}
                 min={draft.startDate || undefined}
                 value={draft.dueDate || ""}
-                onChange={(e) => change("dueDate", e.target.value || null)}
+                onFocus={(e) => { try { e.currentTarget.showPicker(); } catch {} }}
+                onBlur={(e) => { if ((e.currentTarget.value || null) === (current?.dueDate ?? null)) cancelEditing(); }}
+                onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancelEditing(); } }}
+                onChange={(e) => saveDirect("dueDate", e.target.value || null)}
               />
-              <small>{draft.dueDate && formatFieldDate(draft.dueDate, dateFormat)}</small>
             </label>
-          ))}
+          ), true)}
         </div>
         <div className="stack task-detail-description">
-          <span>Body</span>
+          <div className="task-detail-description-header">
+            <span>Body</span>
+            {editing !== "description" && writable && (
+              <button type="button" disabled={busy || attachmentBusy} onClick={() => openEditor("description")}>
+                <SolidIcon name="pencil" />
+                Edit
+              </button>
+            )}
+          </div>
           <RichTextEditor
             aria-label="Body"
             value={draft.description}
@@ -1461,12 +1551,12 @@ export default function TaskEditor({
               if (editing !== "description" || !writable) return;
               change("description", v.slice(0, 50000));
             }}
-            onActivate={() => openEditor("description")}
             readOnly={editing !== "description" || !writable}
             placeholder="Add context, decisions, or a useful next step..."
             mentionTargets={richMentionTargets}
             commentRevision={shownItem?.bodyRevision ?? 1}
             annotations={commentAnnotations}
+            onAnnotationActivate={openComment}
             onCommentSelection={editing !== "description" && shownItem && detail.permissions.includes("comments:create") ? selectForComment : undefined}
           />
           {editing === "description" && renderInlineActions()}
@@ -1534,6 +1624,7 @@ export default function TaskEditor({
             <div className="form-grid">
               {fields.map((field) => {
                 const key = `custom:${field.id}`;
+                const direct = ["select", "checkbox", "date", "datetime"].includes(field.type);
                 if (editing === key) {
                   return (
                     <div key={field.id} className="stack">
@@ -1545,10 +1636,10 @@ export default function TaskEditor({
                             {draft.customFields[field.id] == null ? "Not set" : draft.customFields[field.id] ? "Yes" : "No"}
                           </small>
                           <button type="button" aria-label={`Clear ${field.name}`} disabled={draft.customFields[field.id] == null}
-                            onClick={() => change("customFields", { ...draft.customFields, [field.id]: null })}>Clear</button>
+                            onClick={() => saveDirect("customFields", { ...draft.customFields, [field.id]: null })}>Clear</button>
                         </>
                       )}
-                      {renderInlineActions()}
+                      {!direct && renderInlineActions()}
                     </div>
                   );
                 }
@@ -1579,18 +1670,18 @@ export default function TaskEditor({
         </details>}
         <details key={active?.id}>
           <summary>Checklist</summary>
-          <p className="muted" aria-live="polite">{doneCount} of {draft.checklist.length} complete</p>
-          <ul aria-label="Checklist items">
+          <p className="muted task-checklist-progress" aria-live="polite">{doneCount} of {draft.checklist.length} complete</p>
+          <ul className="task-checklist" aria-label="Checklist items">
             {draft.checklist.map(entry => (
               <li key={entry.id}>
                 <label>
-                  <input type="checkbox" checked={entry.done} disabled={!writable || busy}
+                  <input type="checkbox" checked={entry.done} aria-label={`Mark ${entry.text} complete`} disabled={!writable || busy}
                     onChange={e => toggleChecklist(entry.id, e.target.checked)} />
-                  {entry.text}
+                  <span>{entry.text}</span>
                 </label>
-                <button type="button" aria-label={`Delete checklist item ${entry.text}`}
+                <button type="button" className="task-checklist-delete" aria-label={`Delete checklist item ${entry.text}`}
                   disabled={!writable || busy} onClick={() => deleteChecklist(entry.id)}>
-                  Delete
+                  <SolidIcon name="trash" />
                 </button>
               </li>
             ))}
@@ -1638,9 +1729,7 @@ export default function TaskEditor({
               {subtasks.map(sub => (
                 <li key={sub.id}>
                   <button type="button" disabled={busy || attachmentBusy || childBusy} onClick={() => openSubtask(sub)}>
-                    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 4v9a3 3 0 0 0 3 3h11m-5-5 5 5-5 5" />
-                    </svg>
+                    <SolidIcon name="subtask" />
                     <span>{sub.title || "Untitled subtask"}</span>
                     <span className="task-detail-subtask-open" aria-hidden="true">›</span>
                   </button>
@@ -1743,14 +1832,16 @@ export default function TaskEditor({
         </section>
       )}
       </div>
-      {shownItem && !creatingChild && <CommentsPanel detail={detail} item={shownItem} items={mentionItems} currentUserId={currentUserId}
+      {shownItem && !creatingChild && <CommentsPanel key={shownItem.id} detail={detail} item={shownItem} items={mentionItems} currentUserId={currentUserId}
         anchor={commentAnchor} onAnchorUsed={() => setCommentAnchor(null)}
-        onCommentsChange={comments => setCommentAnnotations(comments.flatMap(comment => comment.anchor ? [comment.anchor] : []))} />}
+        onCommentsChange={comments => setCommentAnnotations(comments.flatMap(comment => comment.anchor ? [{
+          id: comment.id, authorName: comment.authorName, body: comment.body, anchor: comment.anchor,
+        }] : []))} />}
       </div>
     </Modal>
-      {fieldsOpen && fieldOwner && structureWritable && <ProjectFields
+      {fieldsOpen && fieldContext && fieldOwner && structureWritable && <ProjectFields
         key={`${detail.workspace.id}:${draft.nodeId}`}
-        detail={detail} targetId={draft.nodeId} onClose={() => setFieldsOpen(false)}
+        detail={detail} targetId={fieldContext.id} onClose={() => setFieldsOpen(false)}
         onUpdated={fresh => { setDetail(fresh); onMetadataChange?.(fresh); }}
       />}
     </>

@@ -9,9 +9,11 @@ import {
   htmlToMarkdown,
   isSafeUrl,
   markdownToHtml,
+  plainText,
   selectionAnchor,
 } from "../lib/rich-text";
 import type { CommentAnchor } from "../lib/api";
+import Select from "./Select";
 
 type Props = {
   value: string;
@@ -23,7 +25,8 @@ type Props = {
   mentionTargets?: MentionTarget[];
   onCommentSelection?: (selection: TextSelection) => void;
   commentRevision?: number;
-  annotations?: CommentAnchor[];
+  annotations?: TextAnnotation[];
+  onAnnotationActivate?: (commentId: string) => void;
 };
 
 export type TextSelection = {
@@ -35,6 +38,13 @@ export type TextSelection = {
   suffix: string;
 };
 
+export type TextAnnotation = {
+  id: string;
+  authorName: string;
+  body: string;
+  anchor: CommentAnchor;
+};
+
 export type MentionTarget = {
   id: string;
   kind: "user" | "task" | "node";
@@ -42,6 +52,7 @@ export type MentionTarget = {
   href: string;
 };
 type MentionMenu = { from: number; to: number; trigger: string; query: string };
+const noAnnotations: TextAnnotation[] = [];
 
 // Product content subset: StarterKit pared down to the marks and nodes the
 // markdown contract supports (bold, italic, strike, code, headings 2-3,
@@ -88,9 +99,11 @@ export default function RichTextEditor({
   mentionTargets = [],
   onCommentSelection,
   commentRevision = 1,
-  annotations = [],
+  annotations = noAnnotations,
+  onAnnotationActivate,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
   // Bumped on every transaction so toolbar isActive() states stay current.
   const [, setTick] = useState(0);
@@ -102,6 +115,10 @@ export default function RichTextEditor({
   const [limitReached, setLimitReached] = useState(false);
   const [mentionMenu, setMentionMenu] = useState<MentionMenu | null>(null);
   const [commentSelection, setCommentSelection] = useState<Omit<TextSelection, "revision"> | null>(null);
+  const [annotationBubble, setAnnotationBubble] = useState<{ id: string; left: number; top: number } | null>(null);
+  const annotationHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const annotationLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAnnotationId = useRef<string | null>(null);
   const mentionMenuRef = useRef<MentionMenu | null>(null);
   const mentionIndex = useRef(0);
   const latest = useRef({ value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations });
@@ -166,14 +183,50 @@ export default function RichTextEditor({
           key: new PluginKey("commentAnnotations"),
           props: { decorations(state) {
             const decorations: Decoration[] = [];
-            for (const annotation of latest.current.annotations.filter(value => value.state === "attached")) {
-              const ranges: { from: number; to: number }[] = [];
+            for (const annotation of latest.current.annotations.filter(value => value.anchor.state === "attached")) {
+              const anchor = annotation.anchor;
+              const segments: { from: number; start: number; end: number }[] = [];
+              let rendered = "";
               state.doc.descendants((node, pos) => {
                 if (!node.isText || !node.text) return;
-                let at = node.text.indexOf(annotation.exact);
-                while (at !== -1) { ranges.push({ from: pos + at, to: pos + at + annotation.exact.length }); at = node.text.indexOf(annotation.exact, at + 1); }
+                const start = rendered.length;
+                rendered += node.text;
+                segments.push({ from: pos, start, end: rendered.length });
               });
-              if (ranges.length === 1) decorations.push(Decoration.inline(ranges[0].from, ranges[0].to, { class: "comment-highlight" }));
+              const findRanges = (exact: string) => {
+                const found: { from: number; to: number }[] = [];
+                let at = rendered.indexOf(exact);
+                while (at !== -1) {
+                  const first = segments.find(segment => at >= segment.start && at < segment.end);
+                  const lastIndex = at + exact.length - 1;
+                  const last = segments.find(segment => lastIndex >= segment.start && lastIndex < segment.end);
+                  if (first && last) found.push({ from: first.from + at - first.start, to: last.from + lastIndex - last.start + 1 });
+                  at = rendered.indexOf(exact, at + 1);
+                }
+                return found;
+              };
+              let ranges = findRanges(anchor.exact);
+              if (!ranges.length && /[*_~`\[\]]/.test(anchor.exact)) {
+                const container = document.createElement("div");
+                container.innerHTML = markdownToHtml(anchor.exact);
+                const visibleExact = container.textContent ?? "";
+                if (visibleExact) ranges = findRanges(visibleExact);
+              }
+              const sourceStarts: number[] = [];
+              let sourceAt = latest.current.value.indexOf(anchor.exact);
+              while (sourceAt !== -1) {
+                sourceStarts.push(sourceAt);
+                sourceAt = latest.current.value.indexOf(anchor.exact, sourceAt + 1);
+              }
+              const occurrence = sourceStarts.indexOf(anchor.start);
+              const range = occurrence >= 0 ? ranges[occurrence] : ranges.length === 1 ? ranges[0] : undefined;
+              if (range) decorations.push(Decoration.inline(range.from, range.to, {
+                class: "comment-highlight",
+                "data-comment-id": annotation.id,
+                role: "link",
+                tabindex: "0",
+                "aria-label": `Open comment by ${annotation.authorName}`,
+              }));
             }
             return DecorationSet.create(state.doc, decorations);
           } },
@@ -248,6 +301,7 @@ export default function RichTextEditor({
       onTransaction: ({ editor: current }) => {
         setTick((tick) => tick + 1);
         const selection = current.state.selection;
+        if (latest.current.readOnly) return;
         if (selection.empty || !latest.current.onCommentSelection) setCommentSelection(null);
         else {
           const exact = current.state.doc.textBetween(selection.from, selection.to, "\n", "\n");
@@ -286,6 +340,70 @@ export default function RichTextEditor({
     // keyboard-selectable; aria-readonly announces the mutation block.
     editor.view.dom.setAttribute("aria-readonly", String(!!readOnly));
   }, [editor, readOnly]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !readOnly || !onCommentSelection) {
+      setCommentSelection(null);
+      return;
+    }
+    const content = editor.view.dom;
+    function updateCommentSelection() {
+      const selection = document.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed ||
+        !selection.anchorNode || !selection.focusNode ||
+        !content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) {
+        setCommentSelection(null);
+        return;
+      }
+      const exact = selection.toString();
+      const range = selection.getRangeAt(0);
+      const prefixRange = document.createRange();
+      prefixRange.selectNodeContents(content);
+      prefixRange.setEnd(range.startContainer, range.startOffset);
+      const selectedStart = prefixRange.toString().length;
+      const rendered = document.createRange();
+      rendered.selectNodeContents(content);
+      const renderedText = rendered.toString();
+      const starts: number[] = [];
+      let match = renderedText.indexOf(exact);
+      while (match !== -1) {
+        starts.push(match);
+        match = renderedText.indexOf(exact, match + 1);
+      }
+      const occurrence = starts.indexOf(selectedStart);
+      const fragment = document.createElement("div");
+      fragment.append(range.cloneContents());
+      const formattedExact = htmlToMarkdown(fragment.innerHTML);
+      const candidates = formattedExact && plainText(formattedExact) === exact.replace(/\s+/g, " ").trim()
+        ? [exact, formattedExact] : [exact];
+      let anchored = null;
+      if (occurrence >= 0) {
+        for (const candidate of candidates) {
+          anchored = selectionAnchor(value, candidate, commentRevision, occurrence)
+            ?? selectionAnchor(value, candidate, commentRevision);
+          if (anchored) break;
+        }
+      }
+      setCommentSelection(anchored ? {
+        start: anchored.start, end: anchored.end, exact: anchored.exact,
+        prefix: anchored.prefix, suffix: anchored.suffix,
+      } : null);
+    }
+    function clearStaleSelection() {
+      setCommentSelection(null);
+    }
+    document.addEventListener("selectionchange", updateCommentSelection);
+    content.addEventListener("pointerdown", clearStaleSelection);
+    content.addEventListener("pointerup", updateCommentSelection);
+    content.addEventListener("keyup", updateCommentSelection);
+    updateCommentSelection();
+    return () => {
+      document.removeEventListener("selectionchange", updateCommentSelection);
+      content.removeEventListener("pointerdown", clearStaleSelection);
+      content.removeEventListener("pointerup", updateCommentSelection);
+      content.removeEventListener("keyup", updateCommentSelection);
+    };
+  }, [editor, readOnly, onCommentSelection, value, commentRevision]);
 
   useEffect(() => {
     if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr);
@@ -334,20 +452,107 @@ export default function RichTextEditor({
     </button>
   );
 
+  function showAnnotation(target: HTMLElement) {
+    const id = target.dataset.commentId;
+    const root = rootRef.current;
+    if (!id || !root) return;
+    const targetBounds = target.getBoundingClientRect();
+    const rootBounds = root.getBoundingClientRect();
+    setAnnotationBubble({
+      id,
+      left: Math.max(8, Math.min(targetBounds.left - rootBounds.left, rootBounds.width - 288)),
+      top: Math.max(8, Math.min(targetBounds.bottom - rootBounds.top + 6, rootBounds.height - 96)),
+    });
+  }
+  function cancelAnnotationHover() {
+    if (annotationHoverTimer.current) clearTimeout(annotationHoverTimer.current);
+    annotationHoverTimer.current = null;
+    pendingAnnotationId.current = null;
+  }
+  function cancelAnnotationLeave() {
+    if (annotationLeaveTimer.current) clearTimeout(annotationLeaveTimer.current);
+    annotationLeaveTimer.current = null;
+  }
+  function scheduleAnnotationClose() {
+    cancelAnnotationLeave();
+    annotationLeaveTimer.current = setTimeout(() => {
+      annotationLeaveTimer.current = null;
+      setAnnotationBubble(null);
+    }, 120);
+  }
+  function scheduleAnnotation(target: HTMLElement) {
+    const id = target.dataset.commentId;
+    if (!id || annotationBubble?.id === id || pendingAnnotationId.current === id) return;
+    cancelAnnotationLeave();
+    cancelAnnotationHover();
+    setAnnotationBubble(null);
+    pendingAnnotationId.current = id;
+    annotationHoverTimer.current = setTimeout(() => {
+      annotationHoverTimer.current = null;
+      pendingAnnotationId.current = null;
+      if (target.isConnected) showAnnotation(target);
+    }, 1000);
+  }
+  useEffect(() => () => {
+    cancelAnnotationHover();
+    cancelAnnotationLeave();
+  }, []);
+  const activeAnnotation = annotationBubble ? annotations.find(annotation => annotation.id === annotationBubble.id) : null;
+
   return (
     <div
-      className={`rich-editor${readOnly && onActivate ? " rich-editor-activatable" : ""}`}
-      onClick={() => { if (readOnly) onActivate?.(); }}
-      onFocusCapture={() => { if (readOnly) onActivate?.(); }}
+      ref={rootRef}
+      className={`rich-editor${readOnly ? " rich-editor-readonly" : ""}${readOnly && onActivate ? " rich-editor-activatable" : ""}`}
+      onClick={event => {
+        const target = (event.target as Element).closest?.<HTMLElement>(".comment-highlight[data-comment-id]");
+        if (target?.dataset.commentId) onAnnotationActivate?.(target.dataset.commentId);
+        else if (readOnly) onActivate?.();
+      }}
+      onKeyDown={event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const target = (event.target as Element).closest?.<HTMLElement>(".comment-highlight[data-comment-id]");
+        if (!target?.dataset.commentId) return;
+        event.preventDefault();
+        onAnnotationActivate?.(target.dataset.commentId);
+      }}
+      onMouseOver={event => {
+        const target = (event.target as Element).closest?.<HTMLElement>(".comment-highlight[data-comment-id]");
+        if (target) {
+          cancelAnnotationLeave();
+          scheduleAnnotation(target);
+        }
+      }}
+      onMouseOut={event => {
+        const target = (event.target as Element).closest?.<HTMLElement>(".comment-highlight[data-comment-id]");
+        if (target && pendingAnnotationId.current === target.dataset.commentId && !target.contains(event.relatedTarget as Node | null)) {
+          cancelAnnotationHover();
+        }
+        if (target && annotationBubble?.id === target.dataset.commentId && !target.contains(event.relatedTarget as Node | null)) {
+          scheduleAnnotationClose();
+        }
+      }}
+      onMouseLeave={() => {
+        cancelAnnotationHover();
+        cancelAnnotationLeave();
+        setAnnotationBubble(null);
+      }}
+      onFocusCapture={event => {
+        if (readOnly) onActivate?.();
+        const target = (event.target as Element).closest?.<HTMLElement>(".comment-highlight[data-comment-id]");
+        if (target) {
+          cancelAnnotationHover();
+          showAnnotation(target);
+        }
+      }}
     >
-        <div className="rich-editor-toolbar" role="group" aria-label="Formatting">
-          {readOnly && onCommentSelection && (
-            <button type="button" disabled={!commentSelection} title={commentSelection ? "Comment on selected text" : "Select text to comment"}
+        {(!readOnly || onCommentSelection && commentSelection) && <div className={`rich-editor-toolbar${readOnly ? " rich-editor-selection-toolbar" : ""}`} role="group" aria-label={readOnly ? "Selection actions" : "Formatting"}>
+          {readOnly ? (
+            <button type="button" title="Comment on selected text"
               onMouseDown={event => event.preventDefault()} onClick={event => {
                 event.stopPropagation();
-                if (commentSelection) onCommentSelection({ revision: commentRevision, ...commentSelection });
+                if (commentSelection) onCommentSelection?.({ revision: commentRevision, ...commentSelection });
               }}>Comment</button>
-          )}
+          ) : <>
           {toolbarButton("Bold", "B", editor?.isActive("bold") ?? false, () =>
             editor?.chain().toggleBold().run(),
           )}
@@ -363,7 +568,7 @@ export default function RichTextEditor({
           {toolbarButton("Code", "<>", editor?.isActive("code") ?? false, () =>
             editor?.chain().toggleCode().run(),
           )}
-          <select aria-label="Text style" disabled={readOnly || !editor}
+          <Select aria-label="Text style" disabled={readOnly || !editor}
             value={editor?.isActive("heading", { level: 2 }) ? "2" : editor?.isActive("heading", { level: 3 }) ? "3" : "paragraph"}
             onChange={event => {
               if (!editor) return;
@@ -374,7 +579,7 @@ export default function RichTextEditor({
             <option value="paragraph">Normal text</option>
             <option value="2">Heading</option>
             <option value="3">Subheading</option>
-          </select>
+          </Select>
           {toolbarButton(
             "Bulleted list",
             "• List",
@@ -400,7 +605,8 @@ export default function RichTextEditor({
             () => editor?.chain().toggleCodeBlock().run(),
           )}
           {toolbarButton("Link", "Link", editor?.isActive("link") ?? false, openLinkRow)}
-        </div>
+          </>}
+        </div>}
       {!readOnly && linkOpen && (
         <div className="rich-editor-linkrow">
           <label>
@@ -456,6 +662,15 @@ export default function RichTextEditor({
         </div>
       )}
       <div key="document" className="rich-editor-document" ref={mountRef} />
+      {activeAnnotation && annotationBubble && (
+        <button type="button" className="comment-highlight-bubble" style={{ left: annotationBubble.left, top: annotationBubble.top }}
+          onMouseEnter={cancelAnnotationLeave} onMouseLeave={() => setAnnotationBubble(null)}
+          onClick={event => { event.stopPropagation(); onAnnotationActivate?.(activeAnnotation.id); }}>
+          <strong>{activeAnnotation.authorName}</strong>
+          <span>{plainText(activeAnnotation.body).slice(0, 180) || "Deleted comment"}</span>
+          <small>Open discussion</small>
+        </button>
+      )}
       {mentionMenu && matchingTargets(mentionMenu).length > 0 && (
         <div className="mention-menu" role="listbox" aria-label={`${mentionMenu.trigger === "@" ? "People" : mentionMenu.trigger === "@@" ? "Tasks" : "Projects, folders, and lists"} mentions`}>
           {matchingTargets(mentionMenu).map((target, index) => (

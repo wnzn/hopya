@@ -5,6 +5,7 @@ import { ErrorNotice, Modal } from "./Shared";
 import { FieldEditor, FieldSettings, fieldSettings } from "./FieldSettings";
 import ProjectSettings from "./ProjectSettings";
 import ListStatusSettings from "./ListStatusSettings";
+import Select from "./Select";
 import "../styles/project-fields.css";
 
 type Props = {
@@ -23,22 +24,25 @@ export default function ProjectFields({ detail, targetId, onClose, onUpdated }: 
   const [selection, setSelection] = useState({ workspaceId: detail.workspace.id, id: "" });
   const selected = selection.workspaceId === detail.workspace.id ? selection.id : "";
   const id = targetId || selected;
-  const targets = detail.nodes.filter(node => node.kind === "project" || node.kind === "list");
+  const targets = detail.nodes.filter(node => node.kind === "project" || node.kind === "folder" || node.kind === "list");
   const targetLabels = hierarchyLabels(detail.nodes, targets);
   const target = targets.find(node => node.id === id);
   const fieldOwner = target ? fieldOwnerForNode(detail.nodes, target.id) : undefined;
+  const targetKind = target ? target.kind[0].toUpperCase() + target.kind.slice(1) : "Project or list";
   return <Modal title={target ? `Fields for ${target.name}` : "Project fields"} onClose={onClose}>
     <div className="project-fields stack">
-      {!targetId && <label>Project or list
-        <select value={selected} onChange={event => setSelection({ workspaceId: detail.workspace.id, id: event.target.value })}>
-          <option value="">Choose a project or list</option>
+      {!targetId && <label>Project, folder, or list
+        <Select value={selected} onChange={event => setSelection({ workspaceId: detail.workspace.id, id: event.target.value })}>
+          <option value="">Choose a project, folder, or list</option>
           <optgroup label="Projects">{detail.nodes.filter(node => node.kind === "project").map(node =>
+            <option key={node.id} value={node.id}>{targetLabels.get(node.id)}</option>)}</optgroup>
+          <optgroup label="Folders">{detail.nodes.filter(node => node.kind === "folder").map(node =>
             <option key={node.id} value={node.id}>{targetLabels.get(node.id)}</option>)}</optgroup>
           <optgroup label="Lists">{detail.nodes.filter(node => node.kind === "list").map(node =>
             <option key={node.id} value={node.id}>{targetLabels.get(node.id)}</option>)}</optgroup>
-        </select>
+        </Select>
       </label>}
-      {targetId && <p>{target ? `${target.kind === "list" ? "List" : "Project"}: ${target.name}` : "Project or list unavailable"}</p>}
+      {targetId && <p>{target ? `${targetKind}: ${target.name}${fieldOwner && target.id !== fieldOwner.id ? ` · Uses fields from project ${fieldOwner.name}` : ""}` : "Project, folder, or list unavailable"}</p>}
       {!detail.permissions.includes("structure:write")
         ? <p className="notice">You need permission to manage project fields.</p>
         : fieldOwner && target ? <ProjectConfiguration key={`${detail.workspace.id}:${target.id}`} detail={detail}
@@ -58,14 +62,14 @@ export function ProjectConfiguration({ detail, projectId, listId, onUpdated }: C
     onUpdated(fresh);
   }
   const standalone = listId === projectId;
-  return <div className="stack project-configuration"><FieldConfiguration detail={detail} projectId={projectId} listId={listId} onUpdated={updated} localConfiguration={localConfiguration} />
+  return <div className="stack project-configuration"><FieldConfiguration detail={detail} projectId={projectId} listId={standalone ? listId : undefined} onUpdated={updated} localConfiguration={localConfiguration} />
     {listId
       ? <>{standalone && <ProjectSettings detail={detail} projectId={projectId} onUpdated={updated} localConfiguration={localConfiguration} dateOnly />}
         <ListStatusSettings detail={detail} listId={listId} onUpdated={updated} localConfiguration={localListConfiguration} /></>
       : <ProjectSettings detail={detail} projectId={projectId} onUpdated={updated} localConfiguration={localConfiguration} />}</div>;
 }
 
-function FieldConfiguration({ detail, projectId, onUpdated, localConfiguration }: ConfigurationProps) {
+function FieldConfiguration({ detail, projectId, listId, onUpdated, localConfiguration }: ConfigurationProps) {
   const [catalog, setCatalog] = useState(detail.fields);
   const [configuration, setConfiguration] = useState<ProjectFieldConfiguration>();
   const [fieldIds, setFieldIds] = useState<string[]>([]);
@@ -83,7 +87,7 @@ function FieldConfiguration({ detail, projectId, onUpdated, localConfiguration }
   const context = useRef<AbortController | null>(null);
   const base = workspacePath(detail.workspace.id);
   const path = `${base}/projects/${encodeURIComponent(projectId)}/fields`;
-  const scopeName = detail.nodes.find(node => node.id === projectId)?.kind === "list" ? "list" : "project";
+  const scopeName = listId ? "list" : detail.nodes.find(node => node.id === projectId)?.kind === "list" ? "list" : "project";
   const scopeLabel = scopeName === "list" ? "List" : "Project";
   useEffect(() => {
     // Advance only past unrelated sibling writes, never past changed assignments.
@@ -189,7 +193,7 @@ function FieldConfiguration({ detail, projectId, onUpdated, localConfiguration }
         </div>
         {!catalog.length && <p className="muted">No workspace fields yet. Create one below to add {scopeName}-specific information.</p>}
       </div>
-      {catalog.length > 0 && <label>Edit a field definition<select value="" onChange={event => setEditing(catalog.find(field => field.id === event.target.value))}><option value="">Choose a field to edit</option>{catalog.map(field => <option key={field.id} value={field.id}>{field.name}</option>)}</select></label>}
+      {catalog.length > 0 && <label>Edit a field definition<Select value="" onChange={event => setEditing(catalog.find(field => field.id === event.target.value))}><option value="">Choose a field to edit</option>{catalog.map(field => <option key={field.id} value={field.id}>{field.name}</option>)}</Select></label>}
       <button className="primary project-fields-apply" type="button" onClick={() => void save(false)}>Apply fields</button>
     </fieldset>
     <form className="stack project-field-create" onSubmit={event => { event.preventDefault(); void save(true); }}>
@@ -207,9 +211,9 @@ function FieldConfiguration({ detail, projectId, onUpdated, localConfiguration }
             }}>{template.name}</button>)}
         </div>
         <label>Field name<input aria-label="Field name" required maxLength={120} value={name} onChange={event => setName(event.target.value)} /></label>
-        <label>Type<select aria-label="Type" value={type} onChange={event => setType(event.target.value as Field["type"])}>
+        <label>Type<Select aria-label="Type" value={type} onChange={event => setType(event.target.value as Field["type"])}>
           {(["text", "number", "date", "datetime", "checkbox", "select", "checklist", "rating", "formula"] as const).map(value => <option key={value} value={value}>{label(value)}</option>)}
-        </select></label>
+        </Select></label>
         {["select", "checklist"].includes(type) && <label>Options, one per line<textarea aria-label="Options, one per line" required rows={4} maxLength={4000} value={options} onChange={event => setOptions(event.target.value)} /></label>}
         <FieldSettings type={type} settings={settings} onChange={setSettings} />
         <button type="submit" disabled={!name.trim()}>Create field and add</button>

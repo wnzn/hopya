@@ -4,6 +4,8 @@ import { api, ApiError, label, message, priorities, workspacePath, type BuiltInF
 import { projectStatuses, projectDateFormat, statusLabel, statusStyle, tagStyle } from "../lib/project-statuses";
 import { formatFieldDate } from "../lib/field-values";
 import TypedFieldInput from "./TypedFieldInput";
+import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 import { evaluateFormula } from "../lib/formula";
 import { fieldOwnerForNode, optionalBuiltIns, projectBuiltIns, projectCustomFields } from "../lib/project-fields";
 import { plainText } from "../lib/rich-text";
@@ -198,7 +200,12 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
   }
 
   useEffect(() => {
-    if (editing && !busy) root.current?.querySelector<HTMLElement>(".task-cell-editor input, .task-cell-editor select, .task-cell-editor textarea")?.focus();
+    if (!editing || busy) return;
+    const control = root.current?.querySelector<HTMLElement>(".task-cell-editor input, .task-cell-editor select, .task-cell-editor textarea");
+    control?.focus();
+    if (control instanceof HTMLInputElement && (control.type === "date" || control.type === "datetime-local")) {
+      try { control.showPicker(); } catch { /* The native picker remains available from its indicator. */ }
+    }
   }, [editing?.key, busy]);
   useEffect(() => {
     try {
@@ -334,13 +341,13 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
       return { ...current, error, ...(error ? {} : { draft: [...current.draft, tag], tag: "" }) };
     });
   }
-  async function submit(reload = false, nextFocusKey: string | null = editing?.key ?? null) {
+  async function submit(reload = false, nextFocusKey: string | null = editing?.key ?? null, draftOverride?: Draft) {
     if (!editing || busyRef.current) return;
     if (!reload && editing.conflict) return;
     if (!reload && !root.current?.querySelector("form")?.reportValidity()) return;
     if (reload && !window.confirm("Discard your draft and reload the current task?")) return;
     const { baseline, column } = editing;
-    let draft = editing.draft;
+    let draft = draftOverride === undefined ? editing.draft : draftOverride;
     if (!reload && column.core === "tags" && editing.tag.trim()) {
       if (!Array.isArray(draft)) return;
       const pending = editing.tag.trim();
@@ -507,11 +514,19 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
         } else void submit();
       }
     }}>
-      <label htmlFor="task-cell-input">{name}</label>
-      {column.field && ["datetime", "checklist", "rating"].includes(type!) ? <TypedFieldInput field={column.field} value={draft} disabled={disabled} onChange={value => updateDraft(typeof value === "number" || typeof value === "boolean" ? String(value) : value)} /> : options ? <select {...inputProps} value={JSON.stringify(draft)} onChange={event => updateDraft(JSON.parse(event.target.value) as Draft)}>
+      <label className="sr-only" htmlFor="task-cell-input">{name}</label>
+      {column.field && ["datetime", "checklist", "rating"].includes(type!) ? <TypedFieldInput field={column.field} value={draft} disabled={disabled} compact onChange={value => {
+        const next = typeof value === "number" || typeof value === "boolean" ? String(value) : value;
+        updateDraft(next);
+        if (type === "datetime") void submit(false, editing.key, next);
+      }} /> : options ? <Select {...inputProps} autoFocus openOnMount value={JSON.stringify(draft)} onChange={event => {
+        const next = JSON.parse(event.target.value) as Draft;
+        updateDraft(next);
+        void submit(false, editing.key, next);
+      }}>
         {!options.some(option => option.value === draft) && <option value={JSON.stringify(draft)} disabled>Unavailable value</option>}
         {options.map(option => <option key={JSON.stringify(option.value)} value={JSON.stringify(option.value)}>{option.name}</option>)}
-      </select> : column.core === "tags" ? <>
+      </Select> : column.core === "tags" ? <>
         <ul className="task-tag-editor-list">{(draft as string[]).map((tag, index) => <li key={tag}><span>{tag}</span><button type="button" disabled={disabled} aria-label={`Remove tag ${tag}`}
           onMouseDown={event => event.preventDefault()}
           onClick={() => {
@@ -523,14 +538,17 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
           <button type="button" disabled={disabled || !editing.tag.trim()} onClick={addTag}>Add</button>
         </div>
       </> : column.core === "description" ? <textarea {...inputProps} value={String(draft ?? "")} maxLength={50000} onChange={event => updateDraft(event.target.value)} />
-        : <input {...inputProps} type={type === "number" ? "number" : type === "date" || column.core === "dueDate" || column.core === "startDate" ? "date" : "text"} step="any" required={column.core === "title"} maxLength={type === "formula" ? 200 : column.core === "title" ? 300 : 10000} value={String(draft ?? "")} onChange={event => updateDraft(event.target.value)} />}
+        : <input {...inputProps} type={type === "number" ? "number" : type === "date" || column.core === "dueDate" || column.core === "startDate" ? "date" : "text"} step="any" required={column.core === "title"} maxLength={type === "formula" ? 200 : column.core === "title" ? 300 : 10000} value={String(draft ?? "")} onChange={event => {
+          const next = event.target.value;
+          updateDraft(next);
+          if (event.target.type === "date") void submit(false, editing.key, next);
+        }} />}
       {type === "formula" && <output aria-label="Formula preview">{formula(baseline, String(draft ?? ""))}</output>}
       {editing.error && <p id="task-cell-error" role="alert">{editing.error}</p>}
-      <div className="task-cell-actions">
-        <button type="submit" disabled={disabled || editing.conflict}>Save</button>
+      {editing.error && <div className="task-cell-actions">
         <button type="button" disabled={busy} onClick={() => close()}>Cancel</button>
         {editing.conflict && <button type="button" disabled={busy} onClick={() => void submit(true)}>Reload current task</button>}
-      </div>
+      </div>}
     </form>;
   }
 
@@ -577,8 +595,8 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
               </div>, document.body)}
             </span> : <span className="task-column-name">{column.name}</span>}
             {canMove && <span className="task-column-move">
-              <button type="button" disabled={position === 0} aria-label={`Move ${column.name} left`} onClick={() => reorder(column.key, position - 1)}><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5m6-6-6 6 6 6" /></svg></button>
-              <button type="button" disabled={position === orderedColumns.length - 1} aria-label={`Move ${column.name} right`} onClick={() => reorder(column.key, position + 1)}><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14m-6-6 6 6-6 6" /></svg></button>
+              <button type="button" disabled={position === 0} aria-label={`Move ${column.name} left`} onClick={() => reorder(column.key, position - 1)}><SolidIcon name="arrowLeft" width="12" height="12" /></button>
+              <button type="button" disabled={position === orderedColumns.length - 1} aria-label={`Move ${column.name} right`} onClick={() => reorder(column.key, position + 1)}><SolidIcon name="arrowRight" width="12" height="12" /></button>
             </span>}
           </span>
         {view === "table" && <span className="task-column-resize" role="separator" tabIndex={0} aria-orientation="vertical" aria-label={`Resize ${column.name}`} aria-valuemin={80} aria-valuemax={600} aria-valuenow={width(column)} onKeyDown={event => {
@@ -625,9 +643,7 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
             <div className={`task-cell-content${column.core === "title" ? " task-name-cell" : ""}`}>
               {subtask && parentTitle && <span className="sr-only">Subtask of {parentTitle}</span>}
               {view === "list" && column.core === "title" && parentOf(item) && <>
-                <svg className="task-subtask-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 4v9a3 3 0 0 0 3 3h11m-5-5 5 5-5 5" />
-                </svg>
+                <SolidIcon name="subtask" className="task-subtask-icon solid-icon" width="16" height="16" />
                 {!parentTitle && <span className="sr-only">Subtask</span>}
               </>}
               {column.core === "title" && <button className="task-title" data-task-id={item.id} onClick={() => onOpen(item)} disabled={busy}>{item.title}</button>}
@@ -651,7 +667,7 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
                   if (textLike) setSelectedCell(key);
                   else beginEditing(key, column, item);
                 }}>
-                {column.core === "title" ? <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m16 3 5 5-12 12-6 1 1-6zM14 5l5 5" /></svg> : display(item, column)}
+                {column.core === "title" ? <SolidIcon name="pencil" width="16" height="16" /> : display(item, column)}
               </button> : column.core !== "title" && (available ? display(item, column) : "-")}
               {showCount && <span className="count" title={`${count.done} of ${count.total} checklist items complete`}>{count.done}/{count.total}</span>}
             </div>

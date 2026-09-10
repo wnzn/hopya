@@ -4,12 +4,13 @@ import type { Field, Item } from "../lib/api";
 // Multi-select checklist as a compact dropdown with option search, used where
 // long single-column checkbox lists get awkward (task editor, table cells).
 // Value semantics match the checkbox list: toggle appends/removes, clear unsets.
-export default function ChecklistDropdown({ field, value, disabled, onChange }: {
+export default function ChecklistDropdown({ field, value, disabled, onChange, compact = false }: {
   field: Field; value: Item["customFields"][string]; disabled?: boolean;
   onChange: (value: Item["customFields"][string]) => void;
+  compact?: boolean;
 }) {
   const selected = Array.isArray(value) ? value : [];
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(compact);
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -27,7 +28,7 @@ export default function ChecklistDropdown({ field, value, disabled, onChange }: 
   }
   return (
     <fieldset disabled={disabled} className="stack bare-fieldset">
-      <legend>{field.name}</legend>
+      <legend className={compact ? "sr-only" : undefined}>{field.name}</legend>
       <div className="checklist-dropdown">
         <button
           type="button"
