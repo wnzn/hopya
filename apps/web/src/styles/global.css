@@ -837,6 +837,31 @@ small {
   max-width: 85ch;
   margin-bottom: 16px;
 }
+.document-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: 32px;
+  align-items: start;
+  width: 100%;
+}
+.document-main { min-width: 0; }
+.document-actions { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.document-editor-form { display: grid; gap: 16px; }
+.document-editor-form .rich-editor .tiptap { min-height: 340px; }
+.document-main > .rich-editor { border: 0; box-shadow: none; }
+.document-main > .rich-editor .rich-editor-toolbar { justify-content: flex-end; border: 0; background: transparent; }
+.document-main > .rich-editor .rich-editor-toolbar > :not(button:first-child) { display: none; }
+.document-main > .rich-editor .tiptap { min-height: 220px; padding: 8px 0 32px; font-size: 15px; line-height: 1.75; }
+.document-empty { padding: 50px 0; color: var(--ink-soft); text-align: center; }
+.document-pages { margin-top: 34px; padding-top: 24px; border-top: 1px solid var(--line); }
+.document-pages > header { display: flex; align-items: end; justify-content: space-between; margin-bottom: 14px; }
+.document-pages > header span { color: var(--ink-soft); font-size: 9px; letter-spacing: 1.2px; }
+.document-pages > header h2 { margin: 3px 0 0; }
+.document-pages > ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.document-pages > ol li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); }
+.document-pages > ol li > button:first-child { flex: 1; justify-content: flex-start; border: 0; background: transparent; text-align: left; }
+.document-page-link { display: flex; align-items: end; gap: 10px; margin-top: 18px; }
+.document-page-link label { flex: 1; }
 .grouped-lists, .list-section {
   min-width: 0;
   width: 100%;
@@ -1833,6 +1858,13 @@ td {
 .comment-body { overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
 .comment-body > :first-child { margin-top: 0; }
 .comment-body > :last-child { margin-bottom: 0; }
+.comment-anchor { display: grid; gap: 4px; margin: 0 0 10px; padding: 8px 10px; border-inline-start: 3px solid var(--signal); background: var(--signal-wash); }
+.comment-anchor.orphaned { border-inline-start-color: var(--ink-soft); background: var(--paper); }
+.comment-anchor span, .pending-comment-anchor > span { color: var(--ink-soft); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.comment-anchor q, .pending-comment-anchor q { overflow-wrap: anywhere; font-size: 12px; }
+.pending-comment-anchor { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--signal); border-radius: 7px; background: var(--signal-wash); }
+.pending-comment-anchor button { justify-self: end; }
+.comment-highlight { border-radius: 2px; background: color-mix(in srgb, var(--signal) 28%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--signal) 38%, transparent); }
 .comment-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 10px; }
 .comment-reactions { display: flex; flex: 1; flex-wrap: wrap; gap: 5px; }
 .comment-reactions > button, .comment-reaction-picker > summary, .comment-reaction-picker > div button { min-width: 30px; min-height: 28px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--ink); cursor: pointer; }
@@ -2642,6 +2674,7 @@ pre {
     width: calc(100% - 20px);
   }
   .task-detail-layout { grid-template-columns: 1fr; }
+  .document-layout { grid-template-columns: 1fr; }
   .comments-panel { padding: 22px 0 0; border-left: 0; border-top: 1px solid var(--line); }
   .comment-list { max-height: none; }
   .inbox-list > li { grid-template-columns: 1fr; }

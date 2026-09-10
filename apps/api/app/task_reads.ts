@@ -5,7 +5,7 @@ import { HttpError, type Item } from './types.js'
 
 export const PAGE_BYTES = 2 * 1024 * 1024
 export const RECORD_BYTES = 8 * 1024 * 1024
-export const itemColumns = 'id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,checklist,parentId,archivedAt,createdAt,updatedAt'
+export const itemColumns = 'id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,checklist,parentId,bodyRevision,archivedAt,createdAt,updatedAt'
 // A single per-task checklist entry: ids are UUIDs, text is trimmed 1..200
 // chars, done defaults to false. Validation lives in service.ts; decoding only
 // parses the stored JSON so pages, streams, exports and bulk readers carry the

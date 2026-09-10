@@ -173,6 +173,10 @@ export const permissions = [
   "items:read",
   "items:write",
   "items:delete",
+  "documents:read",
+  "documents:write",
+  "documents:delete",
+  "comments:create",
   "comments:manage",
   "structure:write",
   "members:manage",
@@ -200,11 +204,22 @@ export type TreeNode = {
   id: string;
   name: string;
   description?: string;
-  kind: "project" | "folder" | "list";
+  kind: "project" | "folder" | "list" | "document";
   parentId: string | null;
   icon?: (typeof nodeIcons)[number] | null;
   color?: (typeof nodeColors)[number] | null;
+  updatedAt?: string;
 };
+export type DocumentSummary = {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type DocumentRecord = DocumentSummary & { body: string; bodyRevision: number };
+export type DocumentPage = { documentId: string; itemId: string; position: number };
 export type Field = {
   id: string;
   name: string;
@@ -245,6 +260,8 @@ export type Detail = {
   members: Member[];
   roles: Role[];
   nodes: TreeNode[];
+  documents?: DocumentSummary[];
+  documentPages?: DocumentPage[];
   fields: Field[];
   projectFields?: ProjectFieldConfiguration[];
   listStatusConfigs?: ListStatusConfiguration[];
@@ -269,22 +286,34 @@ export type Item = {
   archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  bodyRevision?: number;
 };
 export type ItemInput = Omit<
   Item,
-  "id" | "workspaceId" | "createdAt" | "updatedAt"
+  "id" | "workspaceId" | "createdAt" | "updatedAt" | "bodyRevision"
 >;
 export type Comment = {
   id: string;
   workspaceId: string;
-  itemId: string;
+  itemId?: string;
+  documentId?: string;
   authorId: string | null;
   authorName: string;
   body: string;
   parentId: string | null;
+  anchor?: CommentAnchor | null;
   reactions: { emoji: string; count: number; reactedByMe: boolean }[];
   createdAt: string;
   deletedAt: string | null;
+};
+export type CommentAnchor = {
+  revision: number;
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+  state: "attached" | "orphaned";
 };
 export type Notification = {
   id: string;

@@ -12,9 +12,10 @@ import {
   type Item,
   type ItemInput,
   type Proposal,
+  type CommentAnchor,
 } from "../lib/api";
 import { ErrorNotice, Modal } from "./Shared";
-import RichTextEditor from "./RichTextEditor";
+import RichTextEditor, { type TextSelection } from "./RichTextEditor";
 import CommentsPanel, { mentionTargets } from "./CommentsPanel";
 import ProjectFields from "./ProjectFields";
 import TypedFieldInput from "./TypedFieldInput";
@@ -153,6 +154,8 @@ export default function TaskEditor({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [commentAnchor, setCommentAnchor] = useState<CommentAnchor | null>(null);
+  const [commentAnnotations, setCommentAnnotations] = useState<CommentAnchor[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -174,6 +177,9 @@ export default function TaskEditor({
   const structureWritable = detail.permissions.includes("structure:write");
   const isNew = !active && !creatingChild;
   const shownItem = active;
+  function selectForComment(selection: TextSelection) {
+    setCommentAnchor({ ...selection, state: "attached" });
+  }
   const richMentionTargets = mentionTargets(detail, active && !mentionItems.some(candidate => candidate.id === active.id) ? [...mentionItems, active] : mentionItems);
   useEffect(() => {
     if (!menuOpen) return;
@@ -1459,6 +1465,9 @@ export default function TaskEditor({
             readOnly={editing !== "description" || !writable}
             placeholder="Add context, decisions, or a useful next step..."
             mentionTargets={richMentionTargets}
+            commentRevision={shownItem?.bodyRevision ?? 1}
+            annotations={commentAnnotations}
+            onCommentSelection={editing !== "description" && shownItem && detail.permissions.includes("comments:create") ? selectForComment : undefined}
           />
           {editing === "description" && renderInlineActions()}
         </div>
@@ -1734,7 +1743,9 @@ export default function TaskEditor({
         </section>
       )}
       </div>
-      {shownItem && !creatingChild && <CommentsPanel detail={detail} item={shownItem} items={mentionItems} currentUserId={currentUserId} />}
+      {shownItem && !creatingChild && <CommentsPanel detail={detail} item={shownItem} items={mentionItems} currentUserId={currentUserId}
+        anchor={commentAnchor} onAnchorUsed={() => setCommentAnchor(null)}
+        onCommentsChange={comments => setCommentAnnotations(comments.flatMap(comment => comment.anchor ? [comment.anchor] : []))} />}
       </div>
     </Modal>
       {fieldsOpen && fieldOwner && structureWritable && <ProjectFields

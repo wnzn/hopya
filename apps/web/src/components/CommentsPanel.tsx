@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, message, workspacePath, type Comment, type Detail, type Item } from "../lib/api";
+import { api, message, workspacePath, type Comment, type CommentAnchor, type Detail, type DocumentRecord, type Item } from "../lib/api";
 import { markdownToHtml } from "../lib/rich-text";
 import RichTextEditor, { type MentionTarget } from "./RichTextEditor";
 import { ErrorNotice } from "./Shared";
@@ -25,13 +25,13 @@ function thread(comments: Comment[]): { comment: Comment; depth: number }[] {
   return result;
 }
 
-export function mentionTargets(detail: Detail, items: Item[]): MentionTarget[] {
+export function mentionTargets(detail: Detail, items: Item[], document = false): MentionTarget[] {
   const workspace = encodeURIComponent(detail.workspace.id);
   return [
-    ...detail.members.filter(member => !member.disabled && detail.roles.find(role => role.id === member.roleId)?.permissions.includes("items:read")).map(member => ({
+    ...(document ? [] : detail.members.filter(member => !member.disabled && detail.roles.find(role => role.id === member.roleId)?.permissions.includes("items:read")).map(member => ({
       id: member.userId, kind: "user" as const, label: member.name,
       href: `/app?workspace=${workspace}&mentionUser=${encodeURIComponent(member.userId)}`,
-    })),
+    }))),
     ...items.filter(item => !item.archivedAt).map(item => ({
       id: item.id, kind: "task" as const, label: item.title,
       href: `/app?workspace=${workspace}&task=${encodeURIComponent(item.id)}`,
@@ -43,10 +43,12 @@ export function mentionTargets(detail: Detail, items: Item[]): MentionTarget[] {
   ];
 }
 
-export default function CommentsPanel({ detail, item, items, currentUserId }: {
-  detail: Detail; item: Item; items: Item[]; currentUserId?: string;
+export default function CommentsPanel({ detail, item, document: documentTarget, items, currentUserId, anchor, onAnchorUsed, onCommentsChange }: {
+  detail: Detail; item?: Item; document?: DocumentRecord; items: Item[]; currentUserId?: string;
+  anchor?: CommentAnchor | null; onAnchorUsed?: () => void;
+  onCommentsChange?: (comments: Comment[]) => void;
 }) {
-  const base = `${workspacePath(detail.workspace.id)}/items/${item.id}/comments`;
+  const base = `${workspacePath(detail.workspace.id)}/${documentTarget ? `documents/${documentTarget.id}` : `items/${item!.id}`}/comments`;
   const [comments, setComments] = useState<Comment[]>([]);
   const [body, setBody] = useState("");
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
@@ -54,7 +56,8 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const targets = mentionTargets(detail, items);
+  const targets = mentionTargets(detail, items, Boolean(documentTarget));
+  useEffect(() => onCommentsChange?.(comments), [comments]);
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError("");
@@ -62,7 +65,7 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
       .then(setComments).catch(cause => { if (!controller.signal.aborted) setError(message(cause)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [base]);
+  }, [base, documentTarget?.bodyRevision, item?.bodyRevision]);
   useEffect(() => {
     if (loading) return;
     const commentId = new URLSearchParams(location.search).get("comment");
@@ -74,9 +77,9 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
     if (!value.trim() || busy) return;
     setBusy(true); setError("");
     try {
-      const created = await api<Comment>(base, "POST", { body: value, ...(parentId ? { parentId } : {}) });
+      const created = await api<Comment>(base, "POST", { body: value, ...(parentId ? { parentId } : {}), ...(!parentId && anchor ? { anchor } : {}) });
       setComments(current => [...current, created]);
-      if (parentId) { setReplyBody(""); setReplyingTo(null); } else setBody("");
+      if (parentId) { setReplyBody(""); setReplyingTo(null); } else { setBody(""); onAnchorUsed?.(); }
       window.dispatchEvent(new Event("hopya-notifications-changed"));
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
@@ -107,7 +110,7 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
   }
-  const writable = detail.permissions.includes("items:write");
+  const writable = detail.permissions.includes("comments:create");
   const manager = detail.permissions.includes("comments:manage");
   return <aside className="comments-panel" aria-labelledby="comments-heading">
     <header><div><span>DISCUSSION</span><h3 id="comments-heading">Comments</h3></div><strong aria-label={`${comments.length} comments`}>{comments.length}</strong></header>
@@ -116,6 +119,10 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
       <ol className="comment-list">
         {thread(comments).map(({ comment, depth }) => <li key={comment.id} id={`comment-${comment.id}`} className={depth ? "comment-reply" : undefined} style={{ marginInlineStart: `${Math.min(depth, 4) * 18}px` }}>
           <div className="comment-meta"><strong>{comment.authorName}</strong><time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time></div>
+          {comment.anchor && <blockquote className={`comment-anchor ${comment.anchor.state}`}>
+            <span>{comment.anchor.state === "orphaned" ? "Original selection" : "Commented text"}</span>
+            <q>{comment.anchor.exact}</q>
+          </blockquote>}
           {comment.deletedAt ? <p className="muted"><em>Comment deleted</em></p> : <div className="comment-body" dangerouslySetInnerHTML={{ __html: markdownToHtml(comment.body) }} />}
           {comment.deletedAt && manager && <div className="comment-actions"><button type="button" className="quiet-button" disabled={busy} onClick={() => void remove(comment)}>Remove entry</button></div>}
           {!comment.deletedAt && <div className="comment-actions">
@@ -134,8 +141,9 @@ export default function CommentsPanel({ detail, item, items, currentUserId }: {
       </ol>
     )}
     {writable && <div className="comment-composer">
+      {anchor && <div className="pending-comment-anchor"><span>Commenting on</span><q>{anchor.exact}</q><button type="button" className="quiet-button" onClick={onAnchorUsed}>Clear selection</button></div>}
       <RichTextEditor aria-label="New comment" value={body} onChange={value => setBody(value.slice(0, 10000))}
-        placeholder="Write a comment. Use @ for people, @@ for tasks, or @@@ for structure." mentionTargets={targets} />
+        placeholder={documentTarget ? "Write a comment. Use @@ for tasks or @@@ for structure." : "Write a comment. Use @ for people, @@ for tasks, or @@@ for structure."} mentionTargets={targets} />
       <button type="button" className="primary" disabled={busy || !body.trim()} onClick={() => void post(null)}>{busy ? "Posting..." : "Post comment"}</button>
     </div>}
   </aside>;

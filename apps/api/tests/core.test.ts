@@ -83,7 +83,7 @@ test('only owners can delete a workspace and its relational contents with an ato
   assert.ok(await db.get('SELECT objectKey FROM storage_objects WHERE objectKey=?', objectKey))
   const auditRow = await db.get<{ details: string }>("SELECT details FROM audit_logs WHERE workspaceId=? AND action='workspace.delete'", f.wid)
   assert.ok(auditRow)
-  assert.deepEqual(JSON.parse(auditRow.details), { members: 2, nodes: 2, items: 1, attachments: 1 })
+  assert.deepEqual(JSON.parse(auditRow.details), { members: 2, nodes: 2, documents: 0, items: 1, attachments: 1 })
 })
 test('task CRUD preserves omitted values, filters literal search, and validates dates and references', async () => {
   const f = await fixture(); const other = await fixture()
@@ -149,7 +149,7 @@ test('comment authors and delegated comment managers can delete while ordinary r
   const f = await fixture()
   assert.ok((await service.getWorkspace(f.owner, f.wid)).role.permissions.includes('comments:manage'))
   const author = await createUser(), reader = await createUser(), moderator = await createUser()
-  const contributor = await service.createRole(f.owner, f.wid, { name: 'Commenter', permissions: ['items:read', 'items:write'] })
+  const contributor = await service.createRole(f.owner, f.wid, { name: 'Commenter', permissions: ['items:read', 'items:write', 'comments:create'] })
   const manager = await service.createRole(f.owner, f.wid, { name: 'Moderator', permissions: ['items:read', 'comments:manage'] })
   await add(f, author, contributor.id); await add(f, reader, contributor.id); await add(f, moderator, manager.id)
   const item = await service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Discussion' })
@@ -169,7 +169,7 @@ test('comment authors and delegated comment managers can delete while ordinary r
 test('comment replies stay on one task with bounded depth and reactions are unique per member', async () => {
   const f = await fixture()
   const author = await createUser()
-  const contributor = await service.createRole(f.owner, f.wid, { name: 'Discussion contributor', permissions: ['items:read', 'items:write'] })
+  const contributor = await service.createRole(f.owner, f.wid, { name: 'Discussion contributor', permissions: ['items:read', 'items:write', 'comments:create'] })
   await add(f, author, contributor.id)
   const item = await service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Threaded discussion' })
   const otherItem = await service.createItem(f.owner, f.wid, { nodeId: f.list.id, title: 'Other discussion' })

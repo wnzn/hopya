@@ -38,18 +38,18 @@ Passwords are 12-256 characters when set. Sessions last seven days and are cappe
 | --- | --- |
 | `GET /workspaces` | Membership-scoped workspace array |
 | `POST /workspaces` | `{name}`; creates workspace plus Owner, Member and Viewer roles |
-| `GET /workspaces/:wid` | `{workspace,role,permissions,members,roles,nodes,fields,projectFields,listStatusConfigs}` |
+| `GET /workspaces/:wid` | `{workspace,role,permissions,members,roles,nodes,documents,documentPages,fields,projectFields,listStatusConfigs}` |
 | `PATCH /workspaces/:wid` | `{name}`; requires `workspace:manage` |
 | `DELETE /workspaces/:wid` | Owner-only permanent deletion of the workspace and relational contents |
 | `GET /workspaces/:wid/nodes` | Hierarchy node array |
 | `POST /workspaces/:wid/nodes` | `{name,kind,parentId?,description?}`; kind `project`, `folder`, `list`; description is project-only |
 | `PATCH /workspaces/:wid/nodes/:id` | `{name?,description?,parentId?,expectedParentId?}`; rename, edit a project description or move a folder/list within its workspace |
-| `DELETE /workspaces/:wid/nodes/:id` | Empty nodes only; `409` if children/tasks remain |
+| `DELETE /workspaces/:wid/nodes/:id` | Empty nodes only; `409` if child nodes/documents/tasks remain |
 | `GET /workspaces/:wid/lists/:listId/statuses` | `{listId,statuses?,updatedAt,inheritedProjectUpdatedAt?}`; present array is explicit, omission inherits from a project |
 | `PATCH /workspaces/:wid/lists/:listId/statuses` | `{statuses: array|null,expectedUpdatedAt?,expectedProjectUpdatedAt?}`; replace explicit statuses or restore project inheritance |
 | `GET /workspaces/:wid/views/list/settings` | Authenticated user's settings; optional `projectId` query, omitted for all projects |
 | `PATCH /workspaces/:wid/views/list/settings` | Replace authenticated user's settings with optimistic concurrency |
-| `GET /workspaces/:wid/export` | Version 3 JSON with workspace, nodes, items, comments, reactions, fields and attachment metadata |
+| `GET /workspaces/:wid/export` | Version 4 JSON with workspace hierarchy, documents/pages, tasks, comments, reactions, fields and attachment metadata |
 
 Projects and standalone lists may be workspace roots. Folders require a project/folder parent; nested lists may use either. Lists contain tasks, not hierarchy nodes. Folder depth is bounded at 32. Names are bounded at 120 characters. Structure mutations require `structure:write`. Export is portable data, not a backup/import format; it excludes credentials, audit history and attachment bytes. Workspace deletion requires the protected Owner role, is permanent, and includes tasks, hierarchy, memberships, roles, fields and automation records. Export needed data first.
 
@@ -57,7 +57,13 @@ Node responses include `description` (default empty string) plus nullable `icon`
 
 Moves preserve node IDs, child relationships, tasks and attachments. Projects cannot be moved under another node; self/descendant/list parents, foreign workspace IDs and moves pushing any descendant past depth 32 are rejected. Send the original `parentId` as `expectedParentId` when moving to reject stale placement with `409`; a condition requires a `parentId` mutation. Rename-only PATCHes preserve the current parent. No empty or unknown-field mutation is accepted. Move/rename plus audit commit in the same transaction.
 
-Workspace bootstrap is permission-filtered so management-only roles can use Settings without reading tasks. Every active member can read the workspace name and their own role/permissions. Nodes and field definitions are returned only with `items:read` or `structure:write`; the member directory only with `items:read` or `members:manage`; the full role catalog only with `items:read`, `members:manage` or `roles:manage`. Other arrays are empty (the role list retains the caller's own role). This never grants task-read or export access. Direct node/field/role endpoints follow the same metadata policy.
+Workspace bootstrap is permission-filtered so management-only roles can use Settings without reading tasks. Every active member can read the workspace name and their own role/permissions. Hierarchy metadata is returned with task, document, or structure access; document page links additionally require task and document read access. Field definitions require task read or structure write; the member directory requires task read or member management; the full role catalog requires task read, member management, or role management. Other arrays are empty (the role list retains the caller's own role). This never grants task-body, document-body, or export access.
+
+## Documents
+
+Documents are structural leaves at workspace root or beneath a project/folder. `GET|POST /workspaces/:wid/documents` lists metadata or creates `{title,body?,parentId?}`. `GET|PATCH|DELETE /workspaces/:wid/documents/:id` reads, conditionally updates, or deletes one document. PATCH requires `documents:read`, `documents:write`, at least one mutable field, and the exact `expectedUpdatedAt`; DELETE requires `documents:delete`. Titles are 1-300 characters and Markdown bodies are at most 50,000 characters. Deleting a document removes its page links but preserves every linked task and subtask.
+
+`GET|POST /workspaces/:wid/documents/:id/pages` lists a bounded virtual page tree or links `{itemId,position?}`. Only an active top-level task can be linked, and one task can belong to at most one document. Its ordinary subtasks appear as nested pages. Listing requires document/task read access and returns `{items,total,truncated}` with at most 500 rendered tasks; totals remain complete. `DELETE /workspaces/:wid/documents/:id/pages/:itemId` requires document write and task read access and unlinks without deleting the task. A linked root task cannot become a subtask until unlinked.
 
 ## Tasks
 
@@ -104,7 +110,9 @@ Responses add `id`, `workspaceId`, `archivedAt`, `createdAt` and `updatedAt`. Se
 
 ### Discussion And Notifications
 
-`GET /workspaces/:wid/items/:id/comments` returns the complete task discussion in creation order with `parentId` and grouped `{emoji,count,reactedByMe}` reactions. `POST` to the same path accepts `{body,parentId?}`; bodies are Markdown from 1-10,000 characters, replies must remain on the same task, and reply depth is limited to 32. Reading requires `items:read`; posting and reacting require both `items:read` and `items:write`.
+`GET /workspaces/:wid/items/:id/comments` returns the complete task discussion in creation order with `parentId`, optional `anchor`, and grouped `{emoji,count,reactedByMe}` reactions. `POST` accepts `{body,parentId?,anchor?}`; bodies are Markdown from 1-10,000 characters, replies stay on the same task, and reply depth is limited to 32. Reading requires `items:read`; posting and reacting require `items:read` plus `comments:create`.
+
+Document discussion uses the equivalent routes under `/workspaces/:wid/documents/:id/comments` and requires `documents:read`; posting and reacting additionally require `comments:create`. An optional root-comment anchor is `{revision,start,end,exact,prefix,suffix}` using UTF-16 offsets over the saved Markdown body or task description. The server rejects stale/nonmatching selections. Body edits use quote context to relocate an unambiguous range; deleted or ambiguous text leaves an `orphaned` anchor and retained quote rather than deleting the thread. Replies inherit their root thread's range and cannot provide another anchor.
 
 `DELETE /workspaces/:wid/items/:id/comments/:commentId` first replaces the body with a tombstone so replies and deep links remain stable. The author may delete their own entry; delegated moderators need `comments:manage`. A member with `comments:manage` may call DELETE again to permanently remove the tombstone; its direct replies remain and are reattached to the removed entry's parent. `PATCH .../comments/:commentId/reaction` accepts `{emoji,active}` using `👍`, `❤️`, `😂`, `🎉`, `😕`, or `👀`. Each member can hold one of each reaction per comment.
 
@@ -161,7 +169,7 @@ Columns are unique and bounded to the always-available `title`, `status`, `assig
 
 Formula values remain raw strings, at most 200 characters with 20 references. New/changed references use exact sibling custom-field names in `{{Name}}` and cannot refer to the formula itself. Quoted reference-looking text is literal. Removing an input field does not block unrelated edits to an unchanged saved formula. Display evaluation supports arithmetic, comparisons, quoted strings, and SUM/AVERAGE/MIN/MAX/ROUND/ABS/IF/CONCAT with bounded nesting and no JavaScript execution. Raw values are retained in REST and exports; missing references, malformed expressions and non-finite results display the raw expression rather than inventing a result. Referenced formula strings are not recursively evaluated.
 
-Roles use `GET|POST /workspaces/:wid/roles` and `PATCH|DELETE /workspaces/:wid/roles/:id`, with `{name,permissions}`. Permissions are `items:read`, `items:write`, `items:delete`, `comments:manage`, `structure:write`, `members:manage`, `roles:manage`, `workspace:manage`, `automations:manage`, `credentials:manage`, `agent:use`. Owner is immutable and receives comment moderation. Role managers cannot grant or manage privileges above their own; assigned roles cannot be deleted. Existing roles with `workspace:manage` receive both new automation permissions during migration.
+Roles use `GET|POST /workspaces/:wid/roles` and `PATCH|DELETE /workspaces/:wid/roles/:id`, with `{name,permissions}`. Permissions are `items:read`, `items:write`, `items:delete`, `documents:read`, `documents:write`, `documents:delete`, `comments:create`, `comments:manage`, `structure:write`, `members:manage`, `roles:manage`, `workspace:manage`, `automations:manage`, `credentials:manage`, `agent:use`. Owner is immutable and receives all permissions. Role managers cannot grant or manage privileges above their own; assigned roles cannot be deleted. Existing roles with `workspace:manage` receive both new automation permissions during migration.
 
 Membership creation is `POST /workspaces/:wid/members` with `{email,roleId}` for an existing active account. `PATCH /workspaces/:wid/members/:userId` changes `{roleId}`; DELETE removes a member and clears task assignments. Normal membership changes cannot remove the last active Owner. Site-admin security suspension is deliberately exempt and retains ownership for recovery.
 

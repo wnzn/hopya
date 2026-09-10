@@ -151,7 +151,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal((await request('/admin/users', { method: 'POST', cookie: otherCookie, body: { name: 'Bad', email: 'bad@example.test', password, isAdmin: true } })).status, 403)
     const status = await request('/admin/status', { cookie: adminCookie })
     assert.equal(status.status, 200)
-    assert.deepEqual(status.data.migrations.map((migration: { name: string }) => migration.name), ['database/migrations/0000_baseline', 'database/migrations/0001_automation_graphs', 'database/migrations/0002_automation_linear_compatibility'])
+    assert.deepEqual(status.data.migrations.map((migration: { name: string }) => migration.name), ['database/migrations/0000_baseline', 'database/migrations/0001_automation_graphs', 'database/migrations/0001_documents_and_inline_comments', 'database/migrations/0002_automation_linear_compatibility'])
     assert.ok(status.data.migrations[0].appliedAt)
   })
   await t.test('workspace structure, role and item endpoints follow the REST contract', async () => {
@@ -160,7 +160,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     workspaceId = workspace.data.id
     assert.equal((await request(`/workspaces/${workspaceId}`, { cookie: otherCookie })).status, 403)
     const detail = await request(`/workspaces/${workspaceId}`, { cookie: adminCookie })
-    assert.deepEqual(Object.keys(detail.data).sort(), ['fields', 'listStatusConfigs', 'listTagColorConfigs', 'members', 'nodes', 'permissions', 'projectFields', 'role', 'roles', 'workspace'])
+    assert.deepEqual(Object.keys(detail.data).sort(), ['documentPages', 'documents', 'fields', 'listStatusConfigs', 'listTagColorConfigs', 'members', 'nodes', 'permissions', 'projectFields', 'role', 'roles', 'workspace'])
     ownerRoleId = detail.data.roles.find((role: any) => role.isOwner).id
     viewerRoleId = detail.data.roles.find((role: any) => role.name === 'Viewer').id
     const project = await request(`/workspaces/${workspaceId}/nodes`, { method: 'POST', cookie: adminCookie, body: { name: 'Project', kind: 'project', parentId: null } })
@@ -171,12 +171,12 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal(field.status, 201)
     const item = await request(`/workspaces/${workspaceId}/items`, { method: 'POST', cookie: adminCookie, body: { title: 'Implement', description: '', nodeId: listId, tags: ['backend'], customFields: { [field.data.id]: 3 } } })
     assert.equal(item.status, 201); itemId = item.data.id
-    assert.deepEqual(Object.keys(item.data).sort(), ['archivedAt', 'assigneeId', 'checklist', 'createdAt', 'customFields', 'description', 'dueDate', 'id', 'nodeId', 'parentId', 'priority', 'startDate', 'status', 'tags', 'title', 'updatedAt', 'workspaceId'])
+    assert.deepEqual(Object.keys(item.data).sort(), ['archivedAt', 'assigneeId', 'bodyRevision', 'checklist', 'createdAt', 'customFields', 'description', 'dueDate', 'id', 'nodeId', 'parentId', 'priority', 'startDate', 'status', 'tags', 'title', 'updatedAt', 'workspaceId'])
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { status: 'done' } })).data.status, 'done')
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { description: '' } })).data.description, '')
     assert.equal((await request(`/workspaces/${workspaceId}/items?status=done&search=Implement`, { cookie: adminCookie })).data.length, 1)
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { dueDate: '2026-02-30' } })).status, 400)
-    assert.equal((await request(`/workspaces/${workspaceId}/export`, { cookie: adminCookie })).data.version, 3)
+    assert.equal((await request(`/workspaces/${workspaceId}/export`, { cookie: adminCookie })).data.version, 4)
   })
   await t.test('bulk archive is revision-checked and excluded from ordinary reads', async () => {
     const created = await request(`/workspaces/${workspaceId}/items`, { method: 'POST', cookie: adminCookie, body: { title: 'Archive me', nodeId: listId } })

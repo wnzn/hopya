@@ -5,6 +5,7 @@ import {
   message,
   workspacePath,
   type Detail,
+  type Item,
   type TreeNode,
   type User,
   type Workspace,
@@ -21,12 +22,47 @@ export type NavigationState = {
   selectedNodeId?: string;
   itemCount?: number;
   loading?: boolean;
+  items?: Item[];
   onWorkspaceChange?: (id: string) => void;
   onNodeSelect?: (id: string) => void;
+  onItemPageSelect?: (item: Item, documentId: string) => void;
   onCreateWorkspace?: () => void;
   onCreateNode?: () => void;
   onEditNode?: (node: TreeNode) => void;
+  canEditNode?: (node: TreeNode) => boolean;
 };
+
+function boundedPageItems(items: Item[], roots: Set<string>) {
+  const children = new Map<string | null, Item[]>();
+  for (const item of items) {
+    const parentId = item.parentId ?? null;
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(item); children.set(parentId, siblings);
+  }
+  const result: Item[] = [], pending = [...(children.get(null) ?? []).filter(item => roots.has(item.id))].reverse();
+  const seen = new Set<string>();
+  while (pending.length && result.length < 500) {
+    const item = pending.pop()!;
+    if (seen.has(item.id)) continue;
+    seen.add(item.id); result.push(item);
+    pending.push(...[...(children.get(item.id) ?? [])].reverse());
+  }
+  return result;
+}
+
+function PageTree({ state, documentId, pageItems, parentId = null, depth = 0, roots }: {
+  state: NavigationState; documentId: string; pageItems: Item[]; parentId?: string | null; depth?: number; roots: Set<string>;
+}) {
+  if (depth >= 32) return null;
+  const children = parentId === null ? pageItems.filter(item => roots.has(item.id)) : pageItems.filter(item => item.parentId === parentId);
+  if (!children.length) return null;
+  return <ul className="tree page-tree">{children.map(item => <li key={item.id}>
+    <div className="tree-row"><span className="tree-toggle-spacer" aria-hidden="true" /><a href={`/app?workspace=${encodeURIComponent(state.workspaceId)}&node=${encodeURIComponent(documentId)}&task=${encodeURIComponent(item.id)}`}
+      onClick={state.onItemPageSelect ? event => { event.preventDefault(); state.onItemPageSelect?.(item, documentId); } : undefined}>
+      <svg className="node-glyph" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5" /></svg><span>{item.title}</span></a></div>
+    <PageTree state={state} documentId={documentId} pageItems={pageItems} parentId={item.id} depth={depth + 1} roots={roots} />
+  </li>)}</ul>;
+}
 
 function appHref(workspaceId: string, nodeId = "") {
   const query = new URLSearchParams({ workspace: workspaceId });
@@ -43,14 +79,20 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
   ancestors?: Set<string>;
 }) {
   if (depth >= 32 || !state.detail) return null;
-  const children = state.detail.nodes.filter((node) => node.parentId === parentId && !ancestors.has(node.id));
+  const entries: TreeNode[] = [
+    ...state.detail.nodes,
+    ...(state.detail.documents ?? []).map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt })),
+  ];
+  const children = entries.filter((node) => node.parentId === parentId && !ancestors.has(node.id));
   if (!children.length) return null;
   return (
     <ul className="tree">
       {children.map((node) => {
         const nextAncestors = new Set(ancestors).add(node.id);
-        const hasChildren = state.detail!.nodes.some(candidate => candidate.parentId === node.id && !nextAncestors.has(candidate.id));
-        const containsSelection = state.selectedNodeId ? safeAncestorPath(state.detail!.nodes, state.selectedNodeId).some(candidate => candidate.id === node.id) : false;
+        const pageRoots = new Set(node.kind === "document" ? (state.detail!.documentPages ?? []).filter(page => page.documentId === node.id).map(page => page.itemId) : []);
+        const pageItems = node.kind === "document" ? boundedPageItems(state.items ?? [], pageRoots) : [];
+        const hasChildren = entries.some(candidate => candidate.parentId === node.id && !nextAncestors.has(candidate.id)) || pageRoots.size > 0;
+        const containsSelection = state.selectedNodeId ? safeAncestorPath(entries, state.selectedNodeId).some(candidate => candidate.id === node.id) : false;
         const isCollapsed = hasChildren && collapsed.has(node.id) && !containsSelection;
         return (
           <li key={node.id}>
@@ -72,11 +114,14 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
                 <NodeGlyph node={node} />
                 <span>{node.name}</span>
               </a>
-              {state.onEditNode && (
+              {state.onEditNode && (!state.canEditNode || state.canEditNode(node)) && (
                 <button type="button" className="tree-edit" aria-label={`Manage ${node.name}`} onClick={() => state.onEditNode?.(node)}>···</button>
               )}
             </div>
-            {!isCollapsed && <NavigationTree state={state} collapsed={collapsed} onToggle={onToggle} parentId={node.id} depth={depth + 1} ancestors={nextAncestors} />}
+            {!isCollapsed && <>
+              <NavigationTree state={state} collapsed={collapsed} onToggle={onToggle} parentId={node.id} depth={depth + 1} ancestors={nextAncestors} />
+              {node.kind === "document" && <PageTree state={state} documentId={node.id} pageItems={pageItems} roots={pageRoots} />}
+            </>}
           </li>
         );
       })}
@@ -112,7 +157,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
       return next;
     });
   }
-  const canSeeTree = state.detail && (state.detail.permissions.includes("items:read") || state.detail.permissions.includes("structure:write"));
+  const canSeeTree = state.detail && state.detail.permissions.some(permission => permission === "items:read" || permission === "documents:read" || permission === "documents:write" || permission === "structure:write");
   return (
     <div className="shared-navigation">
       <div className="workspace-picker">
@@ -132,7 +177,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
         <nav className="sidebar-structure" aria-label="Workspace hierarchy">
           <div className="sidebar-section-title">
             STRUCTURE
-            {state.onCreateNode && <button type="button" aria-label="Add project, folder, or list" onClick={state.onCreateNode}>+</button>}
+             {state.onCreateNode && <button type="button" aria-label="Add project, folder, list, or document" onClick={state.onCreateNode}>+</button>}
           </div>
           <a
             className={`all-tasks ${state.onNodeSelect && !state.selectedNodeId ? "selected" : ""}`}
@@ -153,7 +198,8 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
 }
 
 export function Breadcrumbs({ detail, nodeId, currentPage }: { detail: Detail | null; nodeId?: string; currentPage?: string }) {
-  const path = detail && nodeId ? safeAncestorPath(detail.nodes, nodeId) : [];
+  const entries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt }))] : [];
+  const path = detail && nodeId ? safeAncestorPath(entries, nodeId) : [];
   const workspace = detail?.workspace;
   const crumbs: { label: string; href?: string }[] = workspace
     ? [{ label: workspace.name, href: appHref(workspace.id) }]
