@@ -36,6 +36,11 @@ import { fieldOwnerForNode, projectForNode } from "../lib/project-fields";
 import { projectStatuses } from "../lib/project-statuses";
 import StructureEditor from "./StructureEditor";
 import Agent from "./Agent";
+import DocumentEditor from "./DocumentEditor";
+
+function documentNode(document: NonNullable<Detail["documents"]>[number]): TreeNode {
+  return { id: document.id, name: document.title, kind: "document", parentId: document.parentId, updatedAt: document.updatedAt };
+}
 
 export default function Dashboard() {
   const { user, error: authError } = useSession();
@@ -168,11 +173,12 @@ export default function Dashboard() {
           setItems(nextItems);
           const query = new URLSearchParams(window.location.search);
           const requested = query.get("workspace") === workspaceId ? query.get("node") ?? "" : "";
-          const requestedIsValid = Boolean(requested && safeAncestorPath(nextDetail.nodes, requested).length);
+           const hierarchyEntries: TreeNode[] = [...nextDetail.nodes, ...(nextDetail.documents ?? []).map(documentNode)];
+           const requestedIsValid = Boolean(requested && safeAncestorPath(hierarchyEntries, requested).length);
           if (requested && !requestedIsValid) updateContextUrl(workspaceId);
           setNodeId((current) => {
             if (requestedIsValid) return requested;
-            return safeAncestorPath(nextDetail.nodes, current).length ? current : "";
+             return safeAncestorPath(hierarchyEntries, current).length ? current : "";
           });
           const requestedTask = query.get("workspace") === workspaceId ? query.get("task") : null;
           if (requestedTask) {
@@ -241,7 +247,8 @@ export default function Dashboard() {
     activateWorkspace(id);
   }
   function selectNode(id: string) {
-    if (id && (!detail || !safeAncestorPath(detail.nodes, id).length)) return;
+    const entries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(documentNode)] : [];
+    if (id && (!detail || !safeAncestorPath(entries, id).length)) return;
     setNodeId(id);
     if (workspaceId) updateContextUrl(workspaceId, id);
   }
@@ -306,7 +313,9 @@ export default function Dashboard() {
       if (id === requestId.current) setError(message(e));
     }
   }
-  const selectedNode = detail?.nodes.find((n) => n.id === nodeId);
+  const hierarchyEntries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(documentNode)] : [];
+  const selectedNode = hierarchyEntries.find((n) => n.id === nodeId);
+  const selectedDocument = detail?.documents?.find(document => document.id === nodeId);
   const selectedProject = detail ? projectForNode(detail.nodes, nodeId) : undefined;
   const selectedFieldOwner = detail ? fieldOwnerForNode(detail.nodes, nodeId) : undefined;
   useEffect(() => {
@@ -329,10 +338,15 @@ export default function Dashboard() {
     setNodeNameBusy(true);
     setNodeNameError("");
     try {
-      const updated = await api<TreeNode>(`${workspacePath(detail.workspace.id)}/nodes/${selectedNode.id}`, "PATCH", { name });
-      setDetail(current => current && current.workspace.id === detail.workspace.id
-        ? { ...current, nodes: current.nodes.map(node => node.id === updated.id ? updated : node) }
-        : current);
+      if (selectedNode.kind === "document") {
+        const updated = await api<{ id: string; title: string; parentId: string | null; updatedAt: string }>(`${workspacePath(detail.workspace.id)}/documents/${selectedNode.id}`, "PATCH", { title: name, expectedUpdatedAt: selectedNode.updatedAt });
+        setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
+          documents: current.documents?.map(document => document.id === updated.id ? { ...document, title: updated.title, parentId: updated.parentId, updatedAt: updated.updatedAt } : document),
+        } : current);
+      } else {
+        const updated = await api<TreeNode>(`${workspacePath(detail.workspace.id)}/nodes/${selectedNode.id}`, "PATCH", { name });
+        setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current, nodes: current.nodes.map(node => node.id === updated.id ? updated : node) } : current);
+      }
       setEditingNodeName(false);
     } catch (cause) {
       setNodeNameError(message(cause));
@@ -372,14 +386,16 @@ export default function Dashboard() {
           .toLowerCase()
           .includes(deferredSearch.toLowerCase())),
   );
-  const groupedChildren = detail && (!selectedNode || selectedNode.kind !== "list")
-    ? detail.nodes.filter(node => selectedNode ? node.parentId === selectedNode.id : node.parentId === null)
+  const groupedChildren = detail && (!selectedNode || (selectedNode.kind !== "list" && selectedNode.kind !== "document"))
+    ? hierarchyEntries.filter(node => node.kind !== "document" && (selectedNode ? node.parentId === selectedNode.id : node.parentId === null))
     : undefined;
   const readable = detail?.permissions.includes("items:read") || false;
   const writable =
     readable && (detail?.permissions.includes("items:write") || false);
   const structureWritable =
     detail?.permissions.includes("structure:write") || false;
+  const documentReadable = detail?.permissions.includes("documents:read") || false;
+  const documentWritable = detail?.permissions.includes("documents:write") || false;
   const defaultTaskNode = selectedNode?.kind === "list" ? selectedNode.id : scopedLists[0]?.id;
   useEffect(() => {
     if (!writable || !defaultTaskNode) return;
@@ -401,15 +417,18 @@ export default function Dashboard() {
       detail,
       selectedNodeId: nodeId,
       itemCount: readable ? items.length : undefined,
+      items,
       loading,
       onWorkspaceChange: selectWorkspace,
       onNodeSelect: selectNode,
+      onItemPageSelect: (item, documentId) => { selectNode(documentId); openTask(item); },
       onCreateWorkspace: () => {
         setWorkspaceError("");
         setCreatingWorkspace(true);
       },
-      onCreateNode: structureWritable ? () => setStructure({}) : undefined,
-      onEditNode: structureWritable ? (node) => setStructure({ node }) : undefined,
+      onCreateNode: structureWritable || documentWritable ? () => setStructure({ initialKind: structureWritable ? "project" : "document" }) : undefined,
+      onEditNode: structureWritable || documentWritable ? (node) => setStructure({ node }) : undefined,
+      canEditNode: node => node.kind === "document" ? documentWritable : structureWritable,
     }}>
       <header className="page-top">
         <Breadcrumbs detail={detail} nodeId={nodeId} />
@@ -420,10 +439,10 @@ export default function Dashboard() {
       <div className="workspace-body">
         <section className="workspace-heading">
           <div>
-            {selectedNode && structureWritable ? editingNodeName ? (
+            {selectedNode && (selectedNode.kind === "document" ? documentWritable : structureWritable) ? editingNodeName ? (
               <form className="hierarchy-title-editor" onSubmit={saveNodeName}>
                 <label className="sr-only" htmlFor="hierarchy-title">{`Rename ${selectedNode.kind}`}</label>
-                <input id="hierarchy-title" autoFocus value={nodeName} maxLength={120} required
+                <input id="hierarchy-title" autoFocus value={nodeName} maxLength={selectedNode.kind === "document" ? 300 : 120} required
                   disabled={nodeNameBusy} onChange={event => setNodeName(event.target.value)} />
                 <button type="submit" className="inline-save" aria-label={`Save ${selectedNode.kind} name`}
                   disabled={nodeNameBusy || !nodeName.trim()}><span aria-hidden="true">✓</span></button>
@@ -444,7 +463,7 @@ export default function Dashboard() {
             {selectedNode?.kind === "project" && selectedNode.description && (
               <p className="project-description">{selectedNode.description}</p>
             )}
-            <p className="muted">
+             {selectedNode?.kind !== "document" && <p className="muted">
               {detail && !readable
                 ? "Manage the parts of this workspace available to your role."
                 : loading
@@ -452,7 +471,7 @@ export default function Dashboard() {
                   : detail
                     ? `${completedCount} complete · ${scopedItemCount - completedCount} in motion`
                     : "A clear place for every next step."}
-            </p>
+             </p>}
           </div>
           <div className="heading-actions">
             {readable &&
@@ -465,7 +484,7 @@ export default function Dashboard() {
                   ✧ Assistant
                 </button>
               )}
-            {writable && (
+            {writable && selectedNode?.kind !== "document" && (
               <button
                 className="primary"
                 disabled={loading || !scopedLists.length}
@@ -517,7 +536,12 @@ export default function Dashboard() {
           </Empty>
         ) : (
           detail &&
-          (!readable ? (
+          (selectedDocument ? !documentReadable ? (
+            <section className="notice" aria-labelledby="document-access-heading"><h2 id="document-access-heading">Document access is not included in your role</h2><p>You can see this hierarchy entry but cannot read its contents.</p></section>
+          ) : (
+            <DocumentEditor key={selectedDocument.id} detail={detail} summary={selectedDocument} items={items} currentUserId={user?.id}
+              onOpenTask={openTask} onChanged={() => setRevision(value => value + 1)} />
+          ) : !readable ? (
             <section className="notice" aria-labelledby="task-access-heading">
               <h2 id="task-access-heading">
                 Task access is not included in your role

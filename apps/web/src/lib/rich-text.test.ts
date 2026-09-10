@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { htmlToMarkdown, markdownToHtml, plainText } from "./rich-text.js";
+import { htmlToMarkdown, markdownToHtml, plainText, selectionAnchor } from "./rich-text.js";
+
+// Distinct failure protected: range comments bind only to an unambiguous saved-text segment.
+test("selection anchors retain quote context and reject duplicate text", () => {
+  assert.deepEqual(selectionAnchor("before selected after", "selected", 3), {
+    revision: 3,
+    start: 7,
+    end: 15,
+    exact: "selected",
+    prefix: "before ",
+    suffix: " after",
+  });
+  assert.equal(selectionAnchor("same then same", "same", 1), null);
+});
 
 // Distinct failure protected: the core markdown subset renders.
 test("headings, emphasis, code, lists, links and blockquotes render", () => {

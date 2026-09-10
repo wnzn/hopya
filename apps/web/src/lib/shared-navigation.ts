@@ -9,7 +9,7 @@ export function safeAncestorPath(nodes: TreeNode[], nodeId: string) {
     if (seen.has(current.id) || path.length >= 32) return [];
     seen.add(current.id);
     path.unshift(current);
-    if (!current.parentId) return current.kind === "project" || current.kind === "list" ? path : [];
+    if (!current.parentId) return current.kind === "project" || current.kind === "list" || current.kind === "document" ? path : [];
     current = byId.get(current.parentId);
   }
   return [];

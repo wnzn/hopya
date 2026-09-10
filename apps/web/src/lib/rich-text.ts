@@ -6,6 +6,20 @@
 export const RICH_TEXT_MAX = 50000;
 export const PLAIN_TEXT_MAX = 500;
 
+export function selectionAnchor(source: string, exact: string, revision: number) {
+  if (!exact || exact.length > 2000) return null;
+  const start = source.indexOf(exact);
+  if (start < 0 || source.indexOf(exact, start + 1) !== -1) return null;
+  return {
+    revision,
+    start,
+    end: start + exact.length,
+    exact,
+    prefix: source.slice(Math.max(0, start - 100), start),
+    suffix: source.slice(start + exact.length, start + exact.length + 100),
+  };
+}
+
 export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
