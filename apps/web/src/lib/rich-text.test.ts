@@ -12,7 +12,23 @@ test("selection anchors retain quote context and reject duplicate text", () => {
     prefix: "before ",
     suffix: " after",
   });
+  assert.deepEqual(selectionAnchor("before selected after", "lect", 4), {
+    revision: 4,
+    start: 9,
+    end: 13,
+    exact: "lect",
+    prefix: "before se",
+    suffix: "ed after",
+  });
   assert.equal(selectionAnchor("same then same", "same", 1), null);
+  assert.deepEqual(selectionAnchor("same then same", "same", 5, 1), {
+    revision: 5,
+    start: 10,
+    end: 14,
+    exact: "same",
+    prefix: "same then ",
+    suffix: "",
+  });
 });
 
 // Distinct failure protected: the core markdown subset renders.

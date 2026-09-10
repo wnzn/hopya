@@ -14,6 +14,7 @@ import {
   type WebhookEvent,
 } from "../lib/api";
 import { ErrorNotice, Loading, Modal, Shell, useSession } from "./Shared";
+import Select from "./Select";
 
 const eventLabel = (id: string) =>
   webhookEvents.find((event) => event.id === id)?.label ?? id;
@@ -587,13 +588,13 @@ function AutomationDialog({
         </label>
         <label>
           Trigger event
-          <select value={event} onChange={(e) => setEvent(e.target.value as WebhookEvent)}>
+          <Select value={event} onChange={(e) => setEvent(e.target.value as WebhookEvent)}>
             {webhookEvents.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <div className="notice">
           <strong>Using earlier results</strong>
@@ -619,10 +620,10 @@ function AutomationDialog({
                   </div>
                   <label>
                     Provider
-                    <select value={step.type} onChange={(e) => updateStep(step.key, { type: e.target.value, method: "POST" })}>
+                    <Select value={step.type} onChange={(e) => updateStep(step.key, { type: e.target.value, method: "POST" })}>
                       {!supported && <option value={step.type}>{providerLabel(step.type)}</option>}
                       {actionTypes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                    </select>
+                    </Select>
                   </label>
                   {!supported ? (
                     <p className="notice">This saved provider is unavailable. Its draft is retained; select a supported provider or remove this step before saving.</p>
@@ -642,9 +643,9 @@ function AutomationDialog({
                       </label>
                       <label>
                         Method
-                        <select value={step.method} onChange={(e) => updateStep(step.key, { method: e.target.value })}>
+                        <Select value={step.method} onChange={(e) => updateStep(step.key, { method: e.target.value })}>
                           {(step.type === "webhook" ? ["POST", "PUT", "PATCH"] : ["GET", "POST", "PUT", "PATCH", "DELETE"]).map((option) => <option key={option} value={option}>{option}</option>)}
-                        </select>
+                        </Select>
                       </label>
                       {step.type === "http" && (
                         <>

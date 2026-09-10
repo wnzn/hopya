@@ -21,6 +21,24 @@
   color: var(--sidebar-ink);
   font-size: 12px;
   text-decoration: none;
+  transition: background 120ms ease, color 120ms ease, padding 120ms ease;
+}
+
+.shared-navigation .tree-row {
+  position: relative;
+}
+
+.shared-navigation .tree-row.menu-open {
+  z-index: 8;
+}
+
+.shared-navigation .tree-row.has-children > a {
+  padding-left: 36px;
+}
+
+.shared-navigation .tree-row:hover > a,
+.shared-navigation .tree-row:has(> .tree-edit:focus-visible) > a {
+  padding-right: 32px;
 }
 
 .tree-row > a:hover,
@@ -38,17 +56,19 @@
   flex: 0 0 16px;
   width: 16px;
   height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  fill: currentColor;
+  stroke: none;
 }
 
 .shared-navigation .tree-row > button.tree-toggle:first-child {
-  flex: 0 0 26px;
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
   display: grid;
   place-items: center;
+  align-items: center;
+  justify-content: center;
   min-width: 26px;
   min-height: 32px;
   padding: 0;
@@ -59,11 +79,6 @@
   display: block;
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
   transition: transform 120ms ease;
 }
 
@@ -74,6 +89,65 @@
 .tree-toggle-spacer {
   flex: 0 0 26px;
   width: 26px;
+}
+
+.shared-navigation .tree-toggle-spacer {
+  display: none;
+}
+
+.shared-navigation .tree-row > .tree-edit {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 26px;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  opacity: 0;
+}
+
+.shared-navigation .tree-row:hover > .tree-edit,
+.shared-navigation .tree-row > .tree-edit:focus-visible,
+.shared-navigation .tree-row > .tree-edit[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.hierarchy-node-menu {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% + 3px);
+  right: 0;
+  display: grid;
+  width: 120px;
+  padding: 4px;
+  border: 1px solid var(--sidebar-line);
+  border-radius: 7px;
+  background: var(--sidebar);
+  box-shadow: 0 12px 30px #0000006b;
+}
+
+.shared-navigation .hierarchy-node-menu > button {
+  min-height: 34px;
+  justify-content: flex-start;
+  padding: 6px 9px;
+  border: 0;
+  background: transparent;
+}
+
+.shared-navigation .hierarchy-node-menu > button:hover {
+  background: #ffffff12;
+  color: var(--sidebar-bright);
+}
+
+.shared-navigation .hierarchy-node-menu > button.danger,
+.shared-navigation .hierarchy-node-menu > button.danger:hover {
+  color: var(--danger);
+}
+
+@media (hover: none) {
+  .shared-navigation .tree-row > .tree-edit { opacity: 1; }
 }
 
 .all-tasks {

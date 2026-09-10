@@ -52,7 +52,10 @@
 .project-field-options label > span { min-width: 0; line-height: 1.35; }
 .project-field-options small { display: block; color: var(--ink-soft); font-weight: 400; }
 .project-fields-apply { align-self: flex-start; min-width: 130px; }
-.project-field-create { padding-top: 26px; border-top: 1px solid var(--line); }
+.project-field-create,
+.list-status-settings { padding-top: 26px; border-top: 1px solid var(--line); }
+.project-field-create > h3,
+.list-status-settings > h3 { margin: 0; }
 .project-field-templates { display: flex; flex-wrap: wrap; gap: .5rem; }
 .project-field-templates button { white-space: normal; }
 
@@ -120,7 +123,7 @@
   box-shadow: none;
 }
 .fields-manager-target:hover { background: var(--wash); border-color: var(--line); }
-.fields-manager-target > span:first-child { color: var(--ink-soft); }
+.fields-manager-kind-icon { width: 16px; height: 16px; flex: 0 0 16px; color: var(--ink-soft); }
 .fields-manager-target-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
 .fields-manager-target-text > span { font-weight: 550; }
 .fields-manager-path { display: block; overflow-wrap: anywhere; font-size: 10px; font-weight: 400; }
@@ -161,8 +164,39 @@
   color: var(--ink-soft);
   text-align: center;
 }
-.fields-manager-empty > span { font-size: 28px; color: var(--signal-text); }
+.fields-manager-empty > svg { width: 28px; height: 28px; color: var(--signal-text); }
 .fields-manager-empty p { max-width: 38ch; margin: 0; line-height: 1.7; }
+
+.list-status-fieldset > legend { margin-bottom: 4px; }
+.list-status-source-options { display: grid; gap: 6px; }
+.list-status-source-options > label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.list-status-source-options > label:hover { background: var(--wash); }
+.list-status-source-options > label:has(input:checked) { border-color: var(--signal-wash-line); background: var(--signal-wash); }
+.list-status-source-options input[type="radio"] {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--signal);
+}
+.list-status-source-options label > span { display: grid; gap: 2px; min-width: 0; }
+.list-status-source-options strong { color: var(--ink); font-size: 12px; font-weight: 650; line-height: 1.4; }
+.list-status-source-options small { color: var(--ink-soft); font-size: 11px; font-weight: 400; line-height: 1.45; }
+.list-status-source-options input:disabled,
+.list-status-source-options label:has(input:disabled) { cursor: not-allowed; }
+.list-status-fieldset > button[type="submit"] { align-self: flex-start; }
 
 @media (max-width: 52rem) {
   .fields-manager-layout { grid-template-columns: minmax(0, 1fr); }
