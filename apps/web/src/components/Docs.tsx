@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ErrorNotice, Loading, Shell, useSession } from "./Shared";
+import Select from "./Select";
 
 type JsonObject = Record<string, unknown>;
 type Parameter = { name?: string; in?: string; required?: boolean; description?: string; schema?: unknown; example?: unknown; examples?: unknown };
@@ -227,8 +228,8 @@ function Docs() {
         {!spec && !error ? <Loading /> : spec ? <>
           <div className="docs-filterbar" role="search">
             <label className="docs-search"><span className="sr-only">Search endpoints</span><input aria-label="Search endpoints" type="search" value={queryText} placeholder="Search endpoints..." maxLength={120} onChange={(event) => setQueryText(event.target.value)} /></label>
-            <label><span className="sr-only">Filter by method</span><select aria-label="Filter by method" value={methodFilter} onChange={event => setMethodFilter(event.target.value)}><option value="">All methods</option>{methodOrder.map(method => <option key={method} value={method}>{method.toUpperCase()}</option>)}</select></label>
-            <label><span className="sr-only">Filter by category</span><select aria-label="Filter by category" value={tagFilter} onChange={event => setTagFilter(event.target.value)}><option value="">All categories</option>{tagNames.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label>
+            <label><span className="sr-only">Filter by method</span><Select aria-label="Filter by method" value={methodFilter} onChange={event => setMethodFilter(event.target.value)}><option value="">All methods</option>{methodOrder.map(method => <option key={method} value={method}>{method.toUpperCase()}</option>)}</Select></label>
+            <label><span className="sr-only">Filter by category</span><Select aria-label="Filter by category" value={tagFilter} onChange={event => setTagFilter(event.target.value)}><option value="">All categories</option>{tagNames.map(tag => <option key={tag} value={tag}>{tag}</option>)}</Select></label>
             <span className="docs-result-count" role="status">{entries.length} endpoint{entries.length === 1 ? "" : "s"}</span>
             {(queryText || methodFilter || tagFilter) && <button type="button" onClick={() => { setQueryText(""); setMethodFilter(""); setTagFilter(""); }}>Clear</button>}
           </div>

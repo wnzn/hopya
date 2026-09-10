@@ -10,7 +10,8 @@ import {
   type TreeNode,
 } from "../lib/api";
 import { ErrorNotice, Modal } from "./Shared";
-import NodeGlyph from "./NodeGlyph";
+import NodeGlyph, { nodeColorValues } from "./NodeGlyph";
+import Select from "./Select";
 
 function ListTagColors({ detail, node, onSaved }: { detail: Detail; node: TreeNode; onSaved: () => void }) {
   const config = detail.listTagColorConfigs?.find(value => value.listId === node.id);
@@ -60,6 +61,7 @@ export default function StructureEditor({
   node,
   initialKind = "project",
   initialParentId,
+  mode = "details",
   onClose,
   onSaved,
 }: {
@@ -67,6 +69,7 @@ export default function StructureEditor({
   node?: TreeNode;
   initialKind?: TreeNode["kind"];
   initialParentId?: string;
+  mode?: "rename" | "details";
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -173,10 +176,11 @@ export default function StructureEditor({
     }
   }
   async function remove() {
+    const warning = node!.kind === "document"
+      ? `Delete "${node!.name}" and all of its nested document pages? This cannot be undone.`
+      : `Delete "${node!.name}"? Only empty nodes can be deleted.`;
     if (
-      !window.confirm(
-        `Delete "${node!.name}"? Only empty nodes can be deleted.`,
-      )
+      !window.confirm(warning)
     )
       return;
     setBusy(true);
@@ -194,30 +198,38 @@ export default function StructureEditor({
   }
   return (
     <Modal
-      title={node ? `Manage ${node.kind}` : "Organize your workspace"}
+      title={node ? mode === "rename" ? `Rename ${node.kind}` : `Manage ${node.kind}` : "Organize your workspace"}
       onClose={() => {
         if (!busy) onClose();
       }}
     >
       <ErrorNotice error={error} />
-      <p className="muted">
+      {mode === "details" && <p className="muted">
         Projects may hold folders, lists, and documents. Lists and documents may also live at the workspace root.
-      </p>
-      <form className="stack" onSubmit={submit}>
-        <label>
-          Name
-          <input
+      </p>}
+      <form className={mode === "rename" ? "inline-title-editor structure-title-editor" : "stack"} onSubmit={submit}>
+        {mode === "rename" ? <>
+          <label className="sr-only" htmlFor="structure-title-name">Name</label>
+          <input id="structure-title-name"
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
             maxLength={kind === "document" || node?.kind === "document" ? 300 : 120}
           />
-        </label>
-        {!node && (
+        </> : <label>
+          Name
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} required
+            maxLength={kind === "document" || node?.kind === "document" ? 300 : 120} />
+        </label>}
+        {mode === "rename" && <>
+          <button type="submit" className="inline-title-action inline-save" aria-label={`Save ${node?.kind ?? kind} name`} disabled={busy || !name.trim()}>✓</button>
+          <button type="button" className="inline-title-action" aria-label={`Cancel renaming ${node?.kind ?? kind}`} disabled={busy} onClick={onClose}>×</button>
+        </>}
+        {mode === "details" && !node && (
           <label>
             Type
-            <select
+            <Select
               value={kind}
               onChange={(e) => {
                 setKind(e.target.value as TreeNode["kind"]);
@@ -228,22 +240,33 @@ export default function StructureEditor({
               <option value="folder">Folder</option>
               <option value="list">List</option>
               <option value="document">Document</option>
-            </select>
+            </Select>
           </label>
         )}
-        {!isDocument && <fieldset className="appearance-fields">
+        {mode === "details" && !isDocument && <fieldset className="appearance-fields">
           <legend>Appearance</legend>
           <NodeGlyph node={{ kind: node?.kind || kind, icon, color }} className="node-glyph node-glyph-preview" />
-          <label>Icon<select value={icon || ""} onChange={event => setIcon(event.target.value ? event.target.value as NonNullable<TreeNode["icon"]> : null)}>
+          <label>Icon<Select value={icon || ""} onChange={event => setIcon(event.target.value ? event.target.value as NonNullable<TreeNode["icon"]> : null)}>
             <option value="">Default for type</option>
             {nodeIcons.map(value => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
-          </select></label>
-          <label>Color<select value={color || ""} onChange={event => setColor(event.target.value ? event.target.value as NonNullable<TreeNode["color"]> : null)}>
-            <option value="">Default</option>
-            {nodeColors.map(value => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
-          </select></label>
+          </Select></label>
+          <fieldset className="node-color-picker">
+            <legend>Color</legend>
+            <div>
+              <label title="Default color">
+                <input type="radio" name="node-color" checked={!color} onChange={() => setColor(null)} />
+                <span className="node-color-swatch node-color-swatch-default" aria-hidden="true" />
+                <span className="sr-only">Default color</span>
+              </label>
+              {nodeColors.map(value => <label key={value} title={`${value[0].toUpperCase() + value.slice(1)} color`}>
+                <input type="radio" name="node-color" checked={color === value} onChange={() => setColor(value)} />
+                <span className="node-color-swatch" style={{ background: nodeColorValues[value] }} aria-hidden="true" />
+                <span className="sr-only">{value[0].toUpperCase() + value.slice(1)} color</span>
+              </label>)}
+            </div>
+          </fieldset>
         </fieldset>}
-        {isProject && (
+        {mode === "details" && isProject && (
           <label>
             Project description
             <textarea value={description} onChange={(e) => setDescription(e.target.value)}
@@ -251,10 +274,10 @@ export default function StructureEditor({
           </label>
         )}
         {/* Contain WebKit's native-option overflow with room for the focus ring. */}
-        {canHaveParent && (
+        {mode === "details" && canHaveParent && (
           <label style={{ overflow: "clip", padding: 6, margin: -6 }}>
             Parent project or folder
-            <select
+            <Select
               required={requiresParent}
               value={parentId}
               onChange={(e) => setParentId(e.target.value)}
@@ -266,27 +289,27 @@ export default function StructureEditor({
                   {labelCounts.get(n.label)! > 1 ? ` [${n.id}]` : ""}
                 </option>
               ))}
-            </select>
+            </Select>
             <small>
               {node
                   ? nodeKind === "list"
                   ? "A standalone list keeps its contents, permissions, and list-specific statuses."
-                  : nodeKind === "document" ? "Moving preserves the document body, comments, and linked task pages." : "Moving keeps all contents and the same workspace permissions."
+                  : nodeKind === "document" ? "Moving preserves the document body, comments, and pages." : "Moving keeps all contents and the same workspace permissions."
                 : detail.nodes.length === 0
                   ? nodeKind === "list" ? "Create this list at the workspace root." : "Create a project before adding a folder."
                    : nodeKind === "list" ? "Choose a project or folder, or keep the list at workspace root." : nodeKind === "document" ? "Choose a project or folder, or keep the document at workspace root." : "Folders may nest inside projects or other folders."}
             </small>
           </label>
         )}
-        <div className="modal-actions">
-          {node && (
+        {mode !== "rename" && <div className="modal-actions">
+          {mode === "details" && node && (
             <button
               type="button"
               className="danger"
               disabled={busy}
               onClick={remove}
             >
-              Delete empty {node.kind}
+              {node.kind === "document" ? "Delete document and nested pages" : `Delete empty ${node.kind}`}
             </button>
           )}
           <span className="spacer" />
@@ -300,9 +323,9 @@ export default function StructureEditor({
                 ? "Save changes"
                 : `Create ${kind}`}
           </button>
-        </div>
+        </div>}
       </form>
-      {node?.kind === "list" && <ListTagColors detail={detail} node={node} onSaved={onSaved} />}
+      {mode === "details" && node?.kind === "list" && <ListTagColors detail={detail} node={node} onSaved={onSaved} />}
     </Modal>
   );
 }

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject, type SubmitEvent } from "react";
 import {
   api,
   ApiError,
   message,
   workspacePath,
   type Detail,
+  type DocumentSummary,
   type Item,
   type TreeNode,
   type User,
@@ -13,6 +14,8 @@ import {
 import "../styles/shared-navigation.css";
 import { safeAncestorPath } from "../lib/shared-navigation";
 import NodeGlyph from "./NodeGlyph";
+import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 export { safeAncestorPath } from "../lib/shared-navigation";
 
 export type NavigationState = {
@@ -28,8 +31,11 @@ export type NavigationState = {
   onItemPageSelect?: (item: Item, documentId: string) => void;
   onCreateWorkspace?: () => void;
   onCreateNode?: () => void;
+  onRenameNode?: (node: TreeNode) => void;
   onEditNode?: (node: TreeNode) => void;
+  onDeleteNode?: (node: TreeNode) => void | Promise<void>;
   canEditNode?: (node: TreeNode) => boolean;
+  canDeleteNode?: (node: TreeNode) => boolean;
 };
 
 function boundedPageItems(items: Item[], roots: Set<string>) {
@@ -59,8 +65,25 @@ function PageTree({ state, documentId, pageItems, parentId = null, depth = 0, ro
   return <ul className="tree page-tree">{children.map(item => <li key={item.id}>
     <div className="tree-row"><span className="tree-toggle-spacer" aria-hidden="true" /><a href={`/app?workspace=${encodeURIComponent(state.workspaceId)}&node=${encodeURIComponent(documentId)}&task=${encodeURIComponent(item.id)}`}
       onClick={state.onItemPageSelect ? event => { event.preventDefault(); state.onItemPageSelect?.(item, documentId); } : undefined}>
-      <svg className="node-glyph" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5" /></svg><span>{item.title}</span></a></div>
+      <SolidIcon name="document" className="node-glyph solid-icon" /><span>{item.title}</span></a></div>
     <PageTree state={state} documentId={documentId} pageItems={pageItems} parentId={item.id} depth={depth + 1} roots={roots} />
+  </li>)}</ul>;
+}
+
+function DocumentPageTree({ state, documents, parentDocumentId, depth = 0 }: {
+  state: NavigationState; documents: DocumentSummary[]; parentDocumentId: string; depth?: number;
+}) {
+  if (depth >= 32) return null;
+  const children = documents.filter(document => document.parentDocumentId === parentDocumentId);
+  if (!children.length) return null;
+  return <ul className="tree page-tree">{children.map(document => <li key={document.id}>
+    <div className="tree-row"><span className="tree-toggle-spacer" aria-hidden="true" /><a
+      className={state.selectedNodeId === document.id ? "selected" : ""}
+      href={appHref(state.workspaceId, document.id)} onClick={state.onNodeSelect ? event => {
+        event.preventDefault(); state.onNodeSelect?.(document.id);
+      } : undefined}>
+      <SolidIcon name="document" className="node-glyph solid-icon" /><span>{document.title}</span></a></div>
+    <DocumentPageTree state={state} documents={documents} parentDocumentId={document.id} depth={depth + 1} />
   </li>)}</ul>;
 }
 
@@ -70,10 +93,12 @@ function appHref(workspaceId: string, nodeId = "") {
   return `/app?${query}`;
 }
 
-function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0, ancestors = new Set<string>() }: {
+function NavigationTree({ state, collapsed, onToggle, menuNodeId, onMenu, parentId = null, depth = 0, ancestors = new Set<string>() }: {
   state: NavigationState;
   collapsed: Set<string>;
   onToggle: (id: string) => void;
+  menuNodeId: string | null;
+  onMenu: (id: string | null) => void;
   parentId?: string | null;
   depth?: number;
   ancestors?: Set<string>;
@@ -81,7 +106,8 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
   if (depth >= 32 || !state.detail) return null;
   const entries: TreeNode[] = [
     ...state.detail.nodes,
-    ...(state.detail.documents ?? []).map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt })),
+    ...(state.detail.documents ?? []).filter(document => !document.parentDocumentId)
+      .map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt })),
   ];
   const children = entries.filter((node) => node.parentId === parentId && !ancestors.has(node.id));
   if (!children.length) return null;
@@ -89,18 +115,17 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
     <ul className="tree">
       {children.map((node) => {
         const nextAncestors = new Set(ancestors).add(node.id);
+        const documentSubpages = node.kind === "document" ? (state.detail!.documents ?? []).filter(document => document.parentDocumentId) : [];
         const pageRoots = new Set(node.kind === "document" ? (state.detail!.documentPages ?? []).filter(page => page.documentId === node.id).map(page => page.itemId) : []);
         const pageItems = node.kind === "document" ? boundedPageItems(state.items ?? [], pageRoots) : [];
-        const hasChildren = entries.some(candidate => candidate.parentId === node.id && !nextAncestors.has(candidate.id)) || pageRoots.size > 0;
-        const containsSelection = state.selectedNodeId ? safeAncestorPath(entries, state.selectedNodeId).some(candidate => candidate.id === node.id) : false;
-        const isCollapsed = hasChildren && collapsed.has(node.id) && !containsSelection;
+        const hasDocumentSubpages = documentSubpages.some(document => document.parentDocumentId === node.id);
+        const hasChildren = entries.some(candidate => candidate.parentId === node.id && !nextAncestors.has(candidate.id)) || hasDocumentSubpages || pageRoots.size > 0;
+        const isCollapsed = hasChildren && collapsed.has(node.id);
         return (
           <li key={node.id}>
-            <div className="tree-row">
+            <div className={`tree-row${hasChildren ? " has-children" : ""}${menuNodeId === node.id ? " menu-open" : ""}`}>
               {hasChildren ? <button type="button" className="tree-toggle" aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`} aria-expanded={!isCollapsed} onClick={() => onToggle(node.id)}>
-                <svg className={isCollapsed ? "" : "tree-toggle-expanded"} aria-hidden="true" viewBox="0 0 20 20">
-                  <path d="m7.5 4.5 5.5 5.5-5.5 5.5" />
-                </svg>
+                <SolidIcon name="chevronRight" className={`solid-icon${isCollapsed ? "" : " tree-toggle-expanded"}`} />
               </button> : <span className="tree-toggle-spacer" aria-hidden="true" />}
               <a
                 className={state.selectedNodeId === node.id ? "selected" : ""}
@@ -114,12 +139,23 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
                 <NodeGlyph node={node} />
                 <span>{node.name}</span>
               </a>
-              {state.onEditNode && (!state.canEditNode || state.canEditNode(node)) && (
-                <button type="button" className="tree-edit" aria-label={`Manage ${node.name}`} onClick={() => state.onEditNode?.(node)}>···</button>
+              {(state.onRenameNode || state.onEditNode || state.onDeleteNode) && (
+                <button type="button" className="tree-edit" aria-label={`Options for ${node.name}`} aria-expanded={menuNodeId === node.id}
+                  onClick={() => onMenu(menuNodeId === node.id ? null : node.id)}>···</button>
               )}
+              {menuNodeId === node.id && <div className="hierarchy-node-menu" role="menu">
+                {state.onNodeSelect && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onNodeSelect?.(node.id); }}>Open</button>}
+                {state.onRenameNode && (!state.canEditNode || state.canEditNode(node)) && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onRenameNode?.(node); }}>Rename</button>}
+                {state.onEditNode && (!state.canEditNode || state.canEditNode(node)) && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onEditNode?.(node); }}>Details</button>}
+                {state.onDeleteNode && (!state.canDeleteNode || state.canDeleteNode(node)) && <button type="button" role="menuitem" className="danger" onClick={() => {
+                  const warning = node.kind === "document" ? `Delete "${node.name}" and its nested document pages? This cannot be undone.` : `Delete "${node.name}"? Only empty nodes can be deleted.`;
+                  if (window.confirm(warning)) { onMenu(null); void state.onDeleteNode?.(node); }
+                }}>Delete</button>}
+              </div>}
             </div>
             {!isCollapsed && <>
-              <NavigationTree state={state} collapsed={collapsed} onToggle={onToggle} parentId={node.id} depth={depth + 1} ancestors={nextAncestors} />
+              <NavigationTree state={state} collapsed={collapsed} onToggle={onToggle} menuNodeId={menuNodeId} onMenu={onMenu} parentId={node.id} depth={depth + 1} ancestors={nextAncestors} />
+              {node.kind === "document" && <DocumentPageTree state={state} documents={documentSubpages} parentDocumentId={node.id} />}
               {node.kind === "document" && <PageTree state={state} documentId={node.id} pageItems={pageItems} roots={pageRoots} />}
             </>}
           </li>
@@ -131,6 +167,7 @@ function NavigationTree({ state, collapsed, onToggle, parentId = null, depth = 0
 
 function WorkspaceNavigation({ state, inboxActive = false }: { state: NavigationState; inboxActive?: boolean }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [menuNodeId, setMenuNodeId] = useState<string | null>(null);
   const [unread, setUnread] = useState(0);
   useEffect(() => {
     try {
@@ -138,6 +175,17 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
       setCollapsed(new Set(Array.isArray(value) ? value.filter(id => typeof id === "string") : []));
     } catch { setCollapsed(new Set()); }
   }, [state.workspaceId]);
+  useEffect(() => {
+    if (!menuNodeId) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event instanceof MouseEvent && event.target instanceof Element && event.target.closest(".tree-edit, .hierarchy-node-menu")) return;
+      setMenuNodeId(null);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", close); };
+  }, [menuNodeId]);
   useEffect(() => {
     if (!state.workspaceId) { setUnread(0); return; }
     const controller = new AbortController();
@@ -162,16 +210,23 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
     <div className="shared-navigation">
       <div className="workspace-picker">
         <label htmlFor="workspace-select">WORKSPACE</label>
-        <select id="workspace-select" value={state.workspaceId} onChange={(event) => state.onWorkspaceChange?.(event.target.value)} disabled={!state.onWorkspaceChange}>
+        <Select id="workspace-select" value={state.workspaceId} pinnedValue="__new_workspace__" onChange={(event) => {
+          if (event.target.value === "__new_workspace__") state.onCreateWorkspace?.();
+          else state.onWorkspaceChange?.(event.target.value);
+        }} disabled={!state.onWorkspaceChange && !state.onCreateWorkspace}>
           {!state.workspaces.length && <option value="">No workspaces</option>}
           {state.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-        </select>
-        {state.onCreateWorkspace && <button type="button" onClick={state.onCreateWorkspace}>+ New workspace</button>}
+          {state.onCreateWorkspace && <option value="__new_workspace__">+ New workspace</option>}
+        </Select>
       </div>
       {state.workspaceId && <a className="inbox-link" aria-current={inboxActive ? "page" : undefined}
         aria-label={unread ? `Inbox, ${unread} unread` : "Inbox"}
         href={`/inbox?workspace=${encodeURIComponent(state.workspaceId)}`}>
-        <span>Inbox</span>{unread > 0 && <strong>{unread > 99 ? "99+" : unread}</strong>}
+        <span className="inbox-link-label">
+          <SolidIcon name="inbox" />
+          <span>Inbox</span>
+        </span>
+        {unread > 0 && <strong>{unread > 99 ? "99+" : unread}</strong>}
       </a>}
       {canSeeTree && (
         <nav className="sidebar-structure" aria-label="Workspace hierarchy">
@@ -189,7 +244,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
           >
             All tasks {state.itemCount !== undefined && <span>{state.loading ? "..." : state.itemCount}</span>}
           </a>
-          <NavigationTree state={state} collapsed={collapsed} onToggle={toggleNode} />
+          <NavigationTree state={state} collapsed={collapsed} onToggle={toggleNode} menuNodeId={menuNodeId} onMenu={setMenuNodeId} />
           {state.detail && !state.detail.nodes.length && state.onCreateNode && <p className="sidebar-hint">Start with a project.</p>}
         </nav>
       )}
@@ -456,6 +511,9 @@ export function Shell({
   const [fallbackWorkspaces, setFallbackWorkspaces] = useState<Workspace[]>([]);
   const [fallbackWorkspaceId, setFallbackWorkspaceId] = useState("");
   const [fallbackDetail, setFallbackDetail] = useState<Detail | null>(null);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
   useEffect(() => {
     if (!user || navigation) return;
     const controller = new AbortController();
@@ -499,6 +557,36 @@ export function Shell({
     },
   };
   const sharedNavigation = navigation ?? fallbackNavigation;
+  const structureWritable = Boolean(sharedNavigation.detail?.permissions.includes("structure:write"));
+  const documentWritable = Boolean(sharedNavigation.detail?.permissions.includes("documents:write"));
+  const documentDeletable = Boolean(sharedNavigation.detail?.permissions.includes("documents:delete"));
+  const openStructureAction = (action: "create" | "rename" | "details", node?: TreeNode) => {
+    const query = new URLSearchParams({ workspace: sharedNavigation.workspaceId, structure: action });
+    if (node) query.set("node", node.id);
+    window.location.assign(`/app?${query}`);
+  };
+  const effectiveNavigation: NavigationState = {
+    ...sharedNavigation,
+    onCreateWorkspace: sharedNavigation.onCreateWorkspace ?? (() => {
+      setWorkspaceError("");
+      setCreatingWorkspace(true);
+    }),
+    onNodeSelect: sharedNavigation.onNodeSelect ?? (id => window.location.assign(appHref(sharedNavigation.workspaceId, id))),
+    onCreateNode: sharedNavigation.onCreateNode ?? (structureWritable || documentWritable
+      ? () => openStructureAction("create") : undefined),
+    onRenameNode: sharedNavigation.onRenameNode ?? (structureWritable || documentWritable
+      ? node => openStructureAction("rename", node) : undefined),
+    onEditNode: sharedNavigation.onEditNode ?? (structureWritable || documentWritable
+      ? node => openStructureAction("details", node) : undefined),
+    onDeleteNode: sharedNavigation.onDeleteNode ?? (structureWritable || documentDeletable ? async node => {
+      try {
+        await api(`${workspacePath(sharedNavigation.workspaceId)}/${node.kind === "document" ? "documents" : "nodes"}/${node.id}`, "DELETE");
+        window.location.reload();
+      } catch (cause) { setError(message(cause)); }
+    } : undefined),
+    canEditNode: sharedNavigation.canEditNode ?? (node => node.kind === "document" ? documentWritable : structureWritable),
+    canDeleteNode: sharedNavigation.canDeleteNode ?? (node => node.kind === "document" ? documentDeletable : structureWritable),
+  };
   const pageLabel = currentPage ?? (active === "admin" ? "Administration" : undefined);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -516,6 +604,19 @@ export function Shell({
     } catch (e) {
       setError(message(e));
       setBusy(false);
+    }
+  }
+  async function createWorkspace(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWorkspaceBusy(true);
+    setWorkspaceError("");
+    try {
+      const name = String(new FormData(event.currentTarget).get("name"));
+      const workspace = await api<Workspace>("/workspaces", "POST", { name });
+      window.location.assign(appHref(workspace.id));
+    } catch (cause) {
+      setWorkspaceError(message(cause));
+      setWorkspaceBusy(false);
     }
   }
   return (
@@ -549,7 +650,7 @@ export function Shell({
         }}
       >
         <Brand className="brand" />
-        <WorkspaceNavigation state={sharedNavigation} inboxActive={currentPage === "Inbox"} />
+        <WorkspaceNavigation state={effectiveNavigation} inboxActive={currentPage === "Inbox"} />
         {sidebar}
         <div className="sidebar-bottom">
           <details ref={accountMenu} className="account-menu" onKeyDown={(event) => {
@@ -613,6 +714,19 @@ export function Shell({
         )}
         {children}
       </main>
+      {creatingWorkspace && <Modal title="Create a workspace" onClose={() => {
+        if (!workspaceBusy) setCreatingWorkspace(false);
+      }}>
+        <p className="muted">A separate space for a team, a client, or a new idea.</p>
+        <ErrorNotice error={workspaceError} />
+        <form onSubmit={createWorkspace} className="stack">
+          <label>
+            Workspace name
+            <input autoFocus name="name" required maxLength={120} placeholder="e.g. Studio team" />
+          </label>
+          <button className="primary" disabled={workspaceBusy}>{workspaceBusy ? "Creating..." : "Create workspace"}</button>
+        </form>
+      </Modal>}
     </div>
   );
 }

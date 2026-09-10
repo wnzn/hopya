@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import TaskTable from "./TaskTable";
+import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 import {
   api,
   evaluateFormula,
@@ -68,13 +70,13 @@ function TaskCard({ item, onOpen, detail, variant = "board" }: { item: Item; onO
     {taskDate && <time dateTime={taskDate}>{item.dueDate ? "Due " : "Starts "}{parseDate(taskDate).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>}
   </div>;
   const tags = item.tags.length > 0 && <div className="tags tag-list">
-    {item.tags.map((tag) => <span className="tag-badge" style={tagStyle(detail, item.nodeId, tag)} key={tag}>{tag}</span>)}
+    {item.tags.map((tag) => <span className="tag-badge" title={variant === "gallery" ? tag : undefined} style={tagStyle(detail, item.nodeId, tag)} key={tag}>{tag}</span>)}
   </div>;
   if (variant === "gallery") return (
     <button className="task-card task-card--gallery" data-task-id={item.id} onClick={() => onOpen(item)}>
       <span className="task-card-media" aria-hidden="true" />
       <span className="task-card-footer">
-        <strong>{item.title}</strong>
+        <strong title={item.title}>{item.title}</strong>
         {meta}
         {tags}
       </span>
@@ -158,7 +160,7 @@ function ColumnControls({ columns, settings, onChange, saving, error }: {
     <button className="list-controls-disclosure" type="button" aria-expanded={expanded} aria-controls={`${controlsId}-panel`} onClick={() => setExpanded(value => !value)}>
       <span>Columns</span>
       <span className="count">{visibleCount}/{settings.columnOrder.length}</span>
-      <svg aria-hidden="true" viewBox="0 0 24 24"><path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} /></svg>
+      <SolidIcon name={expanded ? "chevronUp" : "chevronDown"} />
     </button>
     {expanded && <div id={`${controlsId}-panel`} className="column-order" role="toolbar" aria-label="List column controls">
     <ol className="column-order-list">
@@ -177,9 +179,7 @@ function ColumnControls({ columns, settings, onChange, saving, error }: {
           <button type="button" disabled={saving || index === settings.columnOrder.length - 1} aria-label={`Move ${name(key)} column right`} onClick={() => move(key, 1)}>→</button>
           <button type="button" disabled={saving || key === "title"} aria-pressed={!settings.hiddenColumns.includes(key)}
             aria-label={`${settings.hiddenColumns.includes(key) ? "Show" : "Hide"} ${name(key)} column`} onClick={() => toggle(key)}>
-            {settings.hiddenColumns.includes(key)
-              ? <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 10.7a2 2 0 0 0 2.7 2.7M9.9 4.2A10.7 10.7 0 0 1 12 4c5.5 0 9 6 9 6a15 15 0 0 1-2.1 2.7M6.6 6.7C4.3 8.2 3 10 3 10s3.5 6 9 6c.8 0 1.5-.1 2.2-.3" /></svg>
-              : <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.5"/></svg>}
+            <SolidIcon name={settings.hiddenColumns.includes(key) ? "eyeOff" : "eye"} />
           </button>
         </li>
       ))}
@@ -230,7 +230,7 @@ function FilterControls({ fields, filters, groupBy, onFilters, onGroupBy, typeOf
     <button className="list-controls-disclosure" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
       <span>Filter & group</span>
       {(filters.length > 0 || groupBy) && <span className="count">{filters.length + (groupBy ? 1 : 0)}</span>}
-      <svg aria-hidden="true" viewBox="0 0 24 24"><path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} /></svg>
+      <SolidIcon name={expanded ? "chevronUp" : "chevronDown"} />
     </button>
     {expanded && <div id={panelId} className="list-filter-panel">
       <div className="list-filter-heading"><strong>Match all filters</strong><button type="button" onClick={add}>+ Add filter</button></div>
@@ -240,24 +240,24 @@ function FilterControls({ fields, filters, groupBy, onFilters, onGroupBy, typeOf
         const needsValue = filter.operator !== "empty" && filter.operator !== "not_empty";
         return <div className="list-filter-row" key={filter.id}>
           <span className="list-filter-join">{index ? "AND" : "WHERE"}</span>
-          <select aria-label={`Filter ${index + 1} field`} value={selectedField.key} onChange={event => {
+          <Select aria-label={`Filter ${index + 1} field`} value={selectedField.key} onChange={event => {
             const nextField = field(event.target.value);
             const operator = typeOf(nextField) === "number" || typeOf(nextField) === "date" ? "is" : "contains";
             onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, field: nextField.key, operator, value: "" } : candidate));
-          }}>{fields.map(candidate => <option value={candidate.key} key={candidate.key}>{candidate.name}</option>)}</select>
-          <select aria-label={`Filter ${index + 1} formula`} value={filter.operator} onChange={event => onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, operator: event.target.value as ListFilterOperator } : candidate))}>
+          }}>{fields.map(candidate => <option value={candidate.key} key={candidate.key}>{candidate.name}</option>)}</Select>
+          <Select aria-label={`Filter ${index + 1} formula`} value={filter.operator} onChange={event => onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, operator: event.target.value as ListFilterOperator } : candidate))}>
             {operators(selectedField).map(operator => <option value={operator.value} key={operator.value}>{operator.label}</option>)}
-          </select>
-          {needsValue && (choices ? <select aria-label={`Filter ${index + 1} value`} value={filter.value} onChange={event => onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, value: event.target.value } : candidate))}>
+          </Select>
+          {needsValue && (choices ? <Select aria-label={`Filter ${index + 1} value`} value={filter.value} onChange={event => onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, value: event.target.value } : candidate))}>
             <option value="">Choose a value</option>{choices.map(choice => <option value={choice.value} key={choice.value}>{choice.label}</option>)}
-          </select> : <input aria-label={`Filter ${index + 1} value`} type={typeOf(selectedField) === "number" ? "number" : typeOf(selectedField) === "date" ? "date" : "text"}
+          </Select> : <input aria-label={`Filter ${index + 1} value`} type={typeOf(selectedField) === "number" ? "number" : typeOf(selectedField) === "date" ? "date" : "text"}
             value={filter.value} onChange={event => onFilters(filters.map(candidate => candidate.id === filter.id ? { ...candidate, value: event.target.value } : candidate))} />)}
           <button type="button" aria-label={`Remove filter ${index + 1}`} onClick={() => onFilters(filters.filter(candidate => candidate.id !== filter.id))}>Remove</button>
         </div>;
       })}
       {!filters.length && <p className="view-help">No filters. Add more than one to narrow tasks with AND formulas.</p>}
       <label className="list-group-control">Group tasks by
-        <select value={groupBy} onChange={event => onGroupBy(event.target.value)}><option value="">No grouping</option>{fields.map(candidate => <option value={candidate.key} key={candidate.key}>{candidate.name}</option>)}</select>
+        <Select value={groupBy} onChange={event => onGroupBy(event.target.value)}><option value="">No grouping</option>{fields.map(candidate => <option value={candidate.key} key={candidate.key}>{candidate.name}</option>)}</Select>
       </label>
     </div>}
   </section>;
@@ -511,13 +511,13 @@ export default function TaskViews({
         </div>
         <label className="gallery-columns">
           Grid columns
-          <select aria-label="Grid columns" value={galleryColumns} onChange={event => configureGallery(event.target.value as typeof galleryColumns)}>
+          <Select aria-label="Grid columns" value={galleryColumns} onChange={event => configureGallery(event.target.value as typeof galleryColumns)}>
             <option value="auto">Auto-fit</option>
             <option value="2">2 columns</option>
             <option value="3">3 columns</option>
             <option value="4">4 columns</option>
             <option value="5">5 columns</option>
-          </select>
+          </Select>
         </label>
       </div>
       <div className={`gallery-grid${galleryColumns === "auto" ? " gallery-grid--auto" : ""}`}
@@ -609,7 +609,7 @@ export default function TaskViews({
                     {writable && (
                       <label className="move-label">
                         Move to
-                        <select
+                        <Select
                           aria-label={`Move ${item.title} to status`}
                           value={item.status}
                           disabled={moving !== null}
@@ -622,7 +622,7 @@ export default function TaskViews({
                               {s.name}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
                     )}
                   </div>

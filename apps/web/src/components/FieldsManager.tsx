@@ -10,10 +10,9 @@ import {
 import { fieldOwnerForNode, hierarchyLabels, projectForNode } from "../lib/project-fields";
 import { ErrorNotice, Loading, Shell, useSession } from "./Shared";
 import { ProjectConfiguration } from "./ProjectFields";
+import NodeGlyph from "./NodeGlyph";
+import SolidIcon from "./SolidIcon";
 import "../styles/project-fields.css";
-
-const kindGlyph = (kind: TreeNode["kind"]) =>
-  kind === "project" ? "◇" : kind === "folder" ? "▱" : "≡";
 
 const kindLabel = (kind: TreeNode["kind"]) =>
   kind === "project" ? "Project" : kind === "folder" ? "Folder" : "List";
@@ -31,11 +30,11 @@ function TargetButton({ node, path, selected, showPath = false, onSelect }: {
       className={`fields-manager-target${selected ? " selected" : ""}`}
       aria-pressed={selected}
       aria-current={selected ? true : undefined}
-      aria-label={`${kindGlyph(node.kind)} ${node.name}, ${path}`}
+      aria-label={`${node.name}, ${path}`}
       title={`${kindLabel(node.kind)}: ${path}`}
       onClick={() => onSelect(node.id)}
     >
-      <span aria-hidden="true">{kindGlyph(node.kind)}</span>
+      <NodeGlyph node={node} className="fields-manager-kind-icon" />
       <span className="fields-manager-target-text">
         <span>{node.name}</span>
         {showPath && <small className="muted fields-manager-path">{path}</small>}
@@ -270,13 +269,13 @@ export default function FieldsManager() {
                 <div className="fields-manager-panel-body">
                   {!target || !detail || (target.kind !== "list" && !project) ? (
                     <div className="fields-manager-empty">
-                      <span aria-hidden="true">◇</span>
+                      <SolidIcon name="diamond" />
                       <p>Select a project, folder, or list to manage its fields and statuses.</p>
                     </div>
                   ) : (
                     <div className="stack">
                       <div className="fields-manager-current">
-                        <span className="fields-manager-current-glyph" aria-hidden="true">{kindGlyph(target.kind)}</span>
+                        <NodeGlyph node={target} className="fields-manager-current-glyph" />
                         <div>
                           <small>Current {kindLabel(target.kind).toLowerCase()}</small>
                           <strong>{labels.get(target.id) ?? target.name}</strong>

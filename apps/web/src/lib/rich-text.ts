@@ -6,10 +6,17 @@
 export const RICH_TEXT_MAX = 50000;
 export const PLAIN_TEXT_MAX = 500;
 
-export function selectionAnchor(source: string, exact: string, revision: number) {
+export function selectionAnchor(source: string, exact: string, revision: number, occurrence?: number) {
   if (!exact || exact.length > 2000) return null;
-  const start = source.indexOf(exact);
-  if (start < 0 || source.indexOf(exact, start + 1) !== -1) return null;
+  const starts: number[] = [];
+  let match = source.indexOf(exact);
+  while (match !== -1) {
+    starts.push(match);
+    match = source.indexOf(exact, match + 1);
+  }
+  if (starts.length === 0 || occurrence === undefined && starts.length !== 1) return null;
+  const start = starts[occurrence ?? 0];
+  if (start === undefined) return null;
   return {
     revision,
     start,

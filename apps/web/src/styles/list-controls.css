@@ -49,11 +49,12 @@
 .list-filter-heading button,
 .list-filter-row button { min-height: 34px; }
 .list-filter-row select,
+.list-filter-row .custom-select,
 .list-filter-row input { min-width: 0; min-height: 36px; }
-.list-filter-row select:nth-of-type(1) { flex: 1 1 180px; }
-.list-filter-row select:nth-of-type(2) { flex: 1 1 150px; }
+.list-filter-row .custom-select:nth-of-type(1) { flex: 1 1 180px; }
+.list-filter-row .custom-select:nth-of-type(2) { flex: 1 1 150px; }
 .list-filter-row input,
-.list-filter-row select:nth-of-type(3) { flex: 1 1 180px; }
+.list-filter-row .custom-select:nth-of-type(3) { flex: 1 1 180px; }
 .list-filter-join {
   flex: 0 0 48px;
   color: var(--ink-soft);
@@ -62,7 +63,7 @@
   letter-spacing: .06em;
 }
 .list-group-control { padding-top: 8px; border-top: 1px solid var(--line); }
-.list-group-control select { min-width: 190px; }
+.list-group-control select, .list-group-control .custom-select { min-width: 190px; }
 .bulk-actions {
   flex-wrap: wrap;
   min-height: 46px;
@@ -101,11 +102,6 @@
 .list-controls-disclosure svg {
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .list-controls .column-order {
   min-width: 0;
@@ -137,17 +133,13 @@
 .list-controls .column-order-item button svg {
   width: 15px;
   height: 15px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
 
 @media (max-width: 760px) {
   .list-filter-row { align-items: stretch; flex-wrap: wrap; }
   .list-filter-join { flex-basis: 100%; }
   .list-filter-row select,
+  .list-filter-row .custom-select,
   .list-filter-row input { flex: 1 1 calc(50% - 4px); }
   .list-group-control { align-items: stretch; flex-direction: column; }
   .list-controls-disclosure {

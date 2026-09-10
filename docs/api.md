@@ -49,7 +49,7 @@ Passwords are 12-256 characters when set. Sessions last seven days and are cappe
 | `PATCH /workspaces/:wid/lists/:listId/statuses` | `{statuses: array|null,expectedUpdatedAt?,expectedProjectUpdatedAt?}`; replace explicit statuses or restore project inheritance |
 | `GET /workspaces/:wid/views/list/settings` | Authenticated user's settings; optional `projectId` query, omitted for all projects |
 | `PATCH /workspaces/:wid/views/list/settings` | Replace authenticated user's settings with optimistic concurrency |
-| `GET /workspaces/:wid/export` | Version 4 JSON with workspace hierarchy, documents/pages, tasks, comments, reactions, fields and attachment metadata |
+| `GET /workspaces/:wid/export` | Version 5 JSON with workspace hierarchy, attributed documents/pages, tasks, comments, reactions, fields and attachment metadata |
 
 Projects and standalone lists may be workspace roots. Folders require a project/folder parent; nested lists may use either. Lists contain tasks, not hierarchy nodes. Folder depth is bounded at 32. Names are bounded at 120 characters. Structure mutations require `structure:write`. Export is portable data, not a backup/import format; it excludes credentials, audit history and attachment bytes. Workspace deletion requires the protected Owner role, is permanent, and includes tasks, hierarchy, memberships, roles, fields and automation records. Export needed data first.
 
@@ -61,9 +61,11 @@ Workspace bootstrap is permission-filtered so management-only roles can use Sett
 
 ## Documents
 
-Documents are structural leaves at workspace root or beneath a project/folder. `GET|POST /workspaces/:wid/documents` lists metadata or creates `{title,body?,parentId?}`. `GET|PATCH|DELETE /workspaces/:wid/documents/:id` reads, conditionally updates, or deletes one document. PATCH requires `documents:read`, `documents:write`, at least one mutable field, and the exact `expectedUpdatedAt`; DELETE requires `documents:delete`. Titles are 1-300 characters and Markdown bodies are at most 50,000 characters. Deleting a document removes its page links but preserves every linked task and subtask.
+Documents are structural leaves at workspace root or beneath a project/folder. `GET|POST /workspaces/:wid/documents` lists metadata or creates `{title,body?,parentId?}`. `GET|PATCH|DELETE /workspaces/:wid/documents/:id` reads, conditionally updates, or deletes one document. PATCH requires `documents:read`, `documents:write`, at least one mutable field, and the exact `expectedUpdatedAt`; DELETE requires `documents:delete`. Titles are 1-300 characters and Markdown bodies are at most 50,000 characters. Deleting a document also deletes its nested document-page subtree and removes page links, while preserving every linked task and task subtask.
 
 `GET|POST /workspaces/:wid/documents/:id/pages` lists a bounded virtual page tree or links `{itemId,position?}`. Only an active top-level task can be linked, and one task can belong to at most one document. Its ordinary subtasks appear as nested pages. Listing requires document/task read access and returns `{items,total,truncated}` with at most 500 rendered tasks; totals remain complete. `DELETE /workspaces/:wid/documents/:id/pages/:itemId` requires document write and task read access and unlinks without deleting the task. A linked root task cannot become a subtask until unlinked.
+
+`GET|POST /workspaces/:wid/documents/:id/subpages` lists document-backed pages in the containing root document or creates one with `{title,placement?}`. Placement `page` is accepted only on the root document and creates a top-level Pages-rail entry; the default `subpage` creates beneath the addressed document/page up to the 31-level limit. GET works from either the root or one of its pages and returns `{rootId,documents,total,truncated}` with at most 500 complete summaries, including each entry's `pagePlacement`. Document-backed pages use document permissions and open through the normal document editor.
 
 ## Tasks
 

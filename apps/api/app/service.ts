@@ -488,7 +488,7 @@ export const service = {
       members: canRead || membership.permissions.includes('members:manage') ? await service.listMembers(userId, wid) : [],
       roles: canRead || membership.permissions.some((permission) => permission === 'roles:manage' || permission === 'members:manage') ? await service.listRoles(userId, wid) : [role],
       nodes: canStructure ? await service.listNodes(userId, wid) : [], fields: canTaskStructure ? await service.listFields(userId, wid) : [],
-      documents: canDocuments ? (await import('./documents.js')).documentService.listDocuments(userId, wid) : [],
+      documents: canDocuments ? await (await import('./documents.js')).documentService.listDocuments(userId, wid) : [],
       documentPages: canRead && membership.permissions.includes('documents:read')
         ? await db.all('SELECT documentId,itemId,position FROM document_pages WHERE workspaceId=? ORDER BY position,createdAt,itemId', wid) : [],
       projectFields: canTaskStructure ? await service.listProjectFields(userId, wid) : [],
@@ -1259,9 +1259,10 @@ export const service = {
     return db.transaction(async () => {
       const member = await requirePermission(userId, wid, 'items:read')
       const canReadDocuments = member.permissions.includes('documents:read')
-      return { version: 4, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid),
+      return { version: 5, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid),
         documents: canReadDocuments ? await db.all('SELECT * FROM documents WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
         documentPages: canReadDocuments ? await db.all('SELECT documentId,itemId,position,createdAt FROM document_pages WHERE workspaceId=? ORDER BY documentId,position,createdAt,itemId', wid) : [],
+        documentSubpages: canReadDocuments ? await db.all('SELECT documentId,pageDocumentId,position,placement,createdAt FROM document_subpages WHERE workspaceId=? ORDER BY documentId,position,createdAt,pageDocumentId', wid) : [],
         items: await service.listItems(userId, wid, { archived: 'include' }), fields: await service.listFields(userId, wid),
         projectFields: await service.listProjectFields(userId, wid),
         listStatusConfigs: await service.listListStatusConfigs(userId, wid),

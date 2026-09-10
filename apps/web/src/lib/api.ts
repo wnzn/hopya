@@ -154,8 +154,10 @@ export type DocumentSummary = {
   title: string;
   createdAt: string;
   updatedAt: string;
+  parentDocumentId?: string | null;
+  pagePlacement?: "page" | "subpage" | null;
 };
-export type DocumentRecord = DocumentSummary & { body: string; bodyRevision: number };
+export type DocumentRecord = DocumentSummary & { body: string; bodyRevision: number; createdByName: string | null; updatedByName: string | null };
 export type DocumentPage = { documentId: string; itemId: string; position: number };
 export type Field = {
   id: string;
