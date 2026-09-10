@@ -19,7 +19,7 @@ const paths: Record<NonNullable<TreeNode["icon"]>, string> = {
 };
 
 export default function NodeGlyph({ node, className = "node-glyph" }: { node: Pick<TreeNode, "kind" | "icon" | "color">; className?: string }) {
-  const icon = node.icon || (node.kind === "project" ? "diamond" : node.kind === "folder" ? "folder" : "list");
+  const icon = node.icon || (node.kind === "project" ? "diamond" : node.kind === "folder" ? "folder" : node.kind === "document" ? "bookmark" : "list");
   return <svg className={className} aria-hidden="true" viewBox="0 0 24 24" style={node.color ? { color: colors[node.color] } as CSSProperties : undefined}>
     <path d={paths[icon]} />
   </svg>;

@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Editor } from "@tiptap/core";
+import { Editor, Extension } from "@tiptap/core";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import {
@@ -7,7 +9,9 @@ import {
   htmlToMarkdown,
   isSafeUrl,
   markdownToHtml,
+  selectionAnchor,
 } from "../lib/rich-text";
+import type { CommentAnchor } from "../lib/api";
 
 type Props = {
   value: string;
@@ -17,6 +21,18 @@ type Props = {
   "aria-label"?: string;
   placeholder?: string;
   mentionTargets?: MentionTarget[];
+  onCommentSelection?: (selection: TextSelection) => void;
+  commentRevision?: number;
+  annotations?: CommentAnchor[];
+};
+
+export type TextSelection = {
+  revision: number;
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
 };
 
 export type MentionTarget = {
@@ -70,6 +86,9 @@ export default function RichTextEditor({
   "aria-label": ariaLabel = "Body",
   placeholder = "",
   mentionTargets = [],
+  onCommentSelection,
+  commentRevision = 1,
+  annotations = [],
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -82,12 +101,13 @@ export default function RichTextEditor({
   const [linkUrl, setLinkUrl] = useState("");
   const [limitReached, setLimitReached] = useState(false);
   const [mentionMenu, setMentionMenu] = useState<MentionMenu | null>(null);
+  const [commentSelection, setCommentSelection] = useState<Omit<TextSelection, "revision"> | null>(null);
   const mentionMenuRef = useRef<MentionMenu | null>(null);
   const mentionIndex = useRef(0);
-  const latest = useRef({ value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets });
+  const latest = useRef({ value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations });
 
   useLayoutEffect(() => {
-    latest.current = { value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets };
+    latest.current = { value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations };
   });
 
   function matchingTargets(menu: MentionMenu | null) {
@@ -139,9 +159,30 @@ export default function RichTextEditor({
     if (!mount) return;
     const initial = latest.current;
     lastMarkdown.current = initial.value ?? "";
+    const annotationsExtension = Extension.create({
+      name: "commentAnnotations",
+      addProseMirrorPlugins() {
+        return [new Plugin({
+          key: new PluginKey("commentAnnotations"),
+          props: { decorations(state) {
+            const decorations: Decoration[] = [];
+            for (const annotation of latest.current.annotations.filter(value => value.state === "attached")) {
+              const ranges: { from: number; to: number }[] = [];
+              state.doc.descendants((node, pos) => {
+                if (!node.isText || !node.text) return;
+                let at = node.text.indexOf(annotation.exact);
+                while (at !== -1) { ranges.push({ from: pos + at, to: pos + at + annotation.exact.length }); at = node.text.indexOf(annotation.exact, at + 1); }
+              });
+              if (ranges.length === 1) decorations.push(Decoration.inline(ranges[0].from, ranges[0].to, { class: "comment-highlight" }));
+            }
+            return DecorationSet.create(state.doc, decorations);
+          } },
+        })];
+      },
+    });
     const next = new Editor({
       element: mount,
-      extensions,
+      extensions: [...extensions, annotationsExtension],
       content: markdownToHtml(initial.value ?? ""),
       editable: !initial.readOnly,
       editorProps: {
@@ -206,6 +247,16 @@ export default function RichTextEditor({
       },
       onTransaction: ({ editor: current }) => {
         setTick((tick) => tick + 1);
+        const selection = current.state.selection;
+        if (selection.empty || !latest.current.onCommentSelection) setCommentSelection(null);
+        else {
+          const exact = current.state.doc.textBetween(selection.from, selection.to, "\n", "\n");
+          const anchored = selectionAnchor(latest.current.value, exact, latest.current.commentRevision);
+          setCommentSelection(anchored ? {
+            start: anchored.start, end: anchored.end, exact: anchored.exact,
+            prefix: anchored.prefix, suffix: anchored.suffix,
+          } : null);
+        }
         queueMicrotask(() => { if (!current.isDestroyed) updateMentionMenu(current); });
       },
     });
@@ -235,6 +286,10 @@ export default function RichTextEditor({
     // keyboard-selectable; aria-readonly announces the mutation block.
     editor.view.dom.setAttribute("aria-readonly", String(!!readOnly));
   }, [editor, readOnly]);
+
+  useEffect(() => {
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr);
+  }, [editor, annotations]);
 
   function openLinkRow() {
     if (readOnly || !editor) return;
@@ -286,6 +341,13 @@ export default function RichTextEditor({
       onFocusCapture={() => { if (readOnly) onActivate?.(); }}
     >
         <div className="rich-editor-toolbar" role="group" aria-label="Formatting">
+          {readOnly && onCommentSelection && (
+            <button type="button" disabled={!commentSelection} title={commentSelection ? "Comment on selected text" : "Select text to comment"}
+              onMouseDown={event => event.preventDefault()} onClick={event => {
+                event.stopPropagation();
+                if (commentSelection) onCommentSelection({ revision: commentRevision, ...commentSelection });
+              }}>Comment</button>
+          )}
           {toolbarButton("Bold", "B", editor?.isActive("bold") ?? false, () =>
             editor?.chain().toggleBold().run(),
           )}

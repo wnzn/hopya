@@ -17,6 +17,8 @@ There is no public demo login. If you lose your password or your identity provid
 5. Use a structure entry's **Manage** control to rename it or move a folder/list in the same workspace. Lists may move to workspace root; folders remain inside projects. Contents and workspace permissions stay intact. Cycles and moves beyond the nesting limit are rejected, and a stale move asks you to reload rather than overwrite someone else's placement.
 6. Only empty structure entries can be deleted; deletion is not an automatic recursive purge.
 
+Documents appear as first-class sidebar entries at workspace root or beneath a project/folder. Create one through the same hierarchy action, then edit its title and Markdown body. A document can link existing top-level tasks as pages; those tasks' subtasks appear beneath them as nested pages and retain their normal task fields. Unlinking a page or deleting its document never deletes the task. A project/folder containing a document is not considered empty.
+
 Workspaces are separate permission boundaries, not just visual categories. Being a site administrator does not automatically reveal all task data.
 
 ## Create And Edit
@@ -27,7 +29,7 @@ The **Body** uses the TipTap rich-text editor and is stored as Markdown. Its too
 
 In a task Body or comment, type `@` to mention a workspace member, `@@` to link a task, or `@@@` to link a project, folder, or list. Only user mentions notify, and only active members who can read tasks are offered. New assignments and user mentions appear in the workspace **Inbox** below the workspace picker. Its badge is hidden at zero; Inbox entries can be opened, marked read/unread, or deleted.
 
-Open a task's **Comments** panel to post Markdown comments, reply to comments or replies, and add a reaction. Reply threads retain a deleted marker when a parent is removed. Authors can delete their own comments; workspace roles with `comments:manage` can moderate any comment and permanently remove a deleted marker while retaining its replies. Posting and reacting require task write access, while reading comments requires task read access.
+Open a task or document's **Comments** panel to post Markdown comments, reply, and add a reaction. To comment on a specific saved plain-text word or line, select one unambiguous segment in the read-only body and choose **Comment on selection**. A selection crossing Markdown formatting boundaries may need to be narrowed. Attached ranges are highlighted. If later edits remove the text or make its match ambiguous, the thread remains with its original quote and is marked orphaned. Duplicate selected text cannot be anchored until the selection is unambiguous. Reply threads retain a deleted marker when a parent is removed. Authors can delete their own comments; roles with `comments:manage` can moderate them. Posting and reacting require `comments:create` plus read access to the target.
 
 When you select a project or folder, ordinary creation defaults to a list inside that location, not an unrelated workspace list. If that location has no lists, create one with **Add a list here** (when permitted) or ask a manager. Existing task edits retain their actual list; explicit assistant review can still choose any authorized workspace list.
 
@@ -105,7 +107,7 @@ In the task editor, empty text/number/date/select values clear to an unset value
 
 Owners have protected controls. The last active owner cannot be removed, and a role manager cannot use custom roles to escalate beyond delegated permissions. If you cannot perform an action, ask an owner to review your role rather than trying another UI or token: the API enforces the same boundary.
 
-**Download workspace JSON** exports version 3 task, hierarchy, discussion, reaction, root field-owner, list-configuration, custom-field and attachment-metadata records. In `projectFields`, the historical `projectId` key may identify a root project or standalone root list. Treat the file as private. It does not bundle attachment bytes, user accounts, credentials or all site state, and it is not a restore point. Operators need the [full backup procedure](deployment.md#backup-and-restore).
+**Download workspace JSON** exports version 4 task, hierarchy, document/page, discussion, reaction, root field-owner, list-configuration, custom-field and attachment-metadata records allowed by your current permissions. In `projectFields`, the historical `projectId` key may identify a root project or standalone root list. Treat the file as private. It does not bundle attachment bytes, user accounts, credentials or all site state, and it is not a restore point. Operators need the [full backup procedure](deployment.md#backup-and-restore).
 
 The browser downloads this as a streamed snapshot. Wait for successful download completion; an interrupted stream is not a complete export. Permission revocation, a slow connection or too many simultaneous downloads can stop it. Close redundant downloads and retry only while you still have access.
 

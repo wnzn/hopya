@@ -5,6 +5,7 @@ import { db, audit } from './database.js'
 import { HttpError, permissions, type Permission, type Membership, type Item, type Comment, type Notification } from './types.js'
 import { decodeItem, type ItemRow, itemQuery, itemColumns, pageFilters, decodeCursor, encodeCursor, encodeRecord, PAGE_BYTES, statusId, type ChecklistEntry, type ItemWithSubtasks } from './task_reads.js'
 import { emitEvent } from './automations.js'
+import { anchorColumns, commentAnchorSchema, decodeAnchor, relocateAnchors, validateAnchor } from './comment_anchors.js'
 
 // --- Effect-based validation -------------------------------------------------
 // Fallible internal checks compose as Effects with a single typed failure.
@@ -28,11 +29,19 @@ const findNodeRow = async (wid: string, nodeId: string): Promise<NodeRow> => {
   if (!row) throw new HttpError(404, 'Node not found')
   return row
 }
-// Shared structure-read guard: items:read or structure:write (same rule as before).
+// Hierarchy metadata is visible to task/document readers and structure managers.
 async function requireStructureRead(userId: string, wid: string): Promise<Membership> {
   const member = await requireMembership(userId, wid)
-  if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'structure:write')) throw new HttpError(403, 'Structure access denied')
+  if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'documents:read' || permission === 'documents:write' || permission === 'structure:write')) throw new HttpError(403, 'Structure access denied')
   return member
+}
+async function requireTaskStructureRead(userId: string, wid: string): Promise<Membership> {
+  const member = await requireMembership(userId, wid)
+  if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'structure:write')) throw new HttpError(403, 'Task structure access denied')
+  return member
+}
+export async function lockWorkspaceHierarchy(wid: string) {
+  if (db.dialect === 'pg') await db.get('SELECT pg_advisory_xact_lock(hashtext(?))', wid)
 }
 const id = z.string().uuid()
 const name = z.string().trim().min(1).max(120)
@@ -459,8 +468,8 @@ export const service = {
       await db.run('INSERT INTO workspaces (id,name,createdAt) VALUES (@id,@name,@createdAt)', workspace)
       const ownerId = randomUUID()
       await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', ownerId, workspace.id, 'Owner', JSON.stringify(permissions), 1)
-      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Member', JSON.stringify(['items:read', 'items:write', 'items:delete', 'structure:write', 'agent:use']), 0)
-      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Viewer', JSON.stringify(['items:read']), 0)
+      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Member', JSON.stringify(['items:read', 'items:write', 'items:delete', 'documents:read', 'documents:write', 'documents:delete', 'comments:create', 'structure:write', 'agent:use']), 0)
+      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Viewer', JSON.stringify(['items:read', 'documents:read']), 0)
       await db.run('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)', workspace.id, userId, ownerId)
       await audit(userId, workspace.id, 'workspace.create', workspace.id)
       return workspace
@@ -469,17 +478,22 @@ export const service = {
   async getWorkspace(userId: string, wid: string) {
     const membership = await requireMembership(userId, wid)
     const canRead = membership.permissions.includes('items:read')
-    const canStructure = canRead || membership.permissions.includes('structure:write')
+    const canTaskStructure = canRead || membership.permissions.includes('structure:write')
+    const canDocuments = membership.permissions.some((permission) => permission === 'documents:read' || permission === 'documents:write' || permission === 'structure:write')
+    const canStructure = canTaskStructure || canDocuments
     const role = decodeRole(await roleInWorkspace(wid, membership.roleId))
     return {
       workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid),
       role, permissions: membership.permissions,
       members: canRead || membership.permissions.includes('members:manage') ? await service.listMembers(userId, wid) : [],
       roles: canRead || membership.permissions.some((permission) => permission === 'roles:manage' || permission === 'members:manage') ? await service.listRoles(userId, wid) : [role],
-      nodes: canStructure ? await service.listNodes(userId, wid) : [], fields: canStructure ? await service.listFields(userId, wid) : [],
-      projectFields: canStructure ? await service.listProjectFields(userId, wid) : [],
-      listStatusConfigs: canStructure ? await service.listListStatusConfigs(userId, wid) : [],
-      listTagColorConfigs: canStructure ? await service.listListTagColorConfigs(userId, wid) : [],
+      nodes: canStructure ? await service.listNodes(userId, wid) : [], fields: canTaskStructure ? await service.listFields(userId, wid) : [],
+      documents: canDocuments ? (await import('./documents.js')).documentService.listDocuments(userId, wid) : [],
+      documentPages: canRead && membership.permissions.includes('documents:read')
+        ? await db.all('SELECT documentId,itemId,position FROM document_pages WHERE workspaceId=? ORDER BY position,createdAt,itemId', wid) : [],
+      projectFields: canTaskStructure ? await service.listProjectFields(userId, wid) : [],
+      listStatusConfigs: canTaskStructure ? await service.listListStatusConfigs(userId, wid) : [],
+      listTagColorConfigs: canTaskStructure ? await service.listListTagColorConfigs(userId, wid) : [],
     }
   },
   async updateWorkspace(userId: string, wid: string, input: unknown) {
@@ -495,11 +509,12 @@ export const service = {
     return db.transaction(async () => {
       const member = await requireMembership(userId, wid)
       if (!member.isOwner) throw new HttpError(403, 'Workspace owner required')
-      const counts = await db.get<{ members: number; nodes: number; items: number; attachments: number }>(`SELECT
+      const counts = await db.get<{ members: number; nodes: number; documents: number; items: number; attachments: number }>(`SELECT
         (SELECT count(*) FROM memberships WHERE workspaceId=?) AS members,
         (SELECT count(*) FROM nodes WHERE workspaceId=?) AS nodes,
+        (SELECT count(*) FROM documents WHERE workspaceId=?) AS documents,
         (SELECT count(*) FROM items WHERE workspaceId=?) AS items,
-        (SELECT count(*) FROM attachments WHERE workspaceId=?) AS attachments`, wid, wid, wid, wid)
+        (SELECT count(*) FROM attachments WHERE workspaceId=?) AS attachments`, wid, wid, wid, wid, wid)
       await audit(userId, wid, 'workspace.delete', wid, counts!)
       await db.run('DELETE FROM workspaces WHERE id=?', wid)
       return { success: true }
@@ -513,6 +528,7 @@ export const service = {
     const data = z.object({ name, description: z.string().max(50000).optional(), kind: z.enum(['project', 'folder', 'list']), parentId: id.nullable().default(null), icon: nodeIcon.nullable().default(null), color: nodeColor.nullable().default(null) }).strict().parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'structure:write')
+      await lockWorkspaceHierarchy(wid)
       if (data.description !== undefined && data.kind !== 'project') throw new HttpError(400, 'Only projects accept descriptions')
       if (data.kind === 'project' && data.parentId !== null) throw new HttpError(400, 'Projects cannot have a parent')
       if (data.kind === 'folder' && !data.parentId) throw new HttpError(400, 'Folders require a parent')
@@ -543,6 +559,7 @@ export const service = {
       .refine((value) => value.expectedParentId === undefined || value.parentId !== undefined, 'Parent condition requires a parent mutation').parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'structure:write')
+      await lockWorkspaceHierarchy(wid)
       const previous = await nodeInWorkspace(wid, nodeId)
       if (data.description !== undefined && previous.kind !== 'project') throw new HttpError(400, 'Only projects accept descriptions')
       if (expectedParentId !== undefined && expectedParentId !== previous.parentId) throw new HttpError(409, 'Location changed; reload before moving')
@@ -571,7 +588,10 @@ export const service = {
             SELECT id,0 FROM nodes WHERE workspaceId=? AND id=?
             UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN descendants d ON n.parentId=d.id
             WHERE n.workspaceId=? AND d.depth<32
-          ) SELECT max(depth) AS height FROM descendants`, wid, nodeId, wid))!
+          ) SELECT max(depth) AS height FROM (
+            SELECT depth FROM descendants
+            UNION ALL SELECT d.depth+1 FROM documents doc JOIN descendants d ON doc.parentId=d.id WHERE doc.workspaceId=?
+          ) heights`, wid, nodeId, wid, wid))!
           if (depth + subtree.height > 32) throw new HttpError(400, 'Moving this subtree would exceed the hierarchy depth limit')
           if (await nodeProject(wid, nodeId) !== ancestor.id) await assertInheritedSubtreeStatuses(wid, nodeId, (await projectConfiguration(wid, ancestor.id)).statuses)
         }
@@ -595,8 +615,10 @@ export const service = {
   async deleteNode(userId: string, wid: string, nodeId: string) {
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'structure:write')
+      await lockWorkspaceHierarchy(wid)
       await nodeInWorkspace(wid, nodeId)
       if (await db.get('SELECT id FROM nodes WHERE workspaceId=? AND parentId=? LIMIT 1', wid, nodeId)
+        || await db.get('SELECT id FROM documents WHERE workspaceId=? AND parentId=? LIMIT 1', wid, nodeId)
         || await db.get('SELECT id FROM items WHERE workspaceId=? AND nodeId=? LIMIT 1', wid, nodeId)) throw new HttpError(409, 'Node must be empty before deletion')
       await db.run('DELETE FROM nodes WHERE workspaceId=? AND id=?', wid, nodeId)
       await audit(userId, wid, 'node.delete', nodeId)
@@ -627,7 +649,7 @@ export const service = {
         const size = Buffer.byteLength(encodeRecord(item)) + (items.length ? 1 : 0)
         if (items.length && bytes + size > PAGE_BYTES) return { items, nextCursor: encodeCursor(query.scope, items.at(-1)!) }
         if (bytes + size > PAGE_BYTES) {
-          const { id: _id, workspaceId: _wid, archivedAt: _archived, createdAt: _created, updatedAt: _updated, ...mutable } = item
+          const { id: _id, workspaceId: _wid, bodyRevision: _bodyRevision, archivedAt: _archived, createdAt: _created, updatedAt: _updated, ...mutable } = item
           itemSchema.parse(mutable)
         }
         items.push(item); bytes += size
@@ -655,9 +677,9 @@ export const service = {
       const id = randomUUID()
       const checklist = await validateItem(wid, id, { ...data, status })
       const timestamp = now()
-      const item: ItemWithSubtasks = { id, workspaceId: wid, ...data, status, checklist, archivedAt: null, createdAt: timestamp, updatedAt: timestamp }
-      await db.run(`INSERT INTO items (id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,checklist,parentId,createdAt,updatedAt)
-        VALUES (@id,@workspaceId,@nodeId,@title,@description,@status,@priority,@startDate,@dueDate,@tags,@customFields,@assigneeId,@checklist,@parentId,@createdAt,@updatedAt)`,
+      const item: ItemWithSubtasks = { id, workspaceId: wid, ...data, status, checklist, bodyRevision: 1, archivedAt: null, createdAt: timestamp, updatedAt: timestamp }
+      await db.run(`INSERT INTO items (id,workspaceId,nodeId,title,description,status,priority,startDate,dueDate,tags,customFields,assigneeId,checklist,parentId,bodyRevision,createdAt,updatedAt)
+        VALUES (@id,@workspaceId,@nodeId,@title,@description,@status,@priority,@startDate,@dueDate,@tags,@customFields,@assigneeId,@checklist,@parentId,@bodyRevision,@createdAt,@updatedAt)`,
         { ...item, tags: JSON.stringify(item.tags), customFields: JSON.stringify(item.customFields), checklist: JSON.stringify(item.checklist) })
       await syncItemMentions(userId, wid, item.id, item.description, timestamp)
       if (item.assigneeId) await notify(item.assigneeId, userId, wid, 'assignment', item.id, null, timestamp)
@@ -671,19 +693,25 @@ export const service = {
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'items:read')
       await requirePermission(userId, wid, 'items:write')
+      await db.get(`SELECT id FROM items WHERE workspaceId=? AND id=? ${db.sql({ pg: 'FOR UPDATE', sqlite: '' })}`, wid, itemId)
       const previous = await itemInWorkspace(wid, itemId)
       // Existing clients may omit the condition and retain last-write-wins behavior.
       if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== previous.updatedAt) throw new HttpError(409, 'Item changed; reload before saving')
-      const merged = { ...previous, ...data, updatedAt: nextItemUpdatedAt(previous.updatedAt) }
+      const bodyChanged = data.description !== undefined && data.description !== previous.description
+      if (data.parentId && previous.parentId === null && await db.get('SELECT documentId FROM document_pages WHERE workspaceId=? AND itemId=?', wid, itemId)) {
+        throw new HttpError(409, 'Unlink this document page before making it a subtask')
+      }
+      const merged = { ...previous, ...data, bodyRevision: previous.bodyRevision + Number(bodyChanged), updatedAt: nextItemUpdatedAt(previous.updatedAt) }
       const checklist = await validateItem(wid, itemId, merged, previous)
       const item: ItemWithSubtasks = { ...merged, checklist }
       const itemBindings = { ...item, tags: JSON.stringify(item.tags), customFields: JSON.stringify(item.customFields), checklist: JSON.stringify(item.checklist) }
       const updated = await db.run(`UPDATE items SET nodeId=@nodeId,title=@title,description=@description,status=@status,priority=@priority,
-        startDate=@startDate,dueDate=@dueDate,tags=@tags,customFields=@customFields,assigneeId=@assigneeId,checklist=@checklist,parentId=@parentId,updatedAt=@updatedAt
+        startDate=@startDate,dueDate=@dueDate,tags=@tags,customFields=@customFields,assigneeId=@assigneeId,checklist=@checklist,parentId=@parentId,bodyRevision=@bodyRevision,updatedAt=@updatedAt
         WHERE workspaceId=@workspaceId AND id=@id ${expectedUpdatedAt === undefined ? '' : 'AND updatedAt=@expectedUpdatedAt'}`,
         expectedUpdatedAt === undefined ? itemBindings : { ...itemBindings, expectedUpdatedAt })
       if (!updated.changes) throw new HttpError(409, 'Item changed; reload before saving')
       if (data.description !== undefined) await syncItemMentions(userId, wid, item.id, item.description, item.updatedAt)
+      if (bodyChanged) await relocateAnchors('comments', 'itemId', wid, item.id, item.description, item.bodyRevision)
       if (data.assigneeId !== undefined && item.assigneeId && item.assigneeId !== previous.assigneeId) {
         await notify(item.assigneeId, userId, wid, 'assignment', item.id, null, item.updatedAt)
       }
@@ -713,7 +741,8 @@ export const service = {
     await itemInWorkspace(wid, itemId)
     const comments = await db.all<Comment & Record<string, unknown>>(`SELECT c.id,c.workspaceId,c.itemId,c.authorId,
       CASE WHEN c.authorId IS NULL THEN 'Former member' ELSE COALESCE(u.name,'Former member') END AS authorName,
-      CASE WHEN c.deletedAt IS NULL THEN c.body ELSE '' END AS body,c.parentId,c.createdAt,c.deletedAt
+      CASE WHEN c.deletedAt IS NULL THEN c.body ELSE '' END AS body,c.parentId,c.createdAt,c.deletedAt,
+      c.anchorRevision,c.anchorStart,c.anchorEnd,c.anchorExact,c.anchorPrefix,c.anchorSuffix,c.anchorState
       FROM comments c LEFT JOIN users u ON u.id=c.authorId
       WHERE c.workspaceId=? AND c.itemId=? ORDER BY c.createdAt,c.id`, wid, itemId)
     const reactions = await db.all<{ commentId: string; emoji: string; count: number; reactedByMe: number }>(`SELECT commentId,emoji,count(*) AS count,max(CASE WHEN userId=? THEN 1 ELSE 0 END) AS reactedByMe
@@ -724,14 +753,20 @@ export const service = {
       values.push({ emoji: reaction.emoji, count: reaction.count, reactedByMe: Boolean(reaction.reactedByMe) })
       byComment.set(reaction.commentId, values)
     }
-    return comments.map(comment => ({ ...comment, reactions: byComment.get(comment.id) ?? [] }))
+    return comments.map(comment => ({
+      id: comment.id, workspaceId: comment.workspaceId, itemId: comment.itemId, authorId: comment.authorId, authorName: comment.authorName,
+      body: comment.body, parentId: comment.parentId, anchor: decodeAnchor(comment), reactions: byComment.get(comment.id) ?? [],
+      createdAt: comment.createdAt, deletedAt: comment.deletedAt,
+    }))
   },
   async createComment(userId: string, wid: string, itemId: string, input: unknown): Promise<Comment> {
-    const data = z.object({ body: commentBody, parentId: id.nullable().optional() }).strict().parse(input)
+    const data = z.object({ body: commentBody, parentId: id.nullable().optional(), anchor: commentAnchorSchema.optional() }).strict()
+      .refine((value) => !value.parentId || value.anchor === undefined, 'Replies inherit the root comment anchor').parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'items:read')
-      await requirePermission(userId, wid, 'items:write')
-      await itemInWorkspace(wid, itemId)
+      await requirePermission(userId, wid, 'comments:create')
+      await db.get(`SELECT id FROM items WHERE workspaceId=? AND id=? ${db.sql({ pg: 'FOR UPDATE', sqlite: '' })}`, wid, itemId)
+      const item = await itemInWorkspace(wid, itemId)
       const parentId = data.parentId ?? null
       if (parentId) {
         const parent = (await db.get<{ depth: number | null }>(`WITH RECURSIVE lineage(id,parentId,depth) AS (
@@ -743,15 +778,20 @@ export const service = {
         if (parent.depth >= 32) throw new HttpError(400, 'Comment reply depth cannot exceed 32')
       }
       const mentioned = await activeReadableMentionTargets(wid, mentionedUsers(data.body, wid))
-      const comment = { id: randomUUID(), workspaceId: wid, itemId, authorId: userId, body: data.body, parentId, reactions: [], createdAt: now(), deletedAt: null }
-      await db.run('INSERT INTO comments(id,workspaceId,itemId,authorId,body,parentId,createdAt) VALUES (@id,@workspaceId,@itemId,@authorId,@body,@parentId,@createdAt)', comment)
+      const anchor = data.anchor ? validateAnchor(item.description, item.bodyRevision, data.anchor) : null
+      const comment = { id: randomUUID(), workspaceId: wid, itemId, authorId: userId, body: data.body, parentId, anchor, reactions: [], createdAt: now(), deletedAt: null, ...anchorColumns(anchor) }
+      await db.run(`INSERT INTO comments(id,workspaceId,itemId,authorId,body,parentId,createdAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState)
+        VALUES (@id,@workspaceId,@itemId,@authorId,@body,@parentId,@createdAt,@anchorRevision,@anchorStart,@anchorEnd,@anchorExact,@anchorPrefix,@anchorSuffix,@anchorState)`, comment)
       for (const target of mentioned) {
         await db.run('INSERT INTO comment_mentions(workspaceId,itemId,commentId,userId) VALUES (?,?,?,?)', wid, itemId, comment.id, target)
         await notify(target, userId, wid, 'mention', itemId, comment.id, comment.createdAt)
       }
-      await audit(userId, wid, 'comment.create', comment.id, { itemId, parentId, mentions: mentioned.length })
+      await audit(userId, wid, 'comment.create', comment.id, { itemId, parentId, anchored: anchor !== null, mentions: mentioned.length })
       const author = (await db.get<{ name: string }>('SELECT name FROM users WHERE id=?', userId))!
-      return { ...comment, authorName: author.name }
+      return {
+        id: comment.id, workspaceId: comment.workspaceId, itemId: comment.itemId, authorId: comment.authorId, authorName: author.name,
+        body: comment.body, parentId: comment.parentId, anchor, reactions: [], createdAt: comment.createdAt, deletedAt: comment.deletedAt,
+      }
     })
   },
   async deleteComment(userId: string, wid: string, itemId: string, commentId: string) {
@@ -779,7 +819,7 @@ export const service = {
     const data = z.object({ emoji: commentReactionEmoji, active: z.boolean() }).strict().parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'items:read')
-      await requirePermission(userId, wid, 'items:write')
+      await requirePermission(userId, wid, 'comments:create')
       await itemInWorkspace(wid, itemId)
       const comment = await db.get<{ deletedAt: string | null }>('SELECT deletedAt FROM comments WHERE workspaceId=? AND itemId=? AND id=?', wid, itemId, commentId)
       if (!comment) throw new HttpError(404, 'Comment not found')
@@ -877,22 +917,25 @@ export const service = {
     })
   },
   async listFields(userId: string, wid: string) {
-    await requireStructureRead(userId, wid)
+    await requireTaskStructureRead(userId, wid)
     return (await db.all<FieldRow>('SELECT * FROM fields WHERE workspaceId=? ORDER BY name,id', wid)).map(decodeField)
   },
   async listProjectFields(userId: string, wid: string): Promise<ProjectFieldConfiguration[]> {
+    await requireTaskStructureRead(userId, wid)
     const nodes = (await service.listNodes(userId, wid)).filter((node) => node.parentId === null && (node.kind === 'project' || node.kind === 'list'))
     const configurations: ProjectFieldConfiguration[] = []
     for (const node of nodes) configurations.push(await projectConfiguration(wid, node.id))
     return configurations
   },
   async listListStatusConfigs(userId: string, wid: string): Promise<ListStatusConfiguration[]> {
+    await requireTaskStructureRead(userId, wid)
     const nodes = (await service.listNodes(userId, wid)).filter((node) => node.kind === 'list')
     const configurations: ListStatusConfiguration[] = []
     for (const node of nodes) configurations.push(await listStatusConfiguration(wid, node.id))
     return configurations
   },
   async listListTagColorConfigs(userId: string, wid: string): Promise<ListTagColorConfiguration[]> {
+    await requireTaskStructureRead(userId, wid)
     const nodes = (await service.listNodes(userId, wid)).filter((node) => node.kind === 'list')
     const configurations: ListTagColorConfiguration[] = []
     for (const node of nodes) configurations.push(await listTagColorConfiguration(wid, node.id))
@@ -942,7 +985,7 @@ export const service = {
     })
   },
   async getListStatuses(userId: string, wid: string, listId: string): Promise<ListStatusConfiguration> {
-    await requireStructureRead(userId, wid)
+    await requireTaskStructureRead(userId, wid)
     return listStatusConfiguration(wid, id.parse(listId))
   },
   async updateListStatuses(userId: string, wid: string, listId: string, input: unknown): Promise<ListStatusConfiguration> {
@@ -973,7 +1016,7 @@ export const service = {
     })
   },
   async getListTagColors(userId: string, wid: string, listId: string): Promise<ListTagColorConfiguration> {
-    await requireStructureRead(userId, wid)
+    await requireTaskStructureRead(userId, wid)
     return listTagColorConfiguration(wid, id.parse(listId))
   },
   async updateListTagColors(userId: string, wid: string, listId: string, input: unknown): Promise<ListTagColorConfiguration> {
@@ -993,7 +1036,7 @@ export const service = {
     })
   },
   async getProjectFields(userId: string, wid: string, projectId: string): Promise<ProjectFieldConfiguration> {
-    await requireStructureRead(userId, wid)
+    await requireTaskStructureRead(userId, wid)
     return projectConfiguration(wid, id.parse(projectId))
   },
   async updateProjectFields(userId: string, wid: string, projectId: string, input: unknown): Promise<ProjectFieldConfiguration> {
@@ -1214,13 +1257,19 @@ export const service = {
   },
   async exportWorkspace(userId: string, wid: string) {
     return db.transaction(async () => {
-      await requirePermission(userId, wid, 'items:read')
-      return { version: 3, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid), items: await service.listItems(userId, wid, { archived: 'include' }), fields: await service.listFields(userId, wid),
+      const member = await requirePermission(userId, wid, 'items:read')
+      const canReadDocuments = member.permissions.includes('documents:read')
+      return { version: 4, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid),
+        documents: canReadDocuments ? await db.all('SELECT * FROM documents WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
+        documentPages: canReadDocuments ? await db.all('SELECT documentId,itemId,position,createdAt FROM document_pages WHERE workspaceId=? ORDER BY documentId,position,createdAt,itemId', wid) : [],
+        items: await service.listItems(userId, wid, { archived: 'include' }), fields: await service.listFields(userId, wid),
         projectFields: await service.listProjectFields(userId, wid),
         listStatusConfigs: await service.listListStatusConfigs(userId, wid),
         listTagColorConfigs: await service.listListTagColorConfigs(userId, wid),
-        comments: await db.all('SELECT id,itemId,authorId,body,parentId,createdAt,deletedAt FROM comments WHERE workspaceId=? ORDER BY createdAt,id', wid),
+        comments: await db.all('SELECT id,itemId,authorId,body,parentId,createdAt,deletedAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState FROM comments WHERE workspaceId=? ORDER BY createdAt,id', wid),
         commentReactions: await db.all('SELECT itemId,commentId,userId,emoji,createdAt FROM comment_reactions WHERE workspaceId=? ORDER BY createdAt,commentId,userId,emoji', wid),
+        documentComments: canReadDocuments ? await db.all('SELECT id,documentId,authorId,body,parentId,createdAt,deletedAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState FROM document_comments WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
+        documentCommentReactions: canReadDocuments ? await db.all('SELECT documentId,commentId,userId,emoji,createdAt FROM document_comment_reactions WHERE workspaceId=? ORDER BY createdAt,commentId,userId,emoji', wid) : [],
         attachments: await db.all('SELECT id,itemId,name,size,contentType,createdAt FROM attachments WHERE workspaceId=? ORDER BY createdAt,id', wid) }
     })
   },

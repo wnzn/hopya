@@ -82,11 +82,12 @@ export default function StructureEditor({
   const [error, setError] = useState("");
   const nodeKind = node?.kind || kind;
   const isProject = nodeKind === "project";
+  const isDocument = nodeKind === "document";
   const canHaveParent = !isProject;
   const requiresParent = nodeKind === "folder";
   const nodesById = new Map(detail.nodes.map((n) => [n.id, n]));
   const parents = detail.nodes.flatMap((candidate) => {
-    if (candidate.kind === "list") return [];
+    if (candidate.kind === "list" || candidate.kind === "document") return [];
     const path: string[] = [];
     const seen = new Set<string>();
     let ancestor: TreeNode | undefined = candidate;
@@ -142,6 +143,17 @@ export default function StructureEditor({
     setBusy(true);
     setError("");
     try {
+      if (isDocument) {
+        await api(
+          `${workspacePath(detail.workspace.id)}/documents${node ? `/${node.id}` : ""}`,
+          node ? "PATCH" : "POST",
+          node
+            ? { title: name.trim(), parentId: parentId || null, expectedUpdatedAt: node.updatedAt }
+            : { title: name.trim(), body: "", parentId: parentId || null },
+        );
+        onSaved();
+        return;
+      }
       await api(
         `${workspacePath(detail.workspace.id)}/nodes${node ? `/${node.id}` : ""}`,
         node ? "PATCH" : "POST",
@@ -171,7 +183,7 @@ export default function StructureEditor({
     setError("");
     try {
       await api(
-        `${workspacePath(detail.workspace.id)}/nodes/${node!.id}`,
+        `${workspacePath(detail.workspace.id)}/${node!.kind === "document" ? "documents" : "nodes"}/${node!.id}`,
         "DELETE",
       );
       onSaved();
@@ -189,7 +201,7 @@ export default function StructureEditor({
     >
       <ErrorNotice error={error} />
       <p className="muted">
-        Projects may hold folders and lists. Standalone lists may also live at the workspace root.
+        Projects may hold folders, lists, and documents. Lists and documents may also live at the workspace root.
       </p>
       <form className="stack" onSubmit={submit}>
         <label>
@@ -199,7 +211,7 @@ export default function StructureEditor({
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            maxLength={120}
+            maxLength={kind === "document" || node?.kind === "document" ? 300 : 120}
           />
         </label>
         {!node && (
@@ -215,10 +227,11 @@ export default function StructureEditor({
               <option value="project">Project</option>
               <option value="folder">Folder</option>
               <option value="list">List</option>
+              <option value="document">Document</option>
             </select>
           </label>
         )}
-        <fieldset className="appearance-fields">
+        {!isDocument && <fieldset className="appearance-fields">
           <legend>Appearance</legend>
           <NodeGlyph node={{ kind: node?.kind || kind, icon, color }} className="node-glyph node-glyph-preview" />
           <label>Icon<select value={icon || ""} onChange={event => setIcon(event.target.value ? event.target.value as NonNullable<TreeNode["icon"]> : null)}>
@@ -229,7 +242,7 @@ export default function StructureEditor({
             <option value="">Default</option>
             {nodeColors.map(value => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
           </select></label>
-        </fieldset>
+        </fieldset>}
         {isProject && (
           <label>
             Project description
@@ -246,7 +259,7 @@ export default function StructureEditor({
               value={parentId}
               onChange={(e) => setParentId(e.target.value)}
             >
-              <option value="">{nodeKind === "list" ? "Workspace root (standalone list)" : "Choose a parent"}</option>
+              <option value="">{nodeKind === "list" ? "Workspace root (standalone list)" : nodeKind === "document" ? "Workspace root" : "Choose a parent"}</option>
               {parents.map((n) => (
                 <option key={n.id} value={n.id}>
                   {n.label}
@@ -256,12 +269,12 @@ export default function StructureEditor({
             </select>
             <small>
               {node
-                ? nodeKind === "list"
+                  ? nodeKind === "list"
                   ? "A standalone list keeps its contents, permissions, and list-specific statuses."
-                  : "Moving keeps all contents and the same workspace permissions."
+                  : nodeKind === "document" ? "Moving preserves the document body, comments, and linked task pages." : "Moving keeps all contents and the same workspace permissions."
                 : detail.nodes.length === 0
                   ? nodeKind === "list" ? "Create this list at the workspace root." : "Create a project before adding a folder."
-                  : nodeKind === "list" ? "Choose a project or folder, or keep the list at workspace root." : "Folders may nest inside projects or other folders."}
+                   : nodeKind === "list" ? "Choose a project or folder, or keep the list at workspace root." : nodeKind === "document" ? "Choose a project or folder, or keep the document at workspace root." : "Folders may nest inside projects or other folders."}
             </small>
           </label>
         )}
