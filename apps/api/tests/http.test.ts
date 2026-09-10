@@ -153,7 +153,9 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal(status.status, 200)
     assert.deepEqual(status.data.migrations.map((migration: { name: string }) => migration.name), [
       'database/migrations/0000_baseline',
+      'database/migrations/0001_automation_graphs',
       'database/migrations/0001_documents_and_inline_comments',
+      'database/migrations/0002_automation_linear_compatibility',
       'database/migrations/0002_document_subpages',
       'database/migrations/0003_document_attribution',
       'database/migrations/0004_restore_document_subpages',

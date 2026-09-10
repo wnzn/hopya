@@ -24,6 +24,10 @@ test('Docker initialization generates independent private secrets and keeps inte
   assert.match(data.APP_KEY, /^[a-f0-9]{64}$/)
   assert.match(data.SETUP_TOKEN, /^[a-f0-9]{64}$/)
   assert.notEqual(data.APP_KEY, data.SETUP_TOKEN)
+  const keyring = JSON.parse(data.AUTOMATION_KEYRING!) as { active: string; keys: Record<string, string> }
+  assert.equal(Object.keys(keyring.keys).length, 1)
+  assert.match(keyring.keys[keyring.active]!, /^[A-Za-z0-9+/]{43}=$/)
+  assert.equal(Buffer.from(keyring.keys[keyring.active]!, 'base64').length, 32)
   assert.equal((await lstat(result.path)).mode & 0o777, 0o600)
   assert.equal(data.APP_URL, 'http://localhost:8088')
   assert.equal(data.HTTP_PORT, '8088')
@@ -113,7 +117,8 @@ test('the dependency-free CLI supports help, private initialization and safe dup
   await assert.rejects(lstat(join(root, '.env')), { code: 'ENOENT' })
   const output = await execute(process.execPath, ['--experimental-strip-types', script, '--development', '--port', '4329'], { cwd: root, env })
   const data = parseEnv(await readFile(join(root, '.env'), 'utf8'))
-  const secrets = [data.APP_KEY, data.SETUP_TOKEN, data.POSTGRES_PASSWORD]
+  const keyring = JSON.parse(data.AUTOMATION_KEYRING!) as { active: string; keys: Record<string, string> }
+  const secrets = [data.APP_KEY, data.SETUP_TOKEN, data.POSTGRES_PASSWORD, data.AUTOMATION_KEYRING, keyring.keys[keyring.active]]
   assert.ok(secrets.every(Boolean))
   assert.match(output.stdout, /no accounts were created/)
   for (const secret of secrets) assert.equal((output.stdout + output.stderr).includes(secret!), false)
@@ -142,8 +147,8 @@ test('a credential-bearing example is rejected without disclosing or publishing 
   const script = join(root, 'ops/init-env.ts')
   await copyFile(fileURLToPath(new URL('./init-env.ts', import.meta.url)), script)
   const template = await readFile(new URL('../.env.example', import.meta.url), 'utf8')
-  const marker = 'private-provider-key-fixture'
-  await writeFile(join(root, '.env.example'), template.replace(/^AI_API_KEY=.*$/m, `AI_API_KEY=${marker}`))
+  const marker = 'private-automation-keyring-fixture'
+  await writeFile(join(root, '.env.example'), template.replace(/^AUTOMATION_KEYRING=.*$/m, `AUTOMATION_KEYRING=${marker}`))
   await writeFile(join(root, 'package.json'), '{"type":"module"}')
   await assert.rejects(execute(process.execPath, ['--experimental-strip-types', script], { cwd: root, env: { PATH: process.env.PATH, HOME: root } }), (error: unknown) => {
     const output = error as { stdout: string; stderr: string }

@@ -171,7 +171,7 @@ Columns are unique and bounded to the always-available `title`, `status`, `assig
 
 Formula values remain raw strings, at most 200 characters with 20 references. New/changed references use exact sibling custom-field names in `{{Name}}` and cannot refer to the formula itself. Quoted reference-looking text is literal. Removing an input field does not block unrelated edits to an unchanged saved formula. Display evaluation supports arithmetic, comparisons, quoted strings, and SUM/AVERAGE/MIN/MAX/ROUND/ABS/IF/CONCAT with bounded nesting and no JavaScript execution. Raw values are retained in REST and exports; missing references, malformed expressions and non-finite results display the raw expression rather than inventing a result. Referenced formula strings are not recursively evaluated.
 
-Roles use `GET|POST /workspaces/:wid/roles` and `PATCH|DELETE /workspaces/:wid/roles/:id`, with `{name,permissions}`. Permissions are `items:read`, `items:write`, `items:delete`, `documents:read`, `documents:write`, `documents:delete`, `comments:create`, `comments:manage`, `structure:write`, `members:manage`, `roles:manage`, `workspace:manage`, `agent:use`. Owner is immutable and receives all permissions. Role managers cannot grant or manage privileges above their own; assigned roles cannot be deleted.
+Roles use `GET|POST /workspaces/:wid/roles` and `PATCH|DELETE /workspaces/:wid/roles/:id`, with `{name,permissions}`. Permissions are `items:read`, `items:write`, `items:delete`, `documents:read`, `documents:write`, `documents:delete`, `comments:create`, `comments:manage`, `structure:write`, `members:manage`, `roles:manage`, `workspace:manage`, `automations:manage`, `credentials:manage`, `agent:use`. Owner is immutable and receives all permissions. Role managers cannot grant or manage privileges above their own; assigned roles cannot be deleted. Existing roles with `workspace:manage` receive both new automation permissions during migration.
 
 Membership creation is `POST /workspaces/:wid/members` with `{email,roleId}` for an existing active account. `PATCH /workspaces/:wid/members/:userId` changes `{roleId}`; DELETE removes a member and clears task assignments. Normal membership changes cannot remove the last active Owner. Site-admin security suspension is deliberately exempt and retains ownership for recovery.
 
@@ -189,15 +189,59 @@ All `/admin/*` endpoints require `isAdmin`, not a workspace role. Site administr
 
 ## Integrations And Automations
 
-All `/workspaces/:wid/webhooks` and `/automations` endpoints require `workspace:manage`. Workspace events are `item.created`, `item.updated`, `item.deleted`, `node.created`, `node.updated`, `node.deleted` and `field.changed`, emitted after mutation transactions commit. The user manual renders `GET /api/v1/openapi.json` at `/docs`.
+Workspace events are `item.created`, `item.updated`, `item.deleted`, `node.created`, `node.updated`, `node.deleted` and `field.changed`. Matching run rows enqueue atomically with the event-producing mutation. Webhook administration still requires `workspace:manage`; all automation routes (including legacy CRUD, catalog, drafts, validation, publication, versions, previews, tests and runs) require both `automations:manage` and `items:read`. Credential routes have separate permissions: mutation/OAuth requires `credentials:manage`, while metadata reads require either `automations:manage` or `credentials:manage`, without an additional `items:read` requirement. Every ID remains workspace-scoped.
 
-- `GET|POST /workspaces/:wid/webhooks`: list `{id,name,url,events,enabled,createdAt,updatedAt}` (secrets never returned) or create `{name,url,events,enabled?}` (max 20 per workspace; URL must be http(s)). The creation and rotation responses return the signing secret once; rotate it with `POST /workspaces/:wid/webhooks/:id/rotate`.
-- `PATCH|DELETE /workspaces/:wid/webhooks/:id`: update name, URL, events or enabled; delete. Audits record event names only.
-- Enabled webhooks receive `POST` JSON `{event,workspaceId,itemId?,nodeId?,fieldId?,actorId?,changes?,item?,at}` with `x-hopya-signature: sha256=HMAC(secret, body)`.
-- `GET|POST /workspaces/:wid/automations`: list or create `{name,event,steps,enabled?}` (max 50 per workspace). `steps` contains 1-20 ordered provider actions. The legacy singular `action` input remains accepted for existing clients, but cannot be combined with `steps`.
-- `PATCH|DELETE /workspaces/:wid/automations/:id`: update or delete an automation.
-- `GET /workspaces/:wid/automations/runs?limit=&automationId=&status=`: up to 100 recent durable runs, newest first. `GET /workspaces/:wid/automations/runs/:runId` returns one workspace-scoped run. Responses include bounded sanitized detail and ordered step records with `pending|running|delivered|failed|skipped` status, output/log and timestamps. `POST /workspaces/:wid/automations/:id/test` queues a real test run and returns its ID.
-- Automation step providers (validated at save time): `webhook` (`{url,method?}` posts event JSON), `email` (`{to,subject}`; requires operator `SMTP_URL` and an available mail adapter), `http` (`{url,method?,headers?,body?}` supporting `{{event}}`; defaults to event JSON), and non-mutating `log` (`{message}`). Later step strings may reference bounded output from an earlier step with `{{steps.1.output}}`; forward/self references are rejected. HTTP/webhook response bodies are read only to the output cap. Header maps, event snapshots, output, logs, time, concurrency, run retention, and URLs are bounded. Runs enqueue in the triggering transaction, survive restarts, execute sequentially, and skip remaining steps after failure without rolling back the triggering user mutation.
+### Workspace Webhooks
+
+- `GET|POST /workspaces/:wid/webhooks`: list safe metadata or create `{name,url,events,enabled?}` (maximum 20). Creation returns the new secret once and sets `signingVersion:2`.
+- `PATCH|DELETE /workspaces/:wid/webhooks/:id`: update name, URL, events or enabled; delete. `POST /workspaces/:wid/webhooks/:id/rotate` returns a replacement secret once and upgrades signing to version 2.
+- Version 2 posts the exact JSON event body with `x-hopya-signature: sha256=<hex HMAC-SHA256(secret, body)>`. Rows that existed before migration retain `signingVersion:1` and the historical `sha256(secret + "." + body)` digest until rotated. Consumers must select verification by the returned signing version rather than treating the legacy digest as HMAC. The outbound transport rejects all 3xx responses for both signing versions, legacy linear requests and graph requests. This intentional security hardening breaks compatibility with redirect-dependent destinations to prevent forwarding payloads or secrets beyond the checked destination. Configure the final endpoint URL directly; rotation is not required for redirect rejection.
+
+### Versioned Automation Graphs
+
+`GET|POST /workspaces/:wid/automations` and `PATCH|DELETE /workspaces/:wid/automations/:id` remain the compatibility surface. Creation accepts `{name,event,steps,enabled?}` or singular `action` (maximum 50 automations; 1-20 steps), creates a versioned linear graph, and preserves `{{steps.N.output}}`. Existing linear versions retain ordered-step execution, subject to the hardened no-redirect transport policy above. Listing marks a current graph version with `graph:true`; a graph version cannot be replaced through legacy `action`/`steps` PATCH, and its trigger event changes only through draft publication. Name and enabled state remain patchable. Changing a linear trigger through PATCH creates a new immutable linear version.
+
+Migration `0002_automation_linear_compatibility` preserves linear representations larger than the graph-only 256 KiB storage limit and repairs HTTP-body `{{event}}` references to `{{nodes.<triggerId>.output.event}}` in derived linear representations. Original step configurations, queued runs, published graph versions, credential bindings and user-edited drafts are preserved; graph publication still enforces graph limits.
+
+| Method and path | Input / result |
+| --- | --- |
+| `GET /workspaces/:wid/automations/catalog` | Typed trigger outputs, node input/output/config manifests, events and graph limits |
+| `GET /workspaces/:wid/automations/:id/draft` | Saved `{revision,graph,updatedAt}` or revision 0 initialized from the current published version |
+| `PUT /workspaces/:wid/automations/:id/draft` | `{expectedRevision,graph}`; saves even when structurally invalid, returns validation, and rejects stale revisions with `409` |
+| `POST /workspaces/:wid/automations/:id/validate` | Optional `{graph}`; otherwise validates the saved draft, including credential availability and destination binding |
+| `POST /workspaces/:wid/automations/:id/publish` | `{expectedRevision}`; validates and publishes one immutable version, records publisher/credential references, updates the trigger event, retains the draft and advances its revision by one; returns the published version |
+| `GET /workspaces/:wid/automations/:id/versions` | Newest-first `{version,format,publisherId,publishedAt}` metadata |
+| `GET /workspaces/:wid/automations/:id/versions/:version` | `{version,format,graph,publisherId,publishedAt}` |
+| `POST /workspaces/:wid/automations/:id/preview` | `{graph?,event?,mockOutputs?}`; returns `{valid,errors,path,uncertain}` with `effect:"none"`; unresolved output-dependent branches are reported as uncertain and no HTTP, email, log or task mutation runs |
+| `POST /workspaces/:wid/automations/:id/test` | Queues a real run of the current published version and returns `{ok,event,runId,status:"pending"}`; configured effects can execute. A graph containing any `update_item` node is rejected with `400` before enqueueing because the synthetic event has no triggering task |
+| `GET /workspaces/:wid/automations/runs` | Filters `limit` 1-100, optional automation UUID and `pending|running|delivered|failed`; returns newest durable runs |
+| `GET /workspaces/:wid/automations/runs/:runId` | One run with bounded sanitized `steps` and/or graph `nodes`; raw event and causation are omitted |
+
+A graph is `{nodes,edges}` with one `trigger`; action nodes are `http`, `webhook`, `email`, `log`, `update_item`, and controls are `condition`, `switch`. Conditions support `equals|not_equals|exists|contains` and require `true`/`false` edges. Switches allow 1-20 scalar cases plus a default branch. Graphs must be acyclic, fully reachable and exclusively branched: ordinary nodes have at most one outgoing edge, only one selected path executes, and converging paths have no parallel/join synchronization semantics. Limits are 50 nodes, 75 edges, 256 KiB per graph, 32 KiB per node config and 50 visited execution nodes.
+
+The catalog's typed manifests drive data discovery. Event templates use `{{event.<path>}}`; upstream values use stable node IDs as `{{nodes.<nodeId>.output.<path>}}`, and control paths use `nodes.<nodeId>.output.<path>`. Publication rejects unknown, self, downstream or branch-optional references that are not guaranteed upstream. HTTP/webhook methods, recipient/header/body sizes, response output, logs, execution time and retention are bounded; automatic redirects are rejected for graph HTTP/webhook requests.
+
+Draft revisions increase monotonically across saves and publish cycles; publication does not reset the draft to revision 0. Re-read the retained draft after publishing to obtain its current revision for the next save or publication. Stale saves and publications return `409`; queued and active runs keep their immutable version.
+
+Graph execution checks the recorded publisher's current workspace membership and `items:read` before execution and again before every node, including nodes that only read or send event data. A missing/deleted publisher or loss of task-read access fails closed. `update_item` patches only the triggering `itemId` as that publisher, not the event actor or test caller, and additionally rechecks `items:read` and `items:write` immediately before mutation; ordinary task validation still applies. Nested automation causation is capped at depth five and the same automation cannot re-enter its own causation chain.
+
+### Automation Credentials
+
+Credential types are `bearer`, `api_key`, `basic`, `custom_headers` and `oauth2`. Responses contain only `{id,name,type,origin,pathPrefix,version,status,createdAt,updatedAt}`. Secrets are write-only: they are accepted on create/replacement, encrypted by the API and never returned, exported or included in run responses.
+
+| Method and path | Input / result |
+| --- | --- |
+| `GET /workspaces/:wid/automations/credentials` | Safe workspace credential metadata; requires either management permission |
+| `GET /workspaces/:wid/automations/credentials/:id` | One safe metadata record |
+| `POST /workspaces/:wid/automations/credentials` | `{name,type,origin,pathPrefix?,secret}`; creates version 1 |
+| `PUT /workspaces/:wid/automations/credentials/:id` | `{expectedVersion,name?,secret}`; replaces the complete write-only secret and rejects stale versions |
+| `DELETE /workspaces/:wid/automations/credentials/:id` | Revokes the profile; published uses then fail |
+| `POST /workspaces/:wid/automations/credentials/:id/oauth/start` | Returns `{authorizationUrl,expiresAt}` for a ten-minute authorization-code PKCE S256 flow |
+| `GET /workspaces/:wid/automations/credentials/:id/oauth/callback` | Consumes authenticated `state` and `code`, exchanges the code, versions the encrypted tokens, then redirects to `/integrations?oauth=connected` |
+
+Secret shapes are bearer `{token}`, API key `{name,value}` (header only), basic `{username,password}`, custom headers `{headers}`, and OAuth 2.0 `{authorizationUrl,tokenUrl,clientId,clientSecret?,scopes[],accessToken?,refreshToken?,expiresAt?}`. OAuth state is stored only as a hash, the verifier is encrypted, and refresh updates the credential version. This is an implemented generic authorization-code/PKCE client, not a claim that any external provider has been verified.
+
+The credential `origin` must be exactly scheme, host and optional port; `pathPrefix`, when set, permits only that exact path or descendants. DNS/address checks apply at validation and dispatch. Private RFC1918/IPv6 ULA destinations are allowed, but unspecified, loopback, link-local, IPv4 multicast/reserved (`224.0.0.0/4` and above), IPv6 multicast, and mapped loopback/link-local forms are blocked. Public credential destinations require HTTPS. Operator `AUTOMATION_NETWORK_EXCEPTIONS` entries bypass address/HTTPS blocks only for an exact origin; they do not bypass credential origin/path binding or enable redirects. A missing/invalid `AUTOMATION_KEYRING` returns an explicit `503` from credential-dependent operations while ordinary task APIs remain operational.
 
 ## Task Import And Export
 

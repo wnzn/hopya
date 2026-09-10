@@ -1,4 +1,4 @@
-export const permissions = ['items:read', 'items:write', 'items:delete', 'documents:read', 'documents:write', 'documents:delete', 'comments:create', 'comments:manage', 'structure:write', 'members:manage', 'roles:manage', 'workspace:manage', 'agent:use'] as const
+export const permissions = ['items:read', 'items:write', 'items:delete', 'documents:read', 'documents:write', 'documents:delete', 'comments:create', 'comments:manage', 'structure:write', 'members:manage', 'roles:manage', 'workspace:manage', 'automations:manage', 'credentials:manage', 'agent:use'] as const
 export type Permission = typeof permissions[number]
 export interface User { id: string; name: string; email: string; isAdmin: boolean }
 export interface UserRow { id: string; name: string; email: string; isAdmin: number; disabled: number; passwordHash: string | null; createdAt: string }

@@ -14,6 +14,7 @@ Hopya is a self-hosted task manager for teams that want a private, straightforwa
 - Private attachments on local storage or an optional S3-compatible service
 - Local accounts, optional OIDC sign-in, password recovery, revocable API tokens, and audit records
 - JSON/CSV task import and export, plus complete workspace JSON exports
+- Versioned graphical automation graphs with conditional routing, write-only credential profiles, run monitoring, and legacy linear compatibility
 - Optional webhook, email, HTTP automation, AI-assisted proposals, and MCP access
 - Responsive layouts and keyboard-accessible controls
 
@@ -78,6 +79,8 @@ The generated `.env` contains the required private values. Keep it out of Git an
 | `APP_URL` | Exact browser origin, including HTTPS and a nonstandard port if used |
 | `APP_KEY` | Stable application secret; changing it invalidates signed state |
 | `SETUP_TOKEN` | One-time secret used to create the first administrator |
+| `AUTOMATION_KEYRING` | API-only encryption keys for optional write-only automation credentials |
+| `AUTOMATION_NETWORK_EXCEPTIONS` | Exact origins exempted from default automation destination restrictions |
 | `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Enable the optional public landing page; off by default |
 | `REGISTRATION_ENABLED` | Allow public local-account registration; off by default |

@@ -24,6 +24,7 @@
     "@tiptap/extension-link": "^3.31.3",
     "@tiptap/pm": "^3.31.3",
     "@tiptap/starter-kit": "^3.31.3",
+    "@xyflow/react": "^12.11.6",
     "astro": "^7.3.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
