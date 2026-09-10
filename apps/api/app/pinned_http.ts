@@ -65,9 +65,12 @@ export function pinnedRequestEffect(destination: PinnedDestination, options: { m
     const client = url.protocol === 'https:' ? https : http
     let settled = false, response: http.IncomingMessage | undefined
     let request: http.ClientRequest, deadline: NodeJS.Timeout
-    let onData = (_chunk: Buffer) => {}, onEnd = () => {}, onResponseError = () => {}
+    let onData = (_chunk: Buffer) => {}, onEnd = () => {}
+    const onResponseError = () => finish(Effect.fail(new OutboundFailure('Outbound response failed')), true)
     const onResponse = (incoming: http.IncomingMessage) => {
       response = incoming
+      response.on('error', onResponseError)
+      response.once('close', () => incoming.removeListener('error', onResponseError))
       const status = response.statusCode ?? 0
       if (status >= 300 && status < 400) { finish(Effect.fail(new OutboundFailure('Outbound redirects are not allowed')), true); return }
       const chunks: Buffer[] = []; let size = 0
@@ -79,14 +82,14 @@ export function pinnedRequestEffect(destination: PinnedDestination, options: { m
           : Effect.fail(new OutboundFailure('Outbound response is too large')), true)
       }
       onEnd = () => finish(Effect.succeed({ status, headers: response!.headers, body: Buffer.concat(chunks, size) }))
-      onResponseError = () => finish(Effect.fail(new OutboundFailure('Outbound response failed')), true)
-      response.on('data', onData); response.once('end', onEnd); response.once('error', onResponseError)
+      response.on('data', onData); response.once('end', onEnd)
     }
     const onRequestError = () => finish(Effect.fail(new OutboundFailure('Outbound request failed')), true)
     const onSocketTimeout = () => finish(Effect.fail(new OutboundFailure('Outbound request timed out')), true)
     const cleanup = () => {
-      clearTimeout(deadline); request.setTimeout(0); request.removeListener('response', onResponse); request.removeListener('error', onRequestError); request.removeListener('timeout', onSocketTimeout)
-      response?.removeListener('data', onData); response?.removeListener('end', onEnd); response?.removeListener('error', onResponseError)
+      // Destruction can emit an asynchronous error; retain error handlers until close.
+      clearTimeout(deadline); request.setTimeout(0); request.removeListener('response', onResponse); request.removeListener('timeout', onSocketTimeout)
+      response?.removeListener('data', onData); response?.removeListener('end', onEnd)
     }
     function finish<A>(effect: Effect.Effect<A, OutboundFailure>, destroy = false) {
       if (settled) return
@@ -94,8 +97,10 @@ export function pinnedRequestEffect(destination: PinnedDestination, options: { m
       if (destroy) { response?.destroy(); request.destroy() }
       resume(effect as Effect.Effect<PinnedResponse, OutboundFailure>)
     }
-    request = client.request(url, { method: options.method ?? 'GET', headers: options.headers, lookup, ...(url.protocol === 'https:' ? { servername: url.hostname, checkServerIdentity } : {}) })
-    request.once('response', onResponse); request.setTimeout(options.timeoutMs ?? 15_000); request.once('timeout', onSocketTimeout); request.once('error', onRequestError)
+    // One socket per pin; a pooled socket could belong to an earlier DNS resolution.
+    request = client.request(url, { method: options.method ?? 'GET', headers: options.headers, lookup, family, agent: false, ...(url.protocol === 'https:' ? { servername: url.hostname, checkServerIdentity } : {}) })
+    request.once('response', onResponse); request.setTimeout(options.timeoutMs ?? 15_000); request.once('timeout', onSocketTimeout); request.on('error', onRequestError)
+    request.once('close', () => request.removeListener('error', onRequestError))
     deadline = setTimeout(() => finish(Effect.fail(new OutboundFailure('Outbound request timed out')), true), options.totalTimeoutMs ?? options.timeoutMs ?? 15_000)
     if (body) request.write(body)
     request.end()

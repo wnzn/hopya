@@ -118,7 +118,7 @@ export default function Integrations() {
     try { localStorage.setItem("hopya.workspace", id); } catch {}
   }
   const canManageWebhooks = detail?.permissions.includes("workspace:manage");
-  const canManageAutomations = detail?.permissions.includes("automations:manage");
+  const canManageAutomations = detail?.permissions.includes("automations:manage") && detail.permissions.includes("items:read");
   const canManageCredentials = detail?.permissions.includes("credentials:manage");
   return <Shell user={user} active="app" currentPage="Integrations" navigation={{ workspaces, workspaceId, detail, onWorkspaceChange: chooseWorkspace }}><div className="settings-body">
     <h1>Integrations</h1><p className="muted">Webhooks and automations for {detail?.workspace.name || "your workspace"}.</p><ErrorNotice error={authError || error} />{(authError || error) && <button onClick={() => setRevision((value) => value + 1)}>Retry loading</button>}

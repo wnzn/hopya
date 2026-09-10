@@ -4,20 +4,83 @@ import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { Effect } from 'effect'
+import { Database } from '@adonisjs/lucid/database'
+import { defineConfig } from '@adonisjs/lucid'
 import { integrationServer } from './storage-sso-fixture.js'
 import type { Server } from 'node:http'
-import { legacyAutomationGraph } from '../database/migrations/0001_automation_graphs.js'
+import Baseline from '../database/migrations/0000_baseline.js'
+import GraphMigration, { legacyAutomationGraph } from '../database/migrations/0001_automation_graphs.js'
+import LinearCompatibility from '../database/migrations/0002_automation_linear_compatibility.js'
 import { upstreamReferenceErrors } from '../app/automation_graph_validation.js'
 import { pinnedRequestEffect, resolvePinnedDestination } from '../app/pinned_http.js'
 
-test('automation migration maps legacy steps without losing IDs, order or config', () => {
+test('automation migrations preserve oversized legacy versions, queued runs and published credential bindings', async () => {
   const graph = legacyAutomationGraph('item.created', 3, [
     { id: 'old-step-a', position: 1, type: 'log', config: JSON.stringify({ message: 'first' }) },
-    { id: 'old-step-b', position: 2, type: 'http', config: JSON.stringify({ url: 'https://example.test', method: 'POST', headers: { authorization: 'legacy-secret' }, body: '{{steps.1.output}}' }) },
+    { id: 'old-step-b', position: 2, type: 'http', config: JSON.stringify({ url: 'https://example.test', method: 'POST', headers: { authorization: 'legacy-secret' }, body: '{{steps.1.output}} {{event}}' }) },
   ])
   assert.deepEqual(graph.nodes.map((node) => node.id), ['trigger-3', 'old-step-a', 'old-step-b'])
   assert.deepEqual(graph.edges.map((edge) => [edge.source, edge.target]), [['trigger-3', 'old-step-a'], ['old-step-a', 'old-step-b']])
-  assert.deepEqual(graph.nodes[2]!.config, { url: 'https://example.test', method: 'POST', headers: {}, legacyHeaderMigrationRequired: true, body: '{{nodes.old-step-a.output.message}}' })
+  assert.deepEqual(graph.nodes[2]!.config, { url: 'https://example.test', method: 'POST', headers: {}, legacyHeaderMigrationRequired: true, body: '{{nodes.old-step-a.output.message}} {{nodes.trigger-3.output.event}}' })
+
+  for (const upgraded of [false, true]) {
+    const database = new Database(defineConfig({ connection: 'sqlite', connections: { sqlite: {
+      client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true,
+      pool: { min: 1, max: 1, afterCreate(connection, done) { connection.pragma('foreign_keys = ON'); done(null, connection) } },
+    } } }), { trace() {} } as unknown as ConstructorParameters<typeof Database>[1], { emit: async () => {}, hasListeners: () => false } as unknown as ConstructorParameters<typeof Database>[2])
+    const db = database.connection(), now = new Date().toISOString()
+    try {
+      await new Baseline(db, 'baseline').execUp()
+      await db.table('users').insert({ id: 'owner', name: 'Owner', email: 'owner@example.test', isAdmin: 0, createdAt: now })
+      await db.table('workspaces').insert({ id: 'workspace', name: 'Migration', createdAt: now })
+      await db.table('roles').insert({ id: 'role', workspaceId: 'workspace', name: 'Owner', isOwner: 1, permissions: '["workspace:manage"]' })
+      await db.table('memberships').insert({ workspaceId: 'workspace', userId: 'owner', roleId: 'role' })
+      await db.table('automations').insert({ id: 'auto', workspaceId: 'workspace', name: 'Legacy', event: 'item.created', version: 1, config: '{}', createdAt: now, updatedAt: now })
+      const steps = Array.from({ length: upgraded ? 1 : 20 }, (_, index) => ({ id: `step-${index}`, position: index + 1, type: 'http', config: JSON.stringify({ url: 'https://example.test', method: 'POST', headers: {}, body: upgraded ? '{{event}}' : 'x'.repeat(20000) }) }))
+      for (const step of steps) await db.table('automation_steps').insert({ ...step, workspaceId: 'workspace', automationId: 'auto', version: 1, createdAt: now })
+      await db.table('automation_runs').insert({ id: 'run', workspaceId: 'workspace', automationId: 'auto', targetType: 'automation', targetId: 'auto', automationVersion: 1, status: 'pending', event: '{}', detail: '', createdAt: now })
+      await db.table('automation_step_runs').insert({ id: 'step-run', workspaceId: 'workspace', runId: 'run', stepId: steps[0]!.id, position: 1, type: 'http', status: 'pending' })
+      await db.transaction(async (trx) => { await new GraphMigration(trx, 'graphs').execUp() })
+      if (upgraded) {
+        // Reproduce the released 0001 table and its unconverted whole-event token.
+        await db.schema.dropTable('automation_versions')
+        await db.rawQuery(`CREATE TABLE automation_versions (
+          "workspaceId" TEXT NOT NULL, "automationId" TEXT NOT NULL, version INTEGER NOT NULL CHECK(version >= 1),
+          format TEXT NOT NULL CHECK(format IN ('linear','graph')), graph TEXT NOT NULL CHECK(length(graph) <= 262144),
+          "publisherId" TEXT, "publishedAt" TEXT NOT NULL, PRIMARY KEY("workspaceId","automationId",version),
+          FOREIGN KEY("workspaceId","automationId") REFERENCES automations("workspaceId",id) ON DELETE CASCADE,
+          FOREIGN KEY("publisherId") REFERENCES users(id) ON DELETE SET NULL)`)
+        const oldGraph = legacyAutomationGraph('item.created', 1, steps)
+        oldGraph.nodes[1]!.config.body = '{{event}}'
+        await db.table('automation_versions').insert({ workspaceId: 'workspace', automationId: 'auto', version: 1, format: 'linear', graph: JSON.stringify(oldGraph), publisherId: 'owner', publishedAt: now })
+      }
+      const publishedGraph = structuredClone(graph)
+      delete publishedGraph.nodes[2]!.config.legacyHeaderMigrationRequired
+      publishedGraph.nodes[2]!.config.body = '{{event}}'
+      const published = { workspaceId: 'workspace', automationId: 'auto', version: 2, format: 'graph', graph: JSON.stringify(publishedGraph), publisherId: 'owner', publishedAt: now }
+      await db.table('automation_versions').insert(published)
+      await db.table('automation_credentials').insert({ id: 'credential', workspaceId: 'workspace', name: 'Credential', type: 'bearer', origin: 'https://example.test', createdAt: now, updatedAt: now })
+      await db.table('automation_credential_versions').insert({ workspaceId: 'workspace', credentialId: 'credential', version: 1, keyId: 'fixture', encrypted: 'synthetic-encrypted-fixture', createdAt: now })
+      const binding = { workspaceId: 'workspace', automationId: 'auto', automationVersion: 2, nodeId: 'old-step-b', credentialId: 'credential', credentialVersion: 1 }
+      await db.table('automation_version_credentials').insert(binding)
+      await db.table('automation_drafts').insert({ workspaceId: 'workspace', automationId: 'auto', revision: 7, graph: published.graph, updatedBy: 'owner', updatedAt: now })
+      await db.transaction(async (trx) => { await new LinearCompatibility(trx, 'linear-compatibility').execUp() })
+      assert.deepEqual(await db.from('automation_steps').select('id', 'position', 'type', 'config').orderBy('position'), steps)
+      assert.equal((await db.from('automation_runs').first()).status, 'pending')
+      assert.equal((await db.from('automation_step_runs').first()).stepId, steps[0]!.id)
+      assert.deepEqual(await db.from('automation_versions').where('version', 2).first(), published)
+      assert.deepEqual(await db.from('automation_version_credentials').first(), binding)
+      assert.equal((await db.from('automation_drafts').first()).revision, 7)
+      assert.equal((await db.from('automation_drafts').first()).graph, published.graph)
+      const converted = JSON.parse((await db.from('automation_versions').where('version', 1).first()).graph)
+      if (upgraded) assert.equal(converted.nodes[1].config.body, '{{nodes.trigger-1.output.event}}')
+      else assert.ok(JSON.stringify(converted).length > 262144)
+      const largeGraph = JSON.stringify(legacyAutomationGraph('item.created', 3, Array.from({ length: 20 }, (_, i) => ({ ...steps[0]!, id: `large-${i}`, position: i + 1, config: JSON.stringify({ url: 'https://example.test', body: 'x'.repeat(20000) }) }))))
+      await db.table('automation_versions').insert({ ...published, version: 3, format: 'linear', graph: largeGraph })
+      await assert.rejects(() => db.table('automation_versions').insert({ ...published, version: 4, graph: largeGraph }), /CHECK constraint/)
+      assert.deepEqual(await db.rawQuery('PRAGMA foreign_key_check'), [])
+    } finally { await database.manager.closeAll(true) }
+  }
 })
 
 test('graph validation rejects unknown, downstream and branch-only output references', () => {
@@ -136,6 +199,9 @@ test('automations enforce permissions, deliver ordered steps, redact output and 
   const secretListText = await (await api.request(`${base}/automations`, { token: owner.token })).text()
   assert.equal(secretListText.includes('legacy-never-expose'), false)
   assert.equal(secretListText.includes('legacyHeaderMigrationRequired'), true)
+  const safeLegacySteps = legacySecret.steps as { config: Record<string, unknown> }[]
+  assert.equal(safeLegacySteps[0]!.config.legacyHeaderMigrationRequired, undefined, 'remediation metadata must not enter strict legacy configs')
+  assert.equal(safeLegacySteps[1]!.config.message, 'prior={{steps.1.output}}')
   const legacyDraftResponse = await api.request(`${base}/automations/${legacySecret.id}/draft`, { token: owner.token }), legacyDraftText = await legacyDraftResponse.clone().text()
   assert.equal(legacyDraftText.includes('legacy-never-expose'), false)
   const legacyDraft = await legacyDraftResponse.json() as { graph: { nodes: { id: string; config: Record<string, unknown> }[] } }
@@ -241,13 +307,45 @@ test('automations enforce permissions, deliver ordered steps, redact output and 
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
   assert.ok(failureSeen, 'failed webhook delivery must be recorded')
+
+  const largeLegacy = await post(`${base}/automations`, { name: 'Large legacy version', event: 'field.changed', enabled: false,
+    steps: Array.from({ length: 20 }, () => ({ type: 'http', config: { url: hookUrl, body: 'x'.repeat(20000) } })),
+  })
+  assert.equal((await api.db.get<{ graph: string }>('SELECT graph FROM automation_versions WHERE automationId=?', largeLegacy.id))!.graph.length > 262144, true)
+  const roundtrip = await post(`${base}/automations`, { name: 'Legacy roundtrip', event: 'field.changed', enabled: false, steps: [
+    { type: 'log', config: { message: 'first' } }, { type: 'log', config: { message: '{{steps.1.output}}' } },
+  ] })
+  const readBack = (await (await api.request(`${base}/automations`, { token: owner.token })).json() as { id: string; steps: unknown[] }[]).find((entry) => entry.id === roundtrip.id)!
+  assert.equal((await api.request(`${base}/automations/${roundtrip.id}`, { method: 'PATCH', token: owner.token, body: { steps: readBack.steps } })).status, 200)
+  const completedTest = async (id: string) => {
+    const response = await post(`${base}/automations/${id}/test`, {})
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const run = await (await api.request(`${base}/automations/runs/${response.runId}`, { token: owner.token })).json() as { status: string; steps: { output: string }[] }
+      if (run.status !== 'pending' && run.status !== 'running') { assert.equal(run.status, 'delivered'); return run }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    throw new Error('Automation test did not complete')
+  }
+  assert.deepEqual((await completedTest(roundtrip.id)).steps.map((step) => step.output), ['first', 'first'])
+  const eventBody = await post(`${base}/automations`, { name: 'Legacy event body', event: 'field.changed', enabled: false,
+    action: { type: 'http', config: { url: `${hookUrl}?whole-event=1`, body: '{{event}}' } },
+  })
+  await completedTest(eventBody.id)
+  const originalBody = JSON.parse(received.at(-1)!.body) as Record<string, unknown>
+  const eventDraft = await (await api.request(`${base}/automations/${eventBody.id}/draft`, { token: owner.token })).json() as { graph: unknown }
+  const eventSave = await api.request(`${base}/automations/${eventBody.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 0, graph: eventDraft.graph } })
+  assert.equal(eventSave.status, 200)
+  await post(`${base}/automations/${eventBody.id}/publish`, { expectedRevision: 1 })
+  await completedTest(eventBody.id)
+  const convertedBody = JSON.parse(received.at(-1)!.body) as Record<string, unknown>
+  assert.deepEqual({ ...convertedBody, at: null }, { ...originalBody, at: null }, 'converted HTTP body must retain the whole event, not send a literal token')
 })
 
 test('graph publishing executes one branch and credentials remain write-only and workspace-bound', { timeout: 30000 }, async (t) => {
-  const requests: { path: string; authorization: string }[] = []
+  const requests: { path: string; authorization: string; method: string }[] = []
   let releaseSlow: (() => void) | undefined
   const provider = createServer((request, response) => {
-    requests.push({ path: request.url ?? '', authorization: String(request.headers.authorization ?? '') })
+    requests.push({ path: request.url ?? '', authorization: String(request.headers.authorization ?? ''), method: request.method ?? '' })
     if (request.url === '/oauth/token') response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ access_token: 'connected-token', refresh_token: 'refresh-token', expires_in: 3600 }))
     else if (request.url === '/oauth/fail') response.writeHead(500, { 'content-type': 'application/json' }).end('{}')
     else if (request.url === '/allowed/huge') response.writeHead(200, { 'content-type': 'text/plain' }).end('oversized-secret'.repeat(50_000))
@@ -274,7 +372,7 @@ test('graph publishing executes one branch and credentials remain write-only and
   const graph = {
     nodes: [
       { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, config: { event: 'item.created' } },
-      { id: 'fetch', type: 'http', position: { x: 100, y: 0 }, config: { url: `${providerOrigin}/typed`, method: 'GET', headers: {} } },
+      { id: 'fetch', type: 'http', position: { x: 100, y: 0 }, config: { url: `${providerOrigin}/typed`, headers: {} } },
       { id: 'condition', type: 'condition', position: { x: 200, y: 0 }, config: { path: 'nodes.fetch.output.status', operator: 'equals', value: 200 } },
       { id: 'yes', type: 'log', position: { x: 400, y: -100 }, config: { message: 'yes' } },
       { id: 'no', type: 'log', position: { x: 400, y: 100 }, config: { message: 'no' } },
@@ -288,6 +386,20 @@ test('graph publishing executes one branch and credentials remain write-only and
   const cyclic = structuredClone(graph); cyclic.edges.push({ id: 'cycle', source: 'join', target: 'condition' })
   const invalid = await (await api.request(`${base}/automations/${automation.id}/validate`, { method: 'POST', token: owner.token, body: { graph: cyclic } })).json() as { valid: boolean; errors: string[] }
   assert.equal(invalid.valid, false); assert.ok(invalid.errors.some((error) => error.includes('acyclic')))
+  for (const [nodeId, property, value] of [
+    ['join', 'message', '{{nodes.fetch.output.message}}'],
+    ['condition', 'path', 'nodes.fetch.output.missing'],
+    ['join', 'message', '{{event.item.missing}}'],
+  ]) {
+    const invalidPath = structuredClone(graph)
+    const config = invalidPath.nodes.find((node) => node.id === nodeId)!.config as Record<string, unknown>
+    config[property!] = value
+    const result = await (await api.request(`${base}/automations/${automation.id}/validate`, { method: 'POST', token: owner.token, body: { graph: invalidPath } })).json() as { valid: boolean; errors: string[] }
+    assert.equal(result.valid, false); assert.ok(result.errors.some((error) => error.includes('path')))
+  }
+  const nestedPath = structuredClone(graph)
+  nestedPath.nodes.find((node) => node.id === 'join')!.config.message = '{{nodes.trigger.output.event.item.title}} {{event.item.customFields.retained}} {{event.item.tags.0}}'
+  assert.equal((await (await api.request(`${base}/automations/${automation.id}/validate`, { method: 'POST', token: owner.token, body: { graph: nestedPath } })).json() as { valid: boolean }).valid, true)
   const sensitive = structuredClone(graph); sensitive.nodes.find((node) => node.id === 'fetch')!.config.headers = { 'x-api-key': 'must-use-a-credential' }
   const sensitiveResult = await (await api.request(`${base}/automations/${automation.id}/validate`, { method: 'POST', token: owner.token, body: { graph: sensitive } })).json() as { valid: boolean; errors: string[] }
   assert.equal(sensitiveResult.valid, false); assert.ok(sensitiveResult.errors.some((error) => error.includes('Sensitive')))
@@ -301,6 +413,13 @@ test('graph publishing executes one branch and credentials remain write-only and
   const deletedUpdate = { nodes: [{ id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, config: { event: 'item.deleted' } }, { id: 'update', type: 'update_item', position: { x: 1, y: 0 }, config: { patch: { priority: 'high' } } }], edges: [{ id: 'update-edge', source: 'trigger', target: 'update' }] }
   const deletedUpdateResult = await (await api.request(`${base}/automations/${automation.id}/validate`, { method: 'POST', token: owner.token, body: { graph: deletedUpdate } })).json() as { valid: boolean; errors: string[] }
   assert.equal(deletedUpdateResult.valid, false); assert.ok(deletedUpdateResult.errors.some((error) => error.includes('item.created or item.updated')))
+  const sizeAutomation = await post(`${base}/automations`, { name: 'Normalized size bound', event: 'item.created', enabled: false, action: { type: 'log', config: { message: 'seed' } } })
+  const sizeConfig = { url: `${providerOrigin}/typed`, headers: Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`x-public-${index}`, 'x'.repeat(2000)])), body: '' }
+  sizeConfig.body = 'x'.repeat(32760 - Buffer.byteLength(JSON.stringify(sizeConfig)))
+  const sizeGraph = { nodes: [graph.nodes[0]!, { id: 'request', type: 'http', position: { x: 1, y: 0 }, config: sizeConfig }], edges: [{ id: 'size-edge', source: 'trigger', target: 'request' }] }
+  assert.equal((await api.request(`${base}/automations/${sizeAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 0, graph: sizeGraph } })).status, 200)
+  assert.equal((await api.request(`${base}/automations/${sizeAutomation.id}/publish`, { method: 'POST', token: owner.token, body: { expectedRevision: 1 } })).status, 400, 'default expansion must not publish a graph that fails execution-time size validation')
+  assert.equal((await api.db.get<{ version: number }>('SELECT version FROM automations WHERE id=?', sizeAutomation.id))?.version, 1)
   const savedResponse = await api.request(`${base}/automations/${automation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 0, graph } })
   assert.equal(savedResponse.status, 200); const saved = await savedResponse.json() as { revision: number }; assert.equal(saved.revision, 1)
   const unsafeDraft = structuredClone(graph); unsafeDraft.nodes.find((node) => node.id === 'fetch')!.config.headers = { Authorization: 'draft-secret-value', 'Content-Length': '999' }
@@ -322,18 +441,40 @@ test('graph publishing executes one branch and credentials remain write-only and
 
   const project = await post(`${base}/nodes`, { name: 'Project', kind: 'project' }), list = await post(`${base}/nodes`, { name: 'List', kind: 'list', parentId: project.id })
   await post(`${base}/items`, { title: 'Graph task', nodeId: list.id })
-  let graphRun: { status: string; nodes: { nodeId: string; status: string; output: string }[] } | undefined
+  let graphRun: { status: string; detail: string; nodes: { nodeId: string; status: string; output: string }[] } | undefined
   const deadline = Date.now() + 8000
   while (Date.now() < deadline) {
     const runs = await (await api.request(`${base}/automations/runs?automationId=${automation.id}`, { token: owner.token })).json() as (typeof graphRun)[]
-    graphRun = runs[0]; if (graphRun?.status === 'delivered') break; await new Promise((resolve) => setTimeout(resolve, 100))
+    graphRun = runs[0]; if (graphRun?.status === 'delivered' || graphRun?.status === 'failed') break; await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  assert.equal(graphRun?.status, 'delivered')
+  assert.equal(graphRun?.status, 'delivered', graphRun?.detail)
+  assert.equal(requests.find((request) => request.path === '/typed')?.method, 'POST', 'omitted graph HTTP methods must use the schema default')
   assert.equal(graphRun?.nodes.find((node) => node.nodeId === 'yes')?.status, 'delivered')
   assert.equal(graphRun?.nodes.find((node) => node.nodeId === 'no')?.status, 'skipped')
   assert.equal(graphRun?.nodes.find((node) => node.nodeId === 'join')?.status, 'delivered')
   assert.deepEqual(JSON.parse(graphRun!.nodes.find((node) => node.nodeId === 'fetch')!.output), { status: 200, body: 'typed-body' })
   assert.deepEqual(JSON.parse(graphRun!.nodes.find((node) => node.nodeId === 'join')!.output), { message: 'status=200 body=typed-body title=Graph task' })
+
+  const nonReader = await api.user(), nonReaderRole = await post(`${base}/roles`, { name: 'Automation manager without task read', permissions: ['automations:manage', 'items:write'] })
+  await post(`${base}/members`, { email: nonReader.email, roleId: nonReaderRole.id })
+  const existingRun = await api.db.get<{ id: string }>('SELECT id FROM automation_runs WHERE automationId=?', automation.id)
+  const beforeDenied = await api.db.get('SELECT version,name FROM automations WHERE id=?', automation.id)
+  const runCount = await api.db.get('SELECT count(*) AS count FROM automation_runs WHERE automationId=?', automation.id)
+  for (const request of [
+    { path: '/runs', method: 'GET' },
+    { path: `/runs/${existingRun!.id}`, method: 'GET' },
+    { path: '', method: 'POST', body: { name: 'Denied create', event: 'item.created', action: { type: 'log', config: { message: 'denied' } } } },
+    { path: `/${automation.id}`, method: 'PATCH', body: { name: 'Denied rename' } },
+    { path: `/${automation.id}`, method: 'DELETE' },
+    { path: `/${automation.id}/test`, method: 'POST', body: {} },
+    { path: `/${automation.id}/draft`, method: 'PUT', body: { expectedRevision: 2, graph } },
+    { path: `/${automation.id}/publish`, method: 'POST', body: { expectedRevision: 2 } },
+  ]) {
+    assert.equal((await api.request(`${base}/automations${request.path}`, { method: request.method, token: nonReader.token, body: request.body })).status, 403, `${request.method} ${request.path} must require task read permission`)
+  }
+  assert.deepEqual(await api.db.get('SELECT version,name FROM automations WHERE id=?', automation.id), beforeDenied)
+  assert.deepEqual(await api.db.get('SELECT count(*) AS count FROM automation_runs WHERE automationId=?', automation.id), runCount)
+  assert.equal((await api.db.get<{ revision: number }>('SELECT revision FROM automation_drafts WHERE automationId=?', automation.id))?.revision, 2)
 
   assert.equal((await api.request(`${base}/automations/credentials`, { method: 'POST', token: owner.token, body: { name: 'Query key', type: 'api_key', origin: providerOrigin, secret: { name: 'x-api-key', value: 'private', in: 'query' } } })).status, 400)
   assert.equal((await api.request(`${base}/automations/credentials`, { method: 'POST', token: owner.token, body: { name: 'Framing key', type: 'api_key', origin: providerOrigin, secret: { name: 'Content-Length', value: '1' } } })).status, 400)
@@ -379,8 +520,8 @@ test('graph publishing executes one branch and credentials remain write-only and
   const captured = credentialRuns[0]!.nodes.find((node) => node.nodeId === 'request')!.output
   assert.equal(captured.includes('version-two'), false); assert.equal(captured.includes('[REDACTED]'), true); assert.equal(captured.includes('public-marker'), true); assert.equal(captured.includes('application/vnd.hopya-test'), true)
   const hugeGraph = structuredClone(credentialGraph); hugeGraph.nodes.find((node) => node.id === 'request')!.config.url = `${providerOrigin}/allowed/huge`
-  assert.equal((await api.request(`${base}/automations/${credentialAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 0, graph: hugeGraph } })).status, 200)
-  assert.equal((await api.request(`${base}/automations/${credentialAutomation.id}/publish`, { method: 'POST', token: owner.token, body: { expectedRevision: 1 } })).status, 200)
+  assert.equal((await api.request(`${base}/automations/${credentialAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 2, graph: hugeGraph } })).status, 200)
+  assert.equal((await api.request(`${base}/automations/${credentialAutomation.id}/publish`, { method: 'POST', token: owner.token, body: { expectedRevision: 3 } })).status, 200)
   await api.request(`${base}/automations/${credentialAutomation.id}/test`, { method: 'POST', token: owner.token, body: {} })
   let hugeRun: { status: string; detail: string; nodes: { nodeId: string; output: string | null }[] } | undefined
   const hugeDeadline = Date.now() + 8000
@@ -410,6 +551,16 @@ test('graph publishing executes one branch and credentials remain write-only and
   assert.deepEqual(publishRace.map((response) => response.status).sort(), [200, 409])
   const raceVersions = await (await api.request(`${base}/automations/${raceAutomation.id}/versions`, { token: owner.token })).json() as { version: number }[]
   assert.deepEqual(raceVersions.map((entry) => entry.version), [2, 1])
+  const retainedDraft = await (await api.request(`${base}/automations/${raceAutomation.id}/draft`, { token: owner.token })).json() as { revision: number }
+  assert.equal(retainedDraft.revision, 2, 'publication must advance and retain the draft revision')
+  const recreated = structuredClone(raceGraph); recreated.nodes[1]!.config.message = 'new draft'
+  assert.equal((await api.request(`${base}/automations/${raceAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 2, graph: recreated } })).status, 200)
+  for (const expectedRevision of [0, 1]) assert.equal((await api.request(`${base}/automations/${raceAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision, graph: raceGraph } })).status, 409)
+  assert.equal((await api.request(`${base}/automations/${raceAutomation.id}/publish`, { method: 'POST', token: owner.token, body: { expectedRevision: 1 } })).status, 409, 'an old publisher must not publish the recreated draft')
+  const preservedDraft = await (await api.request(`${base}/automations/${raceAutomation.id}/draft`, { token: owner.token })).json() as { revision: number; graph: typeof raceGraph }
+  assert.equal(preservedDraft.revision, 3); assert.equal(preservedDraft.graph.nodes[1]!.config.message, 'new draft')
+  const oldPublication = await (await api.request(`${base}/automations/${raceAutomation.id}/versions/2`, { token: owner.token })).json() as { graph: typeof raceGraph }
+  assert.equal(oldPublication.graph.nodes[1]!.config.message, 'race')
 
   const leaseAutomation = await post(`${base}/automations`, { name: 'Lease loss', event: 'node.updated', action: { type: 'log', config: { message: 'seed' } } })
   const leaseGraph = { nodes: [{ id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, config: { event: 'node.updated' } }, { id: 'slow', type: 'http', position: { x: 1, y: 0 }, config: { url: `${providerOrigin}/slow`, method: 'GET', headers: {} } }], edges: [{ id: 'slow-edge', source: 'trigger', target: 'slow' }] }
@@ -437,6 +588,9 @@ test('graph publishing executes one branch and credentials remain write-only and
   ], edges: [{ id: 'update-edge', source: 'trigger', target: 'update' }] }
   await api.request(`${base}/automations/${updateAutomation.id}/draft`, { method: 'PUT', token: owner.token, body: { expectedRevision: 0, graph: updateGraph } })
   await api.request(`${base}/automations/${updateAutomation.id}/publish`, { method: 'POST', token: owner.token, body: { expectedRevision: 1 } })
+  const beforeTest = await api.db.get('SELECT count(*) AS count FROM automation_runs WHERE automationId=?', updateAutomation.id)
+  assert.equal((await api.request(`${base}/automations/${updateAutomation.id}/test`, { method: 'POST', token: owner.token, body: {} })).status, 400, 'task-updating test runs need a real triggering task and must fail preflight')
+  assert.deepEqual(await api.db.get('SELECT count(*) AS count FROM automation_runs WHERE automationId=?', updateAutomation.id), beforeTest, 'preflight rejection must not queue a run')
   const task = await post(`${base}/items`, { title: 'Re-entry task', nodeId: list.id }) as { id: string }
   await api.request(`${base}/items/${task.id}`, { method: 'PATCH', token: owner.token, body: { description: 'trigger update' } })
   await new Promise((resolve) => setTimeout(resolve, 1000))

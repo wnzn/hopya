@@ -2,7 +2,7 @@ import { BaseSchema } from '@adonisjs/lucid/schema'
 
 // Keep data conversion self-contained so later runtime validator changes cannot
 // alter the meaning of an already shipped migration.
-function migrateLegacyConfig(config: unknown, nodeIds: string[], types: string[]): Record<string, unknown> {
+function migrateLegacyConfig(config: unknown, nodeIds: string[], types: string[], triggerId: string): Record<string, unknown> {
   const translate = (value: unknown): unknown => {
     if (typeof value === 'string') return value.replace(/\{\{steps\.(\d+)\.output\}\}/g, (original, raw: string) => {
       const index = Number(raw) - 1, id = nodeIds[index]
@@ -15,6 +15,7 @@ function migrateLegacyConfig(config: unknown, nodeIds: string[], types: string[]
     return value
   }
   const result = translate(config) as Record<string, unknown>
+  if (typeof result.body === 'string') result.body = result.body.replaceAll('{{event}}', `{{nodes.${triggerId}.output.event}}`)
   if (result.headers && typeof result.headers === 'object' && Object.keys(result.headers).length) {
     result.headers = {}
     result.legacyHeaderMigrationRequired = true
@@ -28,7 +29,7 @@ export function legacyAutomationGraph(event: string, version: number, steps: { i
   return {
     nodes: [
       { id: triggerId, type: 'trigger', position: { x: 0, y: 0 }, config: { event } },
-      ...steps.map((step) => ({ id: step.id, type: step.type, position: { x: step.position * 240, y: 0 }, config: migrateLegacyConfig(JSON.parse(step.config), ids, types) })),
+      ...steps.map((step) => ({ id: step.id, type: step.type, position: { x: step.position * 240, y: 0 }, config: migrateLegacyConfig(JSON.parse(step.config), ids, types, triggerId) })),
     ],
     edges: steps.map((step, index) => ({ id: `edge-${version}-${index + 1}`, source: index === 0 ? triggerId : steps[index - 1]!.id, target: step.id })),
   }
@@ -57,7 +58,7 @@ export default class extends BaseSchema {
       table.text('publishedAt').notNullable()
       table.check("?? IN ('linear','graph')", ['format'])
       table.check('?? >= 1', ['version'])
-      table.check('length(??) <= 262144', ['graph'])
+      table.check("?? = 'linear' OR length(??) <= 262144", ['format', 'graph'], 'automation_versions_graph_size_check')
       table.primary(['workspaceId', 'automationId', 'version'])
       table.foreign(['workspaceId', 'automationId'], 'automation_versions_automation_fk').references(['workspaceId', 'id']).inTable('automations').onDelete('CASCADE')
       table.foreign(['publisherId'], 'automation_versions_publisher_fk').references(['id']).inTable('users').onDelete('SET NULL')

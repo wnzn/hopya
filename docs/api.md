@@ -179,17 +179,19 @@ All `/admin/*` endpoints require `isAdmin`, not a workspace role. Site administr
 
 ## Integrations And Automations
 
-Workspace events are `item.created`, `item.updated`, `item.deleted`, `node.created`, `node.updated`, `node.deleted` and `field.changed`. Matching run rows enqueue atomically with the event-producing mutation. Webhook administration still requires `workspace:manage`; automation graphs/runs use `automations:manage`, and credential mutation/OAuth uses `credentials:manage`. Credential metadata may be read with either automation or credential management permission. Every ID remains workspace-scoped.
+Workspace events are `item.created`, `item.updated`, `item.deleted`, `node.created`, `node.updated`, `node.deleted` and `field.changed`. Matching run rows enqueue atomically with the event-producing mutation. Webhook administration still requires `workspace:manage`; all automation routes (including legacy CRUD, catalog, drafts, validation, publication, versions, previews, tests and runs) require both `automations:manage` and `items:read`. Credential routes have separate permissions: mutation/OAuth requires `credentials:manage`, while metadata reads require either `automations:manage` or `credentials:manage`, without an additional `items:read` requirement. Every ID remains workspace-scoped.
 
 ### Workspace Webhooks
 
 - `GET|POST /workspaces/:wid/webhooks`: list safe metadata or create `{name,url,events,enabled?}` (maximum 20). Creation returns the new secret once and sets `signingVersion:2`.
 - `PATCH|DELETE /workspaces/:wid/webhooks/:id`: update name, URL, events or enabled; delete. `POST /workspaces/:wid/webhooks/:id/rotate` returns a replacement secret once and upgrades signing to version 2.
-- Version 2 posts the exact JSON event body with `x-hopya-signature: sha256=<hex HMAC-SHA256(secret, body)>` and rejects redirects. Rows that existed before migration retain `signingVersion:1`, the historical `sha256(secret + "." + body)` digest and historical redirect behavior until rotated. Consumers must select verification by the returned signing version rather than treating the legacy digest as HMAC.
+- Version 2 posts the exact JSON event body with `x-hopya-signature: sha256=<hex HMAC-SHA256(secret, body)>`. Rows that existed before migration retain `signingVersion:1` and the historical `sha256(secret + "." + body)` digest until rotated. Consumers must select verification by the returned signing version rather than treating the legacy digest as HMAC. The outbound transport rejects all 3xx responses for both signing versions, legacy linear requests and graph requests. This intentional security hardening breaks compatibility with redirect-dependent destinations to prevent forwarding payloads or secrets beyond the checked destination. Configure the final endpoint URL directly; rotation is not required for redirect rejection.
 
 ### Versioned Automation Graphs
 
-`GET|POST /workspaces/:wid/automations` and `PATCH|DELETE /workspaces/:wid/automations/:id` remain the compatibility surface. Creation accepts `{name,event,steps,enabled?}` or singular `action` (maximum 50 automations; 1-20 steps), creates a versioned linear graph, and preserves `{{steps.N.output}}`. Existing linear versions execute unchanged. Listing marks a current graph version with `graph:true`; a graph version cannot be replaced through legacy `action`/`steps` PATCH, and its trigger event changes only through draft publication. Name and enabled state remain patchable. Changing a linear trigger through PATCH creates a new immutable linear version.
+`GET|POST /workspaces/:wid/automations` and `PATCH|DELETE /workspaces/:wid/automations/:id` remain the compatibility surface. Creation accepts `{name,event,steps,enabled?}` or singular `action` (maximum 50 automations; 1-20 steps), creates a versioned linear graph, and preserves `{{steps.N.output}}`. Existing linear versions retain ordered-step execution, subject to the hardened no-redirect transport policy above. Listing marks a current graph version with `graph:true`; a graph version cannot be replaced through legacy `action`/`steps` PATCH, and its trigger event changes only through draft publication. Name and enabled state remain patchable. Changing a linear trigger through PATCH creates a new immutable linear version.
+
+Migration `0002_automation_linear_compatibility` preserves linear representations larger than the graph-only 256 KiB storage limit and repairs HTTP-body `{{event}}` references to `{{nodes.<triggerId>.output.event}}` in derived linear representations. Original step configurations, queued runs, published graph versions, credential bindings and user-edited drafts are preserved; graph publication still enforces graph limits.
 
 | Method and path | Input / result |
 | --- | --- |
@@ -197,11 +199,11 @@ Workspace events are `item.created`, `item.updated`, `item.deleted`, `node.creat
 | `GET /workspaces/:wid/automations/:id/draft` | Saved `{revision,graph,updatedAt}` or revision 0 initialized from the current published version |
 | `PUT /workspaces/:wid/automations/:id/draft` | `{expectedRevision,graph}`; saves even when structurally invalid, returns validation, and rejects stale revisions with `409` |
 | `POST /workspaces/:wid/automations/:id/validate` | Optional `{graph}`; otherwise validates the saved draft, including credential availability and destination binding |
-| `POST /workspaces/:wid/automations/:id/publish` | `{expectedRevision}`; validates and publishes one immutable version, records publisher/credential references, updates the trigger event, and deletes the draft |
+| `POST /workspaces/:wid/automations/:id/publish` | `{expectedRevision}`; validates and publishes one immutable version, records publisher/credential references, updates the trigger event, retains the draft and advances its revision by one; returns the published version |
 | `GET /workspaces/:wid/automations/:id/versions` | Newest-first `{version,format,publisherId,publishedAt}` metadata |
 | `GET /workspaces/:wid/automations/:id/versions/:version` | `{version,format,graph,publisherId,publishedAt}` |
 | `POST /workspaces/:wid/automations/:id/preview` | `{graph?,event?,mockOutputs?}`; returns `{valid,errors,path,uncertain}` with `effect:"none"`; unresolved output-dependent branches are reported as uncertain and no HTTP, email, log or task mutation runs |
-| `POST /workspaces/:wid/automations/:id/test` | Queues a real run of the current published version and returns `{ok,event,runId,status:"pending"}`; configured effects can execute |
+| `POST /workspaces/:wid/automations/:id/test` | Queues a real run of the current published version and returns `{ok,event,runId,status:"pending"}`; configured effects can execute. A graph containing any `update_item` node is rejected with `400` before enqueueing because the synthetic event has no triggering task |
 | `GET /workspaces/:wid/automations/runs` | Filters `limit` 1-100, optional automation UUID and `pending|running|delivered|failed`; returns newest durable runs |
 | `GET /workspaces/:wid/automations/runs/:runId` | One run with bounded sanitized `steps` and/or graph `nodes`; raw event and causation are omitted |
 
@@ -209,7 +211,9 @@ A graph is `{nodes,edges}` with one `trigger`; action nodes are `http`, `webhook
 
 The catalog's typed manifests drive data discovery. Event templates use `{{event.<path>}}`; upstream values use stable node IDs as `{{nodes.<nodeId>.output.<path>}}`, and control paths use `nodes.<nodeId>.output.<path>`. Publication rejects unknown, self, downstream or branch-optional references that are not guaranteed upstream. HTTP/webhook methods, recipient/header/body sizes, response output, logs, execution time and retention are bounded; automatic redirects are rejected for graph HTTP/webhook requests.
 
-`update_item` patches only the triggering `itemId`. It runs as the user who published that immutable version, not the event actor or test caller, and immediately rechecks that user's current workspace membership plus `items:read` and `items:write`; ordinary task validation still applies. A missing/deleted publisher fails closed. Nested automation causation is capped at depth five and the same automation cannot re-enter its own causation chain.
+Draft revisions increase monotonically across saves and publish cycles; publication does not reset the draft to revision 0. Re-read the retained draft after publishing to obtain its current revision for the next save or publication. Stale saves and publications return `409`; queued and active runs keep their immutable version.
+
+Graph execution checks the recorded publisher's current workspace membership and `items:read` before execution and again before every node, including nodes that only read or send event data. A missing/deleted publisher or loss of task-read access fails closed. `update_item` patches only the triggering `itemId` as that publisher, not the event actor or test caller, and additionally rechecks `items:read` and `items:write` immediately before mutation; ordinary task validation still applies. Nested automation causation is capped at depth five and the same automation cannot re-enter its own causation chain.
 
 ### Automation Credentials
 

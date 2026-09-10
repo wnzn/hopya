@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AutomationCatalog } from "./api";
-import { connectNodes, createGraph, insertNode, publicHeaderNameError, removeEdges, runOutputRows, updateItemSupported, upstreamChoices } from "./automation-graph";
+import type { AutomationCatalog, AutomationGraph } from "./api";
+import { changeSwitchBranch, connectNodes, createGraph, flowEdges, insertNode, nodeBranches, publicHeaderNameError, reaches, removeEdges, runOutputRows, updateItemSupported, upstreamChoices } from "./automation-graph";
 
 test("graph connections reject cycles and replace ordinary fanout", () => {
   let graph = createGraph();
@@ -10,6 +10,9 @@ test("graph connections reject cycles and replace ordinary fanout", () => {
   assert.equal(connectNodes(graph, second.id!, first.id!), graph);
   const replacement = insertNode(graph, "email", "trigger");
   assert.equal(replacement.graph.edges.filter((edge) => edge.source === "trigger").length, 1);
+  assert.equal(connectNodes(graph, first.id!, second.id!, "unexpected"), graph);
+  const migrated = { ...graph, nodes: graph.nodes.map((node) => node.type === "trigger" ? { ...node, id: "migrated-trigger" } : node), edges: [] };
+  assert.equal(connectNodes(migrated, first.id!, "migrated-trigger"), migrated);
 });
 
 test("insertion preserves ordinary and selected condition branch successors", () => {
@@ -37,6 +40,73 @@ test("insertion preserves ordinary and selected condition branch successors", ()
   const branchInsert = insertNode(conditionGraph, "email", conditionId, "false");
   assert.equal(branchInsert.graph.edges.some((edge) => edge.source === conditionId && edge.target === branchInsert.id && edge.branch === "false"), true);
   assert.equal(branchInsert.graph.edges.some((edge) => edge.source === branchInsert.id && edge.target === "no"), true);
+
+  for (const type of ["condition", "switch"] as const) {
+    const control = insertNode(graph, type, ordinary.id!);
+    const preservedBranch = type === "condition" ? "false" : "default";
+    assert.equal(control.graph.edges.find((edge) => edge.source === control.id)?.branch, preservedBranch);
+    assert.equal(control.graph.edges.find((edge) => edge.source === control.id)?.target, successor.id);
+    const complete = insertNode(control.graph, "log", control.id!);
+    const controlNode = complete.graph.nodes.find((node) => node.id === control.id)!;
+    assert.deepEqual(complete.graph.edges.filter((edge) => edge.source === control.id).map((edge) => edge.branch).sort(), nodeBranches(controlNode).sort());
+    assert.ok(complete.graph.nodes.every((node) => reaches(complete.graph, "trigger", node.id)));
+    assert.equal(connectNodes(complete.graph, control.id!, successor.id!), complete.graph);
+    assert.equal(connectNodes(complete.graph, control.id!, successor.id!, "unknown"), complete.graph);
+  }
+});
+
+test("switch branch edits preserve connections and reject orphaning or colliding changes", () => {
+  const graph: AutomationGraph = {
+    nodes: [
+      ...createGraph().nodes,
+      { id: "switch", type: "switch", position: { x: 100, y: 0 }, config: { path: "item.status", cases: [{ branch: "a", value: "todo" }, { branch: "b", value: "done" }], defaultBranch: "default" } },
+      { id: "left", type: "log", position: { x: 200, y: 0 }, config: { message: "left" } },
+      { id: "right", type: "log", position: { x: 200, y: 100 }, config: { message: "right" } },
+    ],
+    edges: [
+      { id: "root", source: "trigger", target: "switch" },
+      { id: "a", source: "switch", target: "left", branch: "a" },
+      { id: "b", source: "switch", target: "right", branch: "b" },
+      { id: "default", source: "switch", target: "right", branch: "default" },
+    ],
+  };
+  const original = structuredClone(graph);
+  const renamed = changeSwitchBranch(graph, "switch", 0, "renamed");
+  assert.deepEqual(renamed.edges.find((edge) => edge.id === "a"), { id: "a", source: "switch", target: "left", branch: "renamed" });
+  assert.deepEqual(nodeBranches(renamed.nodes[1]!), ["renamed", "b", "default"]);
+  const newDefault = changeSwitchBranch(renamed, "switch", "default", "fallback");
+  assert.equal(newDefault.edges.find((edge) => edge.id === "default")?.branch, "fallback");
+  assert.equal(newDefault.edges.find((edge) => edge.id === "default")?.target, "right");
+  assert.equal(changeSwitchBranch(graph, "switch", 0, "default"), graph);
+  assert.equal(changeSwitchBranch(graph, "switch", 0, ""), graph);
+  assert.equal(changeSwitchBranch(graph, "switch", 0, null), graph, "exclusive downstream action must not be orphaned");
+  const removed = changeSwitchBranch(graph, "switch", 1, null);
+  assert.deepEqual(nodeBranches(removed.nodes[1]!), ["a", "default"]);
+  assert.deepEqual(removed.nodes.filter((node) => node.type === "log"), graph.nodes.filter((node) => node.type === "log"));
+  assert.equal(removed.edges.some((edge) => edge.branch === "b"), false);
+  assert.equal(changeSwitchBranch(removed, "switch", 0, null), removed, "at least one case must remain");
+  assert.deepEqual(graph, original);
+
+  const shared: AutomationGraph = { ...removed, nodes: removed.nodes.map((node) => node.id === "switch" ? { ...node, config: { ...node.config, defaultBranch: "a" } } : node), edges: removed.edges.filter((edge) => edge.branch !== "default").concat({ id: "continue", source: "left", target: "right" }) };
+  const split = changeSwitchBranch(shared, "switch", "default", "fallback");
+  assert.deepEqual(split.edges.filter((edge) => edge.source === "switch").map((edge) => [edge.branch, edge.target]), [["a", "left"], ["fallback", "left"]]);
+  assert.equal(new Set(split.edges.map((edge) => edge.id)).size, split.edges.length);
+});
+
+test("flow edges select the matching control handles without changing persisted graph fields", () => {
+  for (const type of ["condition", "switch"] as const) {
+    const control = insertNode(createGraph(), type, "trigger");
+    let graph = insertNode(control.graph, "log", control.id!).graph;
+    graph = insertNode(graph, "log", control.id!).graph;
+    const original = structuredClone(graph);
+    const branches = nodeBranches(graph.nodes.find((node) => node.id === control.id)!);
+    const edges = flowEdges(graph);
+    assert.deepEqual(edges.filter((edge) => edge.source === control.id).map((edge) => edge.sourceHandle), branches);
+    assert.deepEqual(edges.filter((edge) => edge.source === control.id).map((edge) => edge.label), branches);
+    assert.equal(edges.find((edge) => edge.source === "trigger")?.sourceHandle, undefined);
+    assert.deepEqual(graph, original);
+    assert.equal(JSON.stringify(graph).includes("sourceHandle"), false);
+  }
 });
 
 test("direct rewiring rejects orphaning a displaced downstream subtree", () => {

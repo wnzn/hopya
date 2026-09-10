@@ -231,9 +231,16 @@ const decodeAutomation = async ({ config, ...row }: AutomationRow) => {
   if (graphVersion?.format === 'graph') return { ...row, enabled: Boolean(row.enabled), graph: true }
   const stored = (await db.all<Pick<StepRow, 'type' | 'config'>>('SELECT type,config FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', row.workspaceId, row.id, row.version))
     .map((step) => ({ type: step.type, config: JSON.parse(step.config) as unknown }))
-  const safeGraph = linearGraph(row.event, stored)
-  const steps = stored.map((step, index) => ({ type: step.type, config: safeGraph.nodes[index + 1]!.config }))
-  return { ...row, enabled: Boolean(row.enabled), steps, ...(steps.length === 1 ? { action: steps[0] } : {}) }
+  let legacyHeaderMigrationRequired = false
+  const steps = stored.map((step) => {
+    const safe = { ...step.config as Record<string, unknown> }
+    if (safe.headers && typeof safe.headers === 'object' && Object.keys(safe.headers).length) {
+      safe.headers = {}
+      legacyHeaderMigrationRequired = true
+    }
+    return { type: step.type, config: safe }
+  })
+  return { ...row, enabled: Boolean(row.enabled), steps, ...(steps.length === 1 ? { action: steps[0] } : {}), ...(legacyHeaderMigrationRequired ? { legacyHeaderMigrationRequired: true } : {}) }
 }
 
 function eventJson(payload: EventPayload): string {
@@ -424,6 +431,10 @@ async function decodeRun(row: RunRow) {
 export function registerAutomations(router: Router): void {
   router.group(() => {
     const user = (ctx: HttpContext) => authenticate(ctx)
+    const manageAutomation = async (userId: string, wid: string) => {
+      await requirePermission(userId, wid, 'automations:manage')
+      await requirePermission(userId, wid, 'items:read')
+    }
     router.get('/workspaces/:wid/webhooks', async (ctx) => {
       const { wid } = ctx.params
       await requirePermission((await user(ctx)).id, wid, 'workspace:manage')
@@ -487,7 +498,7 @@ export function registerAutomations(router: Router): void {
     })
     router.get('/workspaces/:wid/automations', async (ctx) => {
       const { wid } = ctx.params
-      await requirePermission((await user(ctx)).id, wid, 'automations:manage')
+      await manageAutomation((await user(ctx)).id, wid)
       const rows = await db.all<AutomationRow>('SELECT * FROM automations WHERE workspaceId=? ORDER BY createdAt,id', wid)
       return Promise.all(rows.map(decodeAutomation))
     })
@@ -497,7 +508,7 @@ export function registerAutomations(router: Router): void {
       const data = automationSchema.parse(ctx.request.body())
       const steps = validateSteps(data.steps ?? [data.action!])
       return db.transaction(async () => {
-        await requirePermission(userId, wid, 'automations:manage')
+        await manageAutomation(userId, wid)
         if (((await db.get('SELECT count(*) AS count FROM automations WHERE workspaceId=?', wid)) as { count: number }).count >= 50) throw new HttpError(400, 'Maximum 50 automations per workspace')
         const first = steps[0]!
         const automation = { id: randomUUID(), workspaceId: wid, name: data.name, event: data.event, version: 1, enabled: data.enabled, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
@@ -514,7 +525,7 @@ export function registerAutomations(router: Router): void {
       const userId = (await user(ctx)).id
       const data = automationPatchSchema.parse(ctx.request.body())
       return db.transaction(async () => {
-        await requirePermission(userId, wid, 'automations:manage')
+        await manageAutomation(userId, wid)
         const previous = await automationInWorkspace(wid, id)
         const requestedSteps = data.steps ?? (data.action ? [data.action] : undefined)
         const currentFormat = await db.get<{ format: string }>('SELECT format FROM automation_versions WHERE workspaceId=? AND automationId=? AND version=?', wid, id, previous.version)
@@ -545,7 +556,7 @@ export function registerAutomations(router: Router): void {
       const { wid, id } = ctx.params
       const userId = (await user(ctx)).id
       return db.transaction(async () => {
-        await requirePermission(userId, wid, 'automations:manage')
+        await manageAutomation(userId, wid)
         await automationInWorkspace(wid, id)
         await db.run("DELETE FROM automation_runs WHERE workspaceId=? AND targetType='automation' AND targetId=?", wid, id)
         await db.run('DELETE FROM automations WHERE workspaceId=? AND id=?', wid, id)
@@ -555,7 +566,7 @@ export function registerAutomations(router: Router): void {
     })
     router.get('/workspaces/:wid/automations/runs', async (ctx) => {
       const { wid } = ctx.params
-      await requirePermission((await user(ctx)).id, wid, 'automations:manage')
+      await manageAutomation((await user(ctx)).id, wid)
       const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(20), automationId: z.string().uuid().optional(), status: z.enum(['pending', 'running', 'delivered', 'failed']).optional() }).strict().parse(ctx.request.qs())
       const clauses = ['workspaceId=?'], values: unknown[] = [wid]
       if (query.automationId) { clauses.push("targetType='automation' AND automationId=?"); values.push(query.automationId) }
@@ -566,7 +577,7 @@ export function registerAutomations(router: Router): void {
     })
     router.get('/workspaces/:wid/automations/runs/:runId', async (ctx) => {
       const { wid, runId } = ctx.params
-      await requirePermission((await user(ctx)).id, wid, 'automations:manage')
+      await manageAutomation((await user(ctx)).id, wid)
       const row = await db.get<RunRow>('SELECT * FROM automation_runs WHERE workspaceId=? AND id=?', wid, runId)
       if (!row) throw new HttpError(404, 'Automation run not found')
       return decodeRun(row)
@@ -575,8 +586,10 @@ export function registerAutomations(router: Router): void {
       const { wid, id } = ctx.params
       const userId = (await user(ctx)).id
       const result = await db.transaction(async () => {
-        await requirePermission(userId, wid, 'automations:manage')
+        await manageAutomation(userId, wid)
         const automation = await automationInWorkspace(wid, id)
+        const version = await db.get<{ format: string; graph: string }>('SELECT format,graph FROM automation_versions WHERE workspaceId=? AND automationId=? AND version=?', wid, id, automation.version)
+        if (version?.format === 'graph' && (JSON.parse(version.graph).nodes as { type: string }[]).some((node) => node.type === 'update_item')) throw new HttpError(400, 'Test runs have no triggering task; use a real task event for Update task graphs')
         const payload: EventPayload = { event: eventSchema.parse(automation.event), workspaceId: wid, actorId: userId, at: new Date().toISOString() }
         const runId = await insertRun(wid, 'automation', automation.id, automation.version, eventJson(payload))
         await audit(userId, wid, 'automation.test', id, { runId, version: automation.version })

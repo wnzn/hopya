@@ -148,6 +148,24 @@ export async function applyCredential(wid: string, id: string, destination: URL,
   return { url: destination, redactions: [...new Set(redactions)].sort((left, right) => right.length - left.length) }
 }
 
+export function redactCredentialOutput(body: string, redactions: readonly string[]): string {
+  const secrets = [...new Set(redactions.filter(Boolean))].sort((left, right) => right.length - left.length)
+  if (!secrets.length) return body
+  const replace = (value: string, values = secrets) => {
+    for (const secret of values) value = value.replaceAll(secret, '[REDACTED]')
+    return value
+  }
+  try { JSON.parse(body) } catch {
+    return replace(body, [...new Set(secrets.flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1)]))].sort((left, right) => right.length - left.length))
+  }
+  // Decode string literals (including keys) without rebuilding JSON or recursing over untrusted depth.
+  return body.replace(/"(?:[^"\\]|\\.)*"|[^"]+/g, (part) => {
+    if (!part.startsWith('"')) return replace(part)
+    const decoded = JSON.parse(part) as string, redacted = replace(decoded)
+    return decoded === redacted ? part : JSON.stringify(redacted)
+  })
+}
+
 export function registerAutomationCredentials(router: Router): void {
   router.group(() => {
     router.get('/workspaces/:wid/automations/credentials', async (ctx) => {
@@ -211,7 +229,12 @@ async function oauthStart(ctx: HttpContext) {
 }
 
 async function oauthCallback(ctx: HttpContext) {
-  const user = await authenticate(ctx), { wid, id } = ctx.params, query = z.object({ state: z.string().min(20).max(200), code: z.string().min(1).max(4000) }).strict().parse(ctx.request.qs())
+  const user = await authenticate(ctx), { wid, id } = ctx.params
+  // Extensions are ignored, not trusted. Verifying iss requires a separately configured expected issuer.
+  const query = z.object({ state: z.string().min(20).max(200), code: z.string().min(1).max(4000) })
+    .catchall(z.string().max(4000))
+    .refine((value) => Object.keys(value).length <= 20 && Object.keys(value).every((key) => key.length <= 100) && Buffer.byteLength(JSON.stringify(value)) <= 16 * 1024, 'OAuth callback parameters are too large')
+    .parse(ctx.request.qs())
   const stateHash = createHash('sha256').update(query.state).digest('hex')
   const flow = await db.transaction(async () => {
     await requirePermission(user.id, wid, 'credentials:manage')

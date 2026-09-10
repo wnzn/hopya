@@ -14,6 +14,7 @@ export function remediateLegacyConfig(config: unknown, nodeIds: string[], types:
     return value
   }
   const result = translate(config) as Record<string, unknown>
+  if (typeof result.body === 'string') result.body = result.body.replaceAll('{{event}}', '{{nodes.trigger.output.event}}')
   if (result.headers && typeof result.headers === 'object' && Object.keys(result.headers).length) {
     result.headers = {}
     result.legacyHeaderMigrationRequired = true
@@ -23,8 +24,13 @@ export function remediateLegacyConfig(config: unknown, nodeIds: string[], types:
 
 interface ReferenceNode { id: string; type: string; config: Record<string, unknown> }
 interface ReferenceEdge { source: string; target: string }
+type Descriptor = string | { readonly [key: string]: Descriptor }
+interface ReferenceCatalog {
+  events: readonly { type: string; output: Descriptor }[]
+  nodes: readonly { type: string; outputs: Descriptor }[]
+}
 
-export function upstreamReferenceErrors(graph: { nodes: ReferenceNode[]; edges: ReferenceEdge[] }): string[] {
+export function upstreamReferenceErrors(graph: { nodes: ReferenceNode[]; edges: ReferenceEdge[] }, catalog?: ReferenceCatalog): string[] {
   const trigger = graph.nodes.find((node) => node.type === 'trigger')
   if (!trigger) return []
   const ids = new Set(graph.nodes.map((node) => node.id)), incoming = new Map<string, ReferenceEdge[]>()
@@ -43,13 +49,39 @@ export function upstreamReferenceErrors(graph: { nodes: ReferenceNode[]; edges: 
     if (!changed) break
   }
   const errors: string[] = []
+  const eventOutput = catalog?.events.find((event) => event.type === trigger.config.event)?.output
+  const outputById = new Map(graph.nodes.map((node) => [node.id, node.type === 'trigger'
+    ? { event: eventOutput ?? {} }
+    : catalog?.nodes.find((entry) => entry.type === node.type)?.outputs]))
+  const validPath = (descriptor: Descriptor | undefined, path: string): boolean => {
+    const parts = path ? path.split('.') : []
+    if (parts.some((part) => !part || ['__proto__', 'prototype', 'constructor'].includes(part))) return false
+    for (const part of parts) {
+      if (descriptor === 'record' || descriptor === 'unknown') return true
+      if (typeof descriptor === 'string') {
+        if (!descriptor.endsWith('[]') || !/^(0|[1-9][0-9]*)$/.test(part)) return false
+        descriptor = descriptor.slice(0, -2)
+      } else {
+        if (!descriptor || !Object.hasOwn(descriptor, part)) return false
+        descriptor = descriptor[part]
+      }
+    }
+    return descriptor !== undefined
+  }
   for (const consumer of graph.nodes) {
-    const references = [...JSON.stringify(consumer.config).matchAll(nodeReferencePattern)].map((match) => match[1]!)
-    if (consumer.type === 'condition' || consumer.type === 'switch') { const match = String(consumer.config.path ?? '').match(nodePathPattern); if (match) references.push(match[1]!) }
-    for (const producer of references) {
+    const references = [...JSON.stringify(consumer.config).matchAll(nodeReferencePattern)].map((match) => ({ producer: match[1]!, path: match[2] ?? '' }))
+    const eventPaths = [...JSON.stringify(consumer.config).matchAll(/\{\{event\.([A-Za-z0-9_.]+)\}\}/g)].map((match) => match[1]!)
+    if (consumer.type === 'condition' || consumer.type === 'switch') {
+      const path = String(consumer.config.path ?? ''), match = path.match(nodePathPattern)
+      if (match) references.push({ producer: match[1]!, path: match[2] ?? '' })
+      else eventPaths.push(path.startsWith('event.') ? path.slice(6) : path)
+    }
+    for (const { producer, path } of references) {
       if (!ids.has(producer)) errors.push(`Node ${consumer.id} references unknown node ${producer}`)
       else if (!dominators.get(consumer.id)?.has(producer) || producer === consumer.id) errors.push(`Node ${consumer.id} references node ${producer}, which is not guaranteed upstream`)
+      else if (catalog && !validPath(outputById.get(producer), path)) errors.push(`Node ${consumer.id} references invalid output path on node ${producer}: ${path}`)
     }
+    if (catalog) for (const path of eventPaths) if (!validPath(eventOutput, path)) errors.push(`Node ${consumer.id} references invalid event path: ${path}`)
   }
   return [...new Set(errors)]
 }

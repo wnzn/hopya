@@ -6,7 +6,7 @@ import { audit, db } from './core.js'
 import { authenticate } from './security.js'
 import { requirePermission, service } from './service.js'
 import { HttpError } from './types.js'
-import { applyCredential, assertSafeDestination } from './automation_credentials.js'
+import { applyCredential, assertSafeDestination, redactCredentialOutput } from './automation_credentials.js'
 import { automationContext, type AutomationCausation } from './automation_context.js'
 import { nodePathPattern, nodeReferencePattern, remediateLegacyConfig, upstreamReferenceErrors } from './automation_graph_validation.js'
 import { outboundHttpError, pinnedRequestEffect, resolvePinnedDestination } from './pinned_http.js'
@@ -45,13 +45,13 @@ const unsafePublicHeaderNode = (graph: AutomationGraph) => graph.nodes.find((nod
 export const automationCatalog = {
   limits: { maxNodes: 50, maxEdges: 75, maxGraphBytes: 262144, maxNodeConfigBytes: 32768, maxExecutionNodes: 50 },
   events: [
-    { type: 'item.created', output: { item: { id: 'string', title: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', actorId: 'string|null', at: 'datetime' } },
-    { type: 'item.updated', output: { item: { id: 'string', title: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
-    { type: 'item.deleted', output: { item: { id: 'string', title: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', actorId: 'string|null', at: 'datetime' } },
-    { type: 'node.created', output: { nodeId: 'string', actorId: 'string|null', at: 'datetime' } },
-    { type: 'node.updated', output: { nodeId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
-    { type: 'node.deleted', output: { nodeId: 'string', actorId: 'string|null', at: 'datetime' } },
-    { type: 'field.changed', output: { fieldId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
+    { type: 'item.created', output: { event: 'string', workspaceId: 'string', item: { id: 'string', workspaceId: 'string', title: 'string', description: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', customFields: 'record', checklist: 'record[]', parentId: 'string|null', archivedAt: 'datetime|null', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', actorId: 'string|null', at: 'datetime' } },
+    { type: 'item.updated', output: { event: 'string', workspaceId: 'string', item: { id: 'string', workspaceId: 'string', title: 'string', description: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', customFields: 'record', checklist: 'record[]', parentId: 'string|null', archivedAt: 'datetime|null', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
+    { type: 'item.deleted', output: { event: 'string', workspaceId: 'string', item: { id: 'string', workspaceId: 'string', title: 'string', description: 'string', status: 'string', priority: 'string', nodeId: 'string', assigneeId: 'string|null', startDate: 'date|null', dueDate: 'date|null', tags: 'string[]', customFields: 'record', checklist: 'record[]', parentId: 'string|null', archivedAt: 'datetime|null', createdAt: 'datetime', updatedAt: 'datetime' }, itemId: 'string', actorId: 'string|null', at: 'datetime' } },
+    { type: 'node.created', output: { event: 'string', workspaceId: 'string', nodeId: 'string', actorId: 'string|null', at: 'datetime' } },
+    { type: 'node.updated', output: { event: 'string', workspaceId: 'string', nodeId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
+    { type: 'node.deleted', output: { event: 'string', workspaceId: 'string', nodeId: 'string', actorId: 'string|null', at: 'datetime' } },
+    { type: 'field.changed', output: { event: 'string', workspaceId: 'string', fieldId: 'string', changes: 'record', actorId: 'string|null', at: 'datetime' } },
   ],
   nodes: [
     { type: 'trigger', kind: 'trigger', inputs: {}, outputs: { event: 'EventPayload' }, config: { event: { type: 'event', required: true } } },
@@ -107,7 +107,7 @@ export function graphErrors(graph: AutomationGraph): string[] {
     const visiting = new Set<string>(), visited = new Set<string>()
     const walk = (id: string) => { if (visiting.has(id)) { errors.push('Graph must be acyclic'); return }; if (visited.has(id)) return; visiting.add(id); for (const edge of outgoing.get(id) ?? []) walk(edge.target); visiting.delete(id); visited.add(id) }
     walk(triggers[0].id); for (const id of ids) if (!visited.has(id)) errors.push(`Node ${id} is unreachable from the trigger`)
-    if (!errors.includes('Graph must be acyclic')) errors.push(...upstreamReferenceErrors(graph))
+    if (!errors.includes('Graph must be acyclic')) errors.push(...upstreamReferenceErrors(graph, automationCatalog))
   }
   return [...new Set(errors)]
 }
@@ -183,7 +183,7 @@ async function startNode(run: GraphRun, nodeId: string): Promise<void> {
   await heartbeat(run)
 }
 async function action(node: AutomationGraph['nodes'][number], run: GraphRun, payload: Record<string, unknown>, outputs: Map<string, unknown>, publisherId: string | null): Promise<{ output: unknown; log: string }> {
-  const config = resolveTemplates(node.config, payload, outputs) as Record<string, unknown>
+  const config = resolveTemplates(configs[node.type].parse(node.config), payload, outputs) as Record<string, unknown>
   if (node.type === 'log') return { output: { message: String(config.message) }, log: String(config.message) }
   if (node.type === 'update_item') {
     if (!publisherId) throw new HttpError(403, 'Automation publisher is unavailable')
@@ -219,8 +219,7 @@ async function action(node: AutomationGraph['nodes'][number], run: GraphRun, pay
     const outcome = await Effect.runPromise(Effect.either(pinnedRequestEffect(destination, { method, headers, body, timeoutMs: 15_000, maxResponseBytes: 7600 })))
     if (outcome._tag === 'Left') throw outboundHttpError(outcome.left)
     if (outcome.right.status < 200 || outcome.right.status >= 300) throw new HttpError(502, `Request responded ${outcome.right.status}`)
-    let bodyOutput = outcome.right.body.toString('utf8')
-    for (const secret of redactions) bodyOutput = bodyOutput.replaceAll(secret, '[REDACTED]')
+    const bodyOutput = redactCredentialOutput(outcome.right.body.toString('utf8'), redactions)
     return { output: { status: outcome.right.status, body: bodyOutput }, log: `Request delivered with status ${outcome.right.status}` }
   }
   return { output: '', log: '' }
@@ -234,7 +233,10 @@ export async function processGraphRun(run: GraphRun): Promise<boolean> {
   for (const edge of graph.edges) outgoing.set(edge.source, [...outgoing.get(edge.source) ?? [], edge])
   let current = graph.nodes.find((node) => node.type === 'trigger'), count = 0; const outputs = new Map<string, unknown>(), visited = new Set<string>()
   try {
+    if (!version.publisherId) throw new HttpError(403, 'Automation publisher is unavailable')
+    await requirePermission(version.publisherId, run.workspaceId, 'items:read')
     while (current) {
+      await requirePermission(version.publisherId, run.workspaceId, 'items:read')
       if (++count > 50 || visited.has(current.id)) throw new HttpError(400, 'Automation execution bound exceeded'); visited.add(current.id)
       await startNode(run, current.id)
       let branch: string | undefined, output: unknown = null
@@ -277,7 +279,7 @@ async function published(wid: string, id: string, version: number) {
 
 export function registerAutomationGraphs(router: Router): void {
   router.group(() => {
-    const manage = async (ctx: HttpContext) => { const user = await authenticate(ctx); await requirePermission(user.id, ctx.params.wid, 'automations:manage'); return user }
+    const manage = async (ctx: HttpContext) => { const user = await authenticate(ctx); await requirePermission(user.id, ctx.params.wid, 'automations:manage'); await requirePermission(user.id, ctx.params.wid, 'items:read'); return user }
     router.get('/workspaces/:wid/automations/catalog', async (ctx) => { await manage(ctx); return automationCatalog })
     router.get('/workspaces/:wid/automations/:id/draft', async (ctx) => {
       await manage(ctx); const { wid, id } = ctx.params, current = await automation(wid, id)
@@ -289,6 +291,7 @@ export function registerAutomationGraphs(router: Router): void {
       if (unsafePublicHeaderNode(data.graph)) throw new HttpError(400, 'Sensitive or hop-by-hop public headers are not allowed in drafts')
       return db.transaction(async () => {
         await requirePermission(user.id, wid, 'automations:manage')
+        await requirePermission(user.id, wid, 'items:read')
         const next = data.expectedRevision + 1, timestamp = new Date().toISOString()
         const changed = data.expectedRevision === 0
           ? await db.run('INSERT INTO automation_drafts (workspaceId,automationId,revision,graph,updatedBy,updatedAt) VALUES (?,?,?,?,?,?) ON CONFLICT(workspaceId,automationId) DO NOTHING', wid, id, next, JSON.stringify(data.graph), user.id, timestamp)
@@ -310,10 +313,13 @@ export function registerAutomationGraphs(router: Router): void {
       if (!candidate) throw new HttpError(409, 'Draft changed; reload before publishing')
       const candidateGraph = graphSchema.parse(JSON.parse(candidate.graph)), candidateErrors = graphErrors(candidateGraph)
       if (candidateErrors.length) throw new HttpError(400, candidateErrors[0]!)
+      for (const node of candidateGraph.nodes) node.config = configs[node.type].parse(node.config)
+      graphSchema.parse(candidateGraph)
       await validateCredentials(wid, candidateGraph)
       return db.transaction(async () => {
         await requirePermission(user.id, wid, 'automations:manage')
-        const consumed = await db.get<{ graph: string }>('DELETE FROM automation_drafts WHERE workspaceId=? AND automationId=? AND revision=? RETURNING graph', wid, id, data.expectedRevision)
+        await requirePermission(user.id, wid, 'items:read')
+        const consumed = await db.get<{ graph: string }>('UPDATE automation_drafts SET revision=revision+1 WHERE workspaceId=? AND automationId=? AND revision=? RETURNING graph', wid, id, data.expectedRevision)
         if (!consumed || consumed.graph !== candidate.graph) throw new HttpError(409, 'Draft changed; reload before publishing')
         const current = await automation(wid, id), graph = candidateGraph, credentials = await validateCredentials(wid, graph, false)
         const version = current.version + 1, timestamp = new Date().toISOString(), trigger = graph.nodes.find((node) => node.type === 'trigger')!, event = triggerConfig.parse(trigger.config).event
