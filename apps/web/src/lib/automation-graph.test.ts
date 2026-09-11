@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AutomationCatalog, AutomationGraph } from "./api";
-import { changeSwitchBranch, connectNodes, createGraph, flowEdges, insertNode, nodeBranches, publicHeaderNameError, reaches, removeEdges, runOutputRows, updateItemSupported, upstreamChoices } from "./automation-graph";
+import { changeSwitchBranch, connectNodes, createGraph, flowEdges, insertNode, moveNode, nodeBranches, publicHeaderNameError, reaches, removeEdges, runOutputRows, setNextNode, topToBottomGraph, updateItemSupported, upstreamChoices } from "./automation-graph";
 
 test("graph connections reject cycles and replace ordinary fanout", () => {
   let graph = createGraph();
@@ -101,12 +101,46 @@ test("flow edges select the matching control handles without changing persisted 
     const original = structuredClone(graph);
     const branches = nodeBranches(graph.nodes.find((node) => node.id === control.id)!);
     const edges = flowEdges(graph);
+    assert.ok(edges.filter((edge) => edge.source === control.id).every((edge) => edge.type === (type === "condition" ? "smoothstep" : "straight")));
+    assert.equal(edges.find((edge) => edge.source === "trigger")?.type, "straight");
     assert.deepEqual(edges.filter((edge) => edge.source === control.id).map((edge) => edge.sourceHandle), branches);
     assert.deepEqual(edges.filter((edge) => edge.source === control.id).map((edge) => edge.label), branches);
     assert.equal(edges.find((edge) => edge.source === "trigger")?.sourceHandle, undefined);
     assert.deepEqual(graph, original);
     assert.equal(JSON.stringify(graph).includes("sourceHandle"), false);
   }
+});
+
+test("old horizontal graphs are oriented top to bottom without changing valid vertical layouts", () => {
+  const horizontal = insertNode(createGraph(), "log", "trigger").graph;
+  const vertical = topToBottomGraph(horizontal);
+  const edge = vertical.edges[0]!;
+  const source = vertical.nodes.find((node) => node.id === edge.source)!;
+  const target = vertical.nodes.find((node) => node.id === edge.target)!;
+  assert.ok(target.position.y > source.position.y);
+  assert.equal(topToBottomGraph(vertical), vertical);
+});
+
+test("next-node selection can replace or end a path but rejects cycles", () => {
+  const first = insertNode(createGraph(), "log", "trigger");
+  const second = insertNode(first.graph, "http", first.id!);
+  const replaced = setNextNode(second.graph, "trigger", second.id!);
+  assert.equal(replaced.edges.find((edge) => edge.source === "trigger")?.target, second.id);
+  assert.equal(replaced.edges.some((edge) => edge.target === first.id), false);
+  assert.equal(setNextNode(second.graph, second.id!, "trigger"), second.graph);
+  assert.equal(setNextNode(replaced, "trigger", "").edges.some((edge) => edge.source === "trigger"), false);
+});
+
+test("execution ordering swaps adjacent ordinary steps and preserves the chain", () => {
+  const first = insertNode(createGraph(), "log", "trigger");
+  const second = insertNode(first.graph, "http", first.id!);
+  const third = insertNode(second.graph, "email", second.id!);
+  const moved = moveNode(third.graph, second.id!, "earlier");
+  assert.equal(moved.edges.find((edge) => edge.source === "trigger")?.target, second.id);
+  assert.equal(moved.edges.find((edge) => edge.source === second.id)?.target, first.id);
+  assert.equal(moved.edges.find((edge) => edge.source === first.id)?.target, third.id);
+  const condition = insertNode(third.graph, "condition", second.id!);
+  assert.equal(moveNode(condition.graph, condition.id!, "earlier"), condition.graph);
 });
 
 test("direct rewiring rejects orphaning a displaced downstream subtree", () => {

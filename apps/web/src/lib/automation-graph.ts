@@ -13,6 +13,14 @@ const sensitivePublicHeaders = new Set([
   "upgrade", "te", "trailer", "keep-alive", "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token",
 ]);
 
+function randomId(): string {
+  try {
+    return globalThis.crypto.randomUUID();
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
 export function publicHeaderNameError(name: string): string | null {
   return sensitivePublicHeaders.has(name.trim().toLowerCase())
     ? `"${name}" is sensitive or hop-by-hop. Remove it and use an authentication profile for secret headers.`
@@ -68,7 +76,42 @@ export function nodeBranches(node: AutomationGraphNode): string[] {
 }
 
 export function flowEdges(graph: AutomationGraph) {
-  return graph.edges.map((edge) => ({ ...edge, ...(edge.branch ? { sourceHandle: edge.branch, label: edge.branch } : {}) }));
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  return graph.edges.map((edge) => ({ ...edge, type: byId.get(edge.source)?.type === "condition" ? "smoothstep" : "straight", ...(edge.branch ? { sourceHandle: edge.branch, label: edge.branch } : {}) }));
+}
+
+export function topToBottomGraph(graph: AutomationGraph): AutomationGraph {
+  const trigger = graph.nodes.find((node) => node.type === "trigger");
+  if (!trigger) return graph;
+  const depths = new Map([[trigger.id, 0]]);
+  for (let pass = 0; pass < graph.nodes.length; pass++) {
+    for (const edge of graph.edges) {
+      const sourceDepth = depths.get(edge.source);
+      if (sourceDepth !== undefined) depths.set(edge.target, Math.max(depths.get(edge.target) ?? 0, sourceDepth + 1));
+    }
+  }
+  const levels = new Map<number, AutomationGraphNode[]>();
+  for (const node of graph.nodes) {
+    const depth = depths.get(node.id);
+    if (depth === undefined) continue;
+    levels.set(depth, [...levels.get(depth) ?? [], node]);
+  }
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const [depth, nodes] of levels) {
+    nodes.sort((a, b) => a.position.x - b.position.x);
+    nodes.forEach((node, index) => positions.set(node.id, {
+      x: trigger.position.x + (index - (nodes.length - 1) / 2) * 280,
+      y: trigger.position.y + depth * 220,
+    }));
+  }
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    const position = positions.get(node.id);
+    if (!position || (position.x === node.position.x && position.y === node.position.y)) return node;
+    changed = true;
+    return { ...node, position };
+  });
+  return changed ? { ...graph, nodes } : graph;
 }
 
 export function changeSwitchBranch(graph: AutomationGraph, nodeId: string, index: number | "default", value: string | null): AutomationGraph {
@@ -89,7 +132,7 @@ export function changeSwitchBranch(graph: AutomationGraph, nodeId: string, index
     nodes: graph.nodes.map((entry) => entry.id === nodeId ? updated : entry),
     edges: graph.edges.flatMap((edge) => {
       if (edge.source !== nodeId || edge.branch !== previous) return [edge];
-      return [...(shared ? [edge] : []), ...(value === null ? [] : [{ ...edge, id: shared ? `edge-${crypto.randomUUID()}` : edge.id, branch: value }])];
+      return [...(shared ? [edge] : []), ...(value === null ? [] : [{ ...edge, id: shared ? `edge-${randomId()}` : edge.id, branch: value }])];
     }),
   };
   const trigger = graph.nodes.find((entry) => entry.type === "trigger");
@@ -144,10 +187,59 @@ export function connectNodes(graph: AutomationGraph, source: string, target: str
     : (edge: AutomationGraph["edges"][number]) => edge.source === source;
   const displaced = graph.edges.filter(replace);
   const edges = graph.edges.filter((edge) => !replace(edge));
-  const next = { ...graph, edges: [...edges, { id: `edge-${crypto.randomUUID()}`, source, target, ...(branch ? { branch } : {}) }] };
+  const next = { ...graph, edges: [...edges, { id: `edge-${randomId()}`, source, target, ...(branch ? { branch } : {}) }] };
   const trigger = graph.nodes.find((node) => node.type === "trigger");
   if (trigger && displaced.some((edge) => !reaches(next, trigger.id, edge.target))) return graph;
   return next;
+}
+
+export function setNextNode(graph: AutomationGraph, source: string, target: string, branch?: string): AutomationGraph {
+  const sourceNode = graph.nodes.find((node) => node.id === source);
+  if (!sourceNode) return graph;
+  const branches = nodeBranches(sourceNode);
+  if (branches.length ? !branch || !branches.includes(branch) : branch !== undefined) return graph;
+  const matchesSlot = (edge: AutomationGraph["edges"][number]) => edge.source === source && edge.branch === branch;
+  const current = graph.edges.find(matchesSlot);
+  if ((current?.target ?? "") === target) return graph;
+  const edges = graph.edges.filter((edge) => !matchesSlot(edge));
+  if (!target) return { ...graph, edges };
+  if (target === source || !graph.nodes.some((node) => node.id === target && node.type !== "trigger")) return graph;
+  const withoutCurrent = { ...graph, edges };
+  if (reaches(withoutCurrent, target, source)) return graph;
+  return { ...graph, edges: [...edges, { id: current?.id ?? `edge-${randomId()}`, source, target, ...(branch ? { branch } : {}) }] };
+}
+
+function swapAdjacent(graph: AutomationGraph, firstId: string, secondId: string): AutomationGraph {
+  const first = graph.nodes.find((node) => node.id === firstId);
+  const second = graph.nodes.find((node) => node.id === secondId);
+  if (!first || !second || first.type === "trigger" || nodeBranches(first).length || nodeBranches(second).length) return graph;
+  const between = graph.edges.filter((edge) => edge.source === firstId && edge.target === secondId);
+  const firstIncoming = graph.edges.filter((edge) => edge.target === firstId);
+  const firstOutgoing = graph.edges.filter((edge) => edge.source === firstId);
+  const secondIncoming = graph.edges.filter((edge) => edge.target === secondId);
+  const secondOutgoing = graph.edges.filter((edge) => edge.source === secondId);
+  if (between.length !== 1 || firstIncoming.length !== 1 || firstOutgoing.length !== 1 || secondIncoming.length !== 1 || secondOutgoing.length > 1) return graph;
+  const incomingId = firstIncoming[0]!.id;
+  const betweenId = between[0]!.id;
+  const outgoingId = secondOutgoing[0]?.id;
+  return {
+    ...graph,
+    edges: graph.edges.map((edge) => {
+      if (edge.id === incomingId) return { ...edge, target: secondId };
+      if (edge.id === betweenId) return { ...edge, source: secondId, target: firstId };
+      if (edge.id === outgoingId) return { ...edge, source: firstId };
+      return edge;
+    }),
+  };
+}
+
+export function moveNode(graph: AutomationGraph, nodeId: string, direction: "earlier" | "later"): AutomationGraph {
+  if (direction === "earlier") {
+    const incoming = graph.edges.filter((edge) => edge.target === nodeId);
+    return incoming.length === 1 ? swapAdjacent(graph, incoming[0]!.source, nodeId) : graph;
+  }
+  const outgoing = graph.edges.filter((edge) => edge.source === nodeId);
+  return outgoing.length === 1 ? swapAdjacent(graph, nodeId, outgoing[0]!.target) : graph;
 }
 
 export function insertNode(graph: AutomationGraph, type: Exclude<AutomationNodeType, "trigger">, afterId: string, requestedBranch?: string): { graph: AutomationGraph; id: string | null } {
@@ -158,16 +250,18 @@ export function insertNode(graph: AutomationGraph, type: Exclude<AutomationNodeT
     : undefined;
   if (controlBranches.length && !branch) return { graph, id: null };
   const outgoing = graph.edges.find((edge) => edge.source === after.id && (controlBranches.length ? edge.branch === branch : edge.branch === undefined));
-  const id = `${type}-${crypto.randomUUID()}`;
-  const node: AutomationGraphNode = { id, type, position: { x: after.position.x + 280, y: after.position.y }, config: defaultConfig(type) };
+  const id = `${type}-${randomId()}`;
+  const branchIndex = branch ? controlBranches.indexOf(branch) : -1;
+  const x = branchIndex < 0 ? after.position.x : after.position.x + (branchIndex - (controlBranches.length - 1) / 2) * 280;
+  const node: AutomationGraphNode = { id, type, position: { x, y: after.position.y + 220 }, config: defaultConfig(type) };
   const successorBranch = type === "condition" ? "false" : type === "switch" ? String(node.config.defaultBranch) : undefined;
   const retainedEdges = outgoing ? graph.edges.filter((edge) => edge.id !== outgoing.id) : graph.edges;
   const next: AutomationGraph = {
     nodes: [...graph.nodes, node],
     edges: [
       ...retainedEdges,
-      { id: `edge-${crypto.randomUUID()}`, source: after.id, target: id, ...(branch ? { branch } : {}) },
-      ...(outgoing ? [{ id: `edge-${crypto.randomUUID()}`, source: id, target: outgoing.target, ...(successorBranch ? { branch: successorBranch } : {}) }] : []),
+      { id: `edge-${randomId()}`, source: after.id, target: id, ...(branch ? { branch } : {}) },
+      ...(outgoing ? [{ id: `edge-${randomId()}`, source: id, target: outgoing.target, ...(successorBranch ? { branch: successorBranch } : {}) }] : []),
     ],
   };
   return { graph: next, id };
