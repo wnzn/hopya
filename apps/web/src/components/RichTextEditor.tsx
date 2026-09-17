@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Editor, Extension } from "@tiptap/core";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -14,6 +14,7 @@ import {
 } from "../lib/rich-text";
 import type { CommentAnchor } from "../lib/api";
 import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 
 type Props = {
   value: string;
@@ -428,7 +429,7 @@ export default function RichTextEditor({
 
   const toolbarButton = (
     label: string,
-    text: string,
+    content: ReactNode,
     active: boolean,
     onPress: () => void,
   ) => (
@@ -448,7 +449,7 @@ export default function RichTextEditor({
         onPress();
       }}
     >
-      {text}
+      {content}
     </button>
   );
 
@@ -565,7 +566,7 @@ export default function RichTextEditor({
             editor?.isActive("strike") ?? false,
             () => editor?.chain().toggleStrike().run(),
           )}
-          {toolbarButton("Code", "<>", editor?.isActive("code") ?? false, () =>
+          {toolbarButton("Code", <SolidIcon name="code" />, editor?.isActive("code") ?? false, () =>
             editor?.chain().toggleCode().run(),
           )}
           <Select aria-label="Text style" disabled={readOnly || !editor}
@@ -582,7 +583,7 @@ export default function RichTextEditor({
           </Select>
           {toolbarButton(
             "Bulleted list",
-            "• List",
+            <SolidIcon name="list" />,
             editor?.isActive("bulletList") ?? false,
             () => editor?.chain().toggleBulletList().run(),
           )}
@@ -600,11 +601,11 @@ export default function RichTextEditor({
           )}
           {toolbarButton(
             "Code block",
-            "{ }",
+            <SolidIcon name="code" />,
             editor?.isActive("codeBlock") ?? false,
             () => editor?.chain().toggleCodeBlock().run(),
           )}
-          {toolbarButton("Link", "Link", editor?.isActive("link") ?? false, openLinkRow)}
+          {toolbarButton("Link", <SolidIcon name="link" />, editor?.isActive("link") ?? false, openLinkRow)}
           </>}
         </div>}
       {!readOnly && linkOpen && (

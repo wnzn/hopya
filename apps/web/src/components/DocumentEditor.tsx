@@ -3,6 +3,7 @@ import { api, ApiError, message, workspacePath, type Detail, type DocumentRecord
 import RichTextEditor, { type TextAnnotation, type TextSelection } from "./RichTextEditor";
 import CommentsPanel from "./CommentsPanel";
 import { ErrorNotice, Loading } from "./Shared";
+import SolidIcon from "./SolidIcon";
 
 const noDocumentAnnotations: TextAnnotation[] = [];
 const documentTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -228,7 +229,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
     return <li key={page.id} className={depth ? "document-page-subpage" : "document-page-root"}>
       <div className={`document-page-row${hasChildren ? " has-children" : ""}`}>
         {hasChildren ? <button type="button" className={`document-page-toggle${collapsedPages.has(page.id) ? "" : " expanded"}`}
-          aria-label={`${collapsedPages.has(page.id) ? "Expand" : "Collapse"} ${page.title}`} aria-expanded={!collapsedPages.has(page.id)} onClick={() => togglePage(page.id)}><span aria-hidden="true">›</span></button>
+          aria-label={`${collapsedPages.has(page.id) ? "Expand" : "Collapse"} ${page.title}`} aria-expanded={!collapsedPages.has(page.id)} onClick={() => togglePage(page.id)}><SolidIcon name="chevronRight" /></button>
           : <span className="document-page-toggle-spacer" aria-hidden="true" />}
         {renamingPageId === page.id ? <>
           <input className="document-page-rename" aria-label={`Rename ${page.title}`} autoFocus value={pageTitleDraft} maxLength={300} disabled={busy}
@@ -236,14 +237,14 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
               if (event.key === "Enter") { event.preventDefault(); void savePageTitle(page); }
               if (event.key === "Escape") setRenamingPageId(null);
             }} />
-          <button type="button" className="document-page-rename-action" aria-label={`Save ${page.title} name`} disabled={busy || !pageTitleDraft.trim()} onClick={() => void savePageTitle(page)}>✓</button>
-          <button type="button" className="document-page-rename-action" aria-label={`Cancel renaming ${page.title}`} disabled={busy} onClick={() => setRenamingPageId(null)}>×</button>
+          <button type="button" className="document-page-rename-action" aria-label={`Save ${page.title} name`} disabled={busy || !pageTitleDraft.trim()} onClick={() => void savePageTitle(page)}><SolidIcon name="check" /></button>
+          <button type="button" className="document-page-rename-action" aria-label={`Cancel renaming ${page.title}`} disabled={busy} onClick={() => setRenamingPageId(null)}><SolidIcon name="x" /></button>
         </> : <>
           <button type="button" className={`document-page-select${page.id === summary.id ? " selected" : ""}`} title={page.title} onClick={() => onOpenDocument(page)}><span>{page.title}</span></button>
           {canWrite && <button type="button" className="document-page-add" aria-label={pageParentId === page.id && pagePlacement === "subpage" ? `Close subpage form for ${page.title}` : `Add subpage to ${page.title}`} aria-expanded={pageParentId === page.id && pagePlacement === "subpage"}
-            onClick={() => { const closing = pageParentId === page.id && pagePlacement === "subpage"; setPageName(""); setPageParentId(closing ? null : page.id); setPagePlacement(closing ? null : "subpage"); }}>{pageParentId === page.id && pagePlacement === "subpage" ? "−" : "+"}</button>}
+            onClick={() => { const closing = pageParentId === page.id && pagePlacement === "subpage"; setPageName(""); setPageParentId(closing ? null : page.id); setPagePlacement(closing ? null : "subpage"); }}><SolidIcon name={pageParentId === page.id && pagePlacement === "subpage" ? "x" : "plus"} /></button>}
           {(canWrite || canDelete) && <button type="button" className="document-page-options" aria-label={`Options for ${page.title}`} aria-expanded={pageMenuId === page.id}
-            onClick={() => setPageMenuId(current => current === page.id ? null : page.id)}>···</button>}
+            onClick={() => setPageMenuId(current => current === page.id ? null : page.id)}><SolidIcon name="more" /></button>}
           {pageMenuId === page.id && <div className="document-page-menu" role="menu">
             <button type="button" role="menuitem" onClick={() => { setPageMenuId(null); onOpenDocument(page); }}>Open</button>
             {canWrite && <button type="button" role="menuitem" onClick={() => { setPageMenuId(null); setPageTitleDraft(page.title); setRenamingPageId(page.id); }}>Rename</button>}
@@ -256,7 +257,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
   };
   return <div className="document-layout">
     <aside className="document-pages" aria-labelledby="document-pages-heading">
-      <header><h2 id="document-pages-heading">Pages</h2><div className="document-pages-actions"><strong>{pageTotal + 1}</strong>{canWrite && <button type="button" className="icon-button" aria-label={addingTopLevelPage ? "Close new page" : "Add page"} aria-expanded={addingTopLevelPage} onClick={() => { setPageName(""); setPageParentId(addingTopLevelPage ? null : rootId); setPagePlacement(addingTopLevelPage ? null : "page"); }}>{addingTopLevelPage ? "−" : "+"}</button>}</div></header>
+      <header><h2 id="document-pages-heading">Pages</h2><div className="document-pages-actions"><strong>{pageTotal + 1}</strong>{canWrite && <button type="button" className="icon-button" aria-label={addingTopLevelPage ? "Close new page" : "Add page"} aria-expanded={addingTopLevelPage} onClick={() => { setPageName(""); setPageParentId(addingTopLevelPage ? null : rootId); setPagePlacement(addingTopLevelPage ? null : "page"); }}><SolidIcon name={addingTopLevelPage ? "x" : "plus"} /></button>}</div></header>
       {pagesTruncated && <p className="muted">Showing the first {pages.length} of {pageTotal} nested pages.</p>}
       {pageParentId && pagePlacement && <form className="document-page-link" onSubmit={createPage}><label>{pagePlacement === "page" ? "Page name" : `Subpage of ${pageParent?.title ?? "page"}`}<input aria-label={pagePlacement === "page" ? "Page name" : "Subpage name"} autoFocus value={pageName} maxLength={300} required onChange={event => setPageName(event.target.value)} /></label><button type="submit" disabled={busy || !pageName.trim()}>{busy ? "Creating..." : "Create"}</button></form>}
       <ol>{pageRoots.map(page => renderPage(page, 0))}</ol>
@@ -275,8 +276,8 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
                   if (event.key === "Enter") { event.preventDefault(); void saveTitle(); }
                   if (event.key === "Escape") { setEditingTitle(false); setTitleDraft(document.title); }
                 }} />
-              <button type="button" className="inline-title-action inline-save" aria-label="Save document title" disabled={busy || !titleDraft.trim()} onClick={() => void saveTitle()}>✓</button>
-              <button type="button" className="inline-title-action" aria-label="Cancel renaming document" disabled={busy} onClick={() => { setEditingTitle(false); setTitleDraft(document.title); }}>×</button>
+              <button type="button" className="inline-title-action inline-save" aria-label="Save document title" disabled={busy || !titleDraft.trim()} onClick={() => void saveTitle()}><SolidIcon name="check" /></button>
+              <button type="button" className="inline-title-action" aria-label="Cancel renaming document" disabled={busy} onClick={() => { setEditingTitle(false); setTitleDraft(document.title); }}><SolidIcon name="x" /></button>
             </div> : <h1>{canWrite ? <button type="button" aria-label="Rename document" onClick={() => setEditingTitle(true)}>{document.title}</button> : document.title}</h1>}
             <p className="document-paper-meta">Created {documentTimestamp.format(new Date(document.createdAt))} · Updated {documentTimestamp.format(new Date(document.updatedAt))}{document.updatedByName ? ` by ${document.updatedByName}` : ""}</p>
           </div>
@@ -290,7 +291,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
     </main>
     <div className="document-comments-layer" hidden={!commentsOpen} onMouseDown={event => { if (event.target === event.currentTarget) setCommentsOpen(false); }}>
       <div ref={commentsDialog} className="document-comments-drawer" id="document-comments" role="dialog" aria-modal="true" aria-labelledby="comments-heading">
-        <button type="button" className="icon-button document-comments-close" aria-label="Close comments" onClick={() => setCommentsOpen(false)}>×</button>
+        <button type="button" className="icon-button document-comments-close" aria-label="Close comments" onClick={() => setCommentsOpen(false)}><SolidIcon name="x" /></button>
         <CommentsPanel key={document.id} detail={detail} document={document} items={items} currentUserId={currentUserId}
           anchor={commentAnchor} onAnchorUsed={() => setCommentAnchor(null)}
           onCommentsChange={comments => setAnnotations(comments.flatMap(comment => comment.anchor ? [{

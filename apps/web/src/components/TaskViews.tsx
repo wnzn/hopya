@@ -175,8 +175,8 @@ function ColumnControls({ columns, settings, onChange, saving, error }: {
           onDrop={(event) => { event.preventDefault(); drop(index); }}
         >
           <span>{name(key)}</span>
-          <button type="button" disabled={saving || index === 0} aria-label={`Move ${name(key)} column left`} onClick={() => move(key, -1)}>←</button>
-          <button type="button" disabled={saving || index === settings.columnOrder.length - 1} aria-label={`Move ${name(key)} column right`} onClick={() => move(key, 1)}>→</button>
+          <button type="button" disabled={saving || index === 0} aria-label={`Move ${name(key)} column left`} onClick={() => move(key, -1)}><SolidIcon name="arrowLeft" /></button>
+          <button type="button" disabled={saving || index === settings.columnOrder.length - 1} aria-label={`Move ${name(key)} column right`} onClick={() => move(key, 1)}><SolidIcon name="arrowRight" /></button>
           <button type="button" disabled={saving || key === "title"} aria-pressed={!settings.hiddenColumns.includes(key)}
             aria-label={`${settings.hiddenColumns.includes(key) ? "Show" : "Hide"} ${name(key)} column`} onClick={() => toggle(key)}>
             <SolidIcon name={settings.hiddenColumns.includes(key) ? "eyeOff" : "eye"} />
@@ -233,7 +233,7 @@ function FilterControls({ fields, filters, groupBy, onFilters, onGroupBy, typeOf
       <SolidIcon name={expanded ? "chevronUp" : "chevronDown"} />
     </button>
     {expanded && <div id={panelId} className="list-filter-panel">
-      <div className="list-filter-heading"><strong>Match all filters</strong><button type="button" onClick={add}>+ Add filter</button></div>
+      <div className="list-filter-heading"><strong>Match all filters</strong><button type="button" aria-label="+ Add filter" onClick={add}><SolidIcon name="plus" /> Add filter</button></div>
       {filters.map((filter, index) => {
         const selectedField = field(filter.field);
         const choices = optionsFor(selectedField);
@@ -711,7 +711,7 @@ export default function TaskViews({
               disabled={monthValue === "0000-01"}
               onClick={() => setMonth(monthStart(month, -1))}
             >
-              ←
+              <SolidIcon name="arrowLeft" />
             </button>
             <button onClick={() => setMonth(new Date())}>Today</button>
             <button
@@ -719,7 +719,7 @@ export default function TaskViews({
               disabled={monthValue === "9999-12"}
               onClick={() => setMonth(monthStart(month, 1))}
             >
-              →
+              <SolidIcon name="arrowRight" />
             </button>
           </div>
         </div>
@@ -887,7 +887,7 @@ export default function TaskViews({
                 {tasks.slice(0, limit).map((i) => (
                   <button key={i.id} data-task-id={i.id} onClick={() => onOpen(i)}>
                     {i.title}
-                    <span>{i.dueDate || i.startDate || "Add dates"} →</span>
+                    <span>{i.dueDate || i.startDate || "Add dates"} <SolidIcon name="arrowRight" /></span>
                   </button>
                 ))}
               </section>

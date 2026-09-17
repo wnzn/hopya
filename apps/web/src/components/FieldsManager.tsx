@@ -144,7 +144,7 @@ export default function FieldsManager() {
                         : [...current, child.id],
                     )}
                   >
-                    <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
+                    <SolidIcon name={isCollapsed ? "chevronRight" : "chevronDown"} />
                   </button>
                 )}
                 <TargetButton
@@ -241,7 +241,7 @@ export default function FieldsManager() {
                                       : [...current, root.id],
                                   )}
                                 >
-                                  <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
+                                  <SolidIcon name={isCollapsed ? "chevronRight" : "chevronDown"} />
                                 </button>
                               )}
                               <TargetButton
@@ -269,7 +269,7 @@ export default function FieldsManager() {
                 <div className="fields-manager-panel-body">
                   {!target || !detail || (target.kind !== "list" && !project) ? (
                     <div className="fields-manager-empty">
-                      <SolidIcon name="diamond" />
+                      <SolidIcon name="package" />
                       <p>Select a project, folder, or list to manage its fields and statuses.</p>
                     </div>
                   ) : (

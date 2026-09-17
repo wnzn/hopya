@@ -34,8 +34,12 @@ const secured = (permission?: string) => permission
 
 const event = str({ enum: [...events] })
 const priority = str({ enum: ['none', 'low', 'medium', 'high', 'urgent'] })
-const nodeIcon = nullable(str({ enum: ['diamond', 'briefcase', 'target', 'folder', 'archive', 'bookmark', 'list', 'checklist', 'calendar', 'flag'] }))
-const nodeColor = nullable(str({ enum: ['slate', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'rose'] }))
+const nodeIcon = nullable(str({ enum: ['diamond', 'briefcase', 'target', 'home', 'star', 'heart', 'globe', 'clock', 'mapPin', 'settings', 'lock', 'users', 'user', 'folder', 'archive', 'bookmark', 'list', 'checklist', 'calendar', 'flag', 'package', 'shoppingBag', 'fileText', 'inbox', 'trash', 'pencil', 'eye', 'eyeOff', 'sparkles', 'code', 'link', 'comment', 'save'] }))
+const nodeColor = nullable(str({ pattern: '^#[0-9a-f]{6}$', example: '#c45d0a', description: 'Normalized lowercase six-digit hex color.' }))
+const nodeColorInput = {
+  anyOf: [str({ pattern: '^#[0-9a-fA-F]{6}$' }), str({ enum: ['slate', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'rose'] }), { type: 'null' }],
+  description: 'Six-digit hex color. Legacy catalog names remain accepted and are returned as their normalized hex value.',
+}
 const date = nullable(str({ format: 'date', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }))
 const hexColor = str({ pattern: '^#[0-9a-fA-F]{6}$', example: '#2f7d32' })
 const action = { oneOf: [
@@ -103,8 +107,8 @@ const schemas = {
     id: uuid(), workspaceId: uuid(), name: str({ maxLength: 120 }), description: str({ maxLength: 50000 }),
     kind: str({ enum: ['project', 'folder', 'list'] }), parentId: nullable(uuid()), icon: nodeIcon, color: nodeColor, createdAt: timestamp(),
   }, ['id', 'workspaceId', 'name', 'description', 'kind', 'parentId', 'icon', 'color', 'createdAt']),
-  NodeCreate: object({ name: str({ minLength: 1, maxLength: 120 }), description: str({ maxLength: 50000 }), kind: str({ enum: ['project', 'folder', 'list'] }), parentId: nullable(uuid()), icon: nodeIcon, color: nodeColor }, ['name', 'kind'], { additionalProperties: false }),
-  NodePatch: object({ name: str({ minLength: 1, maxLength: 120 }), description: str({ maxLength: 50000 }), parentId: nullable(uuid()), expectedParentId: nullable(uuid()), icon: nodeIcon, color: nodeColor }, [], { additionalProperties: false, anyOf: [{ required: ['name'] }, { required: ['description'] }, { required: ['parentId'] }, { required: ['icon'] }, { required: ['color'] }], dependentRequired: { expectedParentId: ['parentId'] } }),
+  NodeCreate: object({ name: str({ minLength: 1, maxLength: 120 }), description: str({ maxLength: 50000 }), kind: str({ enum: ['project', 'folder', 'list'] }), parentId: nullable(uuid()), icon: nodeIcon, color: nodeColorInput }, ['name', 'kind'], { additionalProperties: false }),
+  NodePatch: object({ name: str({ minLength: 1, maxLength: 120 }), description: str({ maxLength: 50000 }), parentId: nullable(uuid()), expectedParentId: nullable(uuid()), icon: nodeIcon, color: nodeColorInput }, [], { additionalProperties: false, anyOf: [{ required: ['name'] }, { required: ['description'] }, { required: ['parentId'] }, { required: ['icon'] }, { required: ['color'] }], dependentRequired: { expectedParentId: ['parentId'] } }),
   FieldSettings: object({ dateFormat: str({ enum: ['yyyy-MM-dd', 'MMM d, yyyy', 'MMMM d, yyyy', 'dd/MM/yyyy'] }), maxRating: { type: 'integer', minimum: 1, maximum: 10 }, formula: str({ minLength: 1, maxLength: 200 }) }, [], { additionalProperties: false }),
   Field: object({ id: uuid(), workspaceId: uuid(), name: str({ maxLength: 120 }), type: str({ enum: ['text', 'number', 'date', 'datetime', 'checkbox', 'select', 'checklist', 'rating', 'formula'] }), options: array(str({ maxLength: 120 }), { maxItems: 100 }), settings: ref('FieldSettings') }, ['id', 'workspaceId', 'name', 'type', 'options']),
   FieldCreate: object({ name: str({ minLength: 1, maxLength: 120 }), type: str({ enum: ['text', 'number', 'date', 'datetime', 'checkbox', 'select', 'checklist', 'rating', 'formula'] }), options: array(str({ minLength: 1, maxLength: 120 }), { maxItems: 100 }), settings: ref('FieldSettings'), projectId: uuid() }, ['name', 'type'], { additionalProperties: false }),
@@ -233,10 +237,10 @@ function paths() {
     '/workspaces/{wid}/export': { get: { summary: 'Stream complete workspace export', description: secured('items:read'), tags: [workspaceTag], parameters: [wid], responses: { '200': response('Complete versioned JSON export; attachment metadata only, never attachment bytes or secrets', object({}, [], { additionalProperties: true })) } } },
     '/workspaces/{wid}/nodes': {
       get: { summary: 'List hierarchy nodes', description: 'Requires items:read or structure:write.', tags: [structureTag], parameters: [wid], responses: { '200': ok(array(ref('Node'))) } },
-      post: { summary: 'Create a project, folder, or list', description: `${secured('structure:write')} Projects and standalone lists may use a null parent; folders and nested lists require a project or folder parent.`, tags: [structureTag], parameters: [wid], requestBody: body(ref('NodeCreate'), { name: 'Release backlog', kind: 'list', parentId: null, icon: 'checklist', color: 'orange' }), responses: { '201': ok(ref('Node')), '400': error('Invalid hierarchy placement'), '403': error('Permission denied') } },
+      post: { summary: 'Create a project, folder, or list', description: `${secured('structure:write')} Projects and standalone lists may use a null parent; folders and nested lists require a project or folder parent.`, tags: [structureTag], parameters: [wid], requestBody: body(ref('NodeCreate'), { name: 'Release backlog', kind: 'list', parentId: null, icon: 'checklist', color: '#c45d0a' }), responses: { '201': ok(ref('Node')), '400': error('Invalid hierarchy placement'), '403': error('Permission denied') } },
     },
     '/workspaces/{wid}/nodes/{id}': {
-      patch: { summary: 'Rename, move, or style a node', description: `${secured('structure:write')} Lists may move to workspace root; inherited statuses are materialized first. Other moves reject cycles, cross-workspace parents, incompatible inherited statuses, and hierarchy depth above 32.`, tags: [structureTag], parameters: [wid, pathId('id', 'Node ID in this workspace.')], requestBody: body(ref('NodePatch'), { name: 'Ready for review', icon: 'flag', color: 'green' }), responses: { '200': ok(ref('Node')), '400': error('Invalid node update'), '404': error('Node not found'), '409': error('Location changed; reload before moving') } },
+      patch: { summary: 'Rename, move, or style a node', description: `${secured('structure:write')} Lists may move to workspace root; inherited statuses are materialized first. Other moves reject cycles, cross-workspace parents, incompatible inherited statuses, and hierarchy depth above 32.`, tags: [structureTag], parameters: [wid, pathId('id', 'Node ID in this workspace.')], requestBody: body(ref('NodePatch'), { name: 'Ready for review', icon: 'sparkles', color: '#4d7a47' }), responses: { '200': ok(ref('Node')), '400': error('Invalid node update'), '404': error('Node not found'), '409': error('Location changed; reload before moving') } },
       delete: { summary: 'Delete an empty node', description: secured('structure:write'), tags: [structureTag], parameters: [wid, pathId('id', 'Node ID in this workspace.')], responses: { '200': ok(success, { success: true }), '404': error('Node not found'), '409': error('Node must be empty before deletion') } },
     },
     '/workspaces/{wid}/documents': {

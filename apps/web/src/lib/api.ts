@@ -167,7 +167,46 @@ export const statuses = [
   "done",
 ] as const;
 export const priorities = ["none", "low", "medium", "high", "urgent"] as const;
-export const nodeIcons = ["diamond", "briefcase", "target", "folder", "archive", "bookmark", "list", "checklist", "calendar", "flag"] as const;
+export const nodeIcons = [
+  "diamond", "briefcase", "target", "home", "star", "heart", "globe", "clock", "mapPin", "settings", "lock", "users", "user", "folder", "archive", "bookmark", "list", "checklist", "calendar", "flag",
+  "package", "shoppingBag", "fileText", "inbox", "trash", "pencil", "eye", "eyeOff", "sparkles", "code", "link", "comment", "save",
+] as const;
+export type NodeIcon = (typeof nodeIcons)[number];
+export const nodeIconOptions: ReadonlyArray<{ id: NodeIcon; label: string; searchTerms: string }> = [
+  { id: "diamond", label: "Diamond", searchTerms: "project shape gem package" },
+  { id: "briefcase", label: "Briefcase", searchTerms: "work business case shopping bag" },
+  { id: "target", label: "Target", searchTerms: "goal aim bullseye" },
+  { id: "home", label: "Home", searchTerms: "house building place" },
+  { id: "star", label: "Star", searchTerms: "favorite featured rating" },
+  { id: "heart", label: "Heart", searchTerms: "love favorite health" },
+  { id: "globe", label: "Globe", searchTerms: "world web international" },
+  { id: "clock", label: "Clock", searchTerms: "time schedule history" },
+  { id: "mapPin", label: "Map pin", searchTerms: "location place marker" },
+  { id: "settings", label: "Settings", searchTerms: "gear configuration preferences" },
+  { id: "lock", label: "Lock", searchTerms: "private secure restricted" },
+  { id: "users", label: "Users", searchTerms: "team people group" },
+  { id: "user", label: "User", searchTerms: "person profile account" },
+  { id: "folder", label: "Folder", searchTerms: "directory files" },
+  { id: "archive", label: "Archive", searchTerms: "box storage" },
+  { id: "bookmark", label: "Bookmark", searchTerms: "saved ribbon" },
+  { id: "list", label: "List", searchTerms: "menu rows" },
+  { id: "checklist", label: "Checklist", searchTerms: "tasks clipboard todo" },
+  { id: "calendar", label: "Calendar", searchTerms: "date schedule" },
+  { id: "flag", label: "Flag", searchTerms: "marker milestone" },
+  { id: "package", label: "Package", searchTerms: "box parcel cube" },
+  { id: "shoppingBag", label: "Shopping bag", searchTerms: "shop retail purchase" },
+  { id: "fileText", label: "Text file", searchTerms: "document page notes" },
+  { id: "inbox", label: "Inbox", searchTerms: "tray incoming" },
+  { id: "trash", label: "Trash", searchTerms: "delete remove bin" },
+  { id: "pencil", label: "Pencil", searchTerms: "edit write draw" },
+  { id: "eye", label: "Eye", searchTerms: "view visible show" },
+  { id: "eyeOff", label: "Eye off", searchTerms: "hidden invisible hide" },
+  { id: "sparkles", label: "Sparkles", searchTerms: "magic ai shine" },
+  { id: "code", label: "Code", searchTerms: "development brackets" },
+  { id: "link", label: "Link", searchTerms: "url chain connection" },
+  { id: "comment", label: "Comment", searchTerms: "message chat discussion" },
+  { id: "save", label: "Save", searchTerms: "disk store" },
+];
 export const nodeColors = ["slate", "orange", "amber", "green", "teal", "blue", "violet", "rose"] as const;
 export const permissions = [
   "items:read",
@@ -206,8 +245,8 @@ export type TreeNode = {
   description?: string;
   kind: "project" | "folder" | "list" | "document";
   parentId: string | null;
-  icon?: (typeof nodeIcons)[number] | null;
-  color?: (typeof nodeColors)[number] | null;
+  icon?: NodeIcon | null;
+  color?: string | null;
   updatedAt?: string;
 };
 export type DocumentSummary = {

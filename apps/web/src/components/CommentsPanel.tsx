@@ -3,6 +3,7 @@ import { api, message, workspacePath, type Comment, type CommentAnchor, type Det
 import { markdownToHtml, plainText } from "../lib/rich-text";
 import RichTextEditor, { type MentionTarget } from "./RichTextEditor";
 import { ErrorNotice } from "./Shared";
+import SolidIcon from "./SolidIcon";
 
 const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😕", "👀"] as const;
 
@@ -133,20 +134,23 @@ export default function CommentsPanel({ detail, item, document: documentTarget, 
     {loading ? <p role="status">Loading comments...</p> : comments.length === 0 ? <p className="muted">No comments yet.</p> : (
       <ol className="comment-list">
         {thread(comments).map(({ comment, depth }) => <li key={comment.id} id={`comment-${comment.id}`} tabIndex={-1} className={depth ? "comment-reply" : undefined} style={{ marginInlineStart: `${Math.min(depth, 4) * 18}px` }}>
-          <div className="comment-meta"><strong>{comment.authorName}</strong><time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time></div>
+          <header className="comment-meta">
+            <span className="avatar" aria-hidden="true">{comment.authorName.trim().slice(0, 1).toUpperCase() || "?"}</span>
+            <span className="comment-author"><strong>{comment.authorName}</strong><time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time></span>
+          </header>
           {comment.anchor && <blockquote className={`comment-anchor ${comment.anchor.state}`}>
             <span>{comment.anchor.state === "orphaned" ? "Original selection" : "Commented text"}</span>
             <q>{plainText(comment.anchor.exact)}</q>
           </blockquote>}
-          {comment.deletedAt ? <p className="muted"><em>Comment deleted</em></p> : <div className="comment-body" dangerouslySetInnerHTML={{ __html: markdownToHtml(comment.body) }} />}
-          {comment.deletedAt && manager && <div className="comment-actions"><button type="button" className="quiet-button" disabled={busy} onClick={() => void remove(comment)}>Remove entry</button></div>}
+          {comment.deletedAt ? <p className="muted comment-deleted"><em>Comment deleted</em></p> : <div className="comment-body" dangerouslySetInnerHTML={{ __html: markdownToHtml(comment.body) }} />}
+          {comment.deletedAt && manager && <div className="comment-actions"><button type="button" className="comment-action-button danger" disabled={busy} aria-label="Remove deleted comment entry" onClick={() => void remove(comment)}><SolidIcon name="trash" /></button></div>}
           {!comment.deletedAt && <div className="comment-actions">
             <div className="comment-reactions" aria-label="Comment reactions">
               {comment.reactions.map(reaction => <button key={reaction.emoji} type="button" className={reaction.reactedByMe ? "selected" : undefined} disabled={busy} aria-pressed={reaction.reactedByMe} aria-label={`${reaction.reactedByMe ? "Remove" : "Add"} ${reaction.emoji} reaction`} onClick={() => void react(comment, reaction.emoji)}>{reaction.emoji} <span>{reaction.count}</span></button>)}
-              {writable && <details className="comment-reaction-picker"><summary aria-label="Add reaction">+</summary><div>{reactionEmojis.map(emoji => <button key={emoji} type="button" disabled={busy} aria-label={`React with ${emoji}`} onClick={() => void react(comment, emoji)}>{emoji}</button>)}</div></details>}
+              {writable && <details className="comment-reaction-picker"><summary aria-label="Add reaction"><SolidIcon name="smilePlus" /></summary><div>{reactionEmojis.map(emoji => <button key={emoji} type="button" disabled={busy} aria-label={`React with ${emoji}`} onClick={() => void react(comment, emoji)}>{emoji}</button>)}</div></details>}
             </div>
-            {writable && <button type="button" className="quiet-button" disabled={busy} onClick={() => { setReplyingTo(comment.id); setReplyBody(""); }}>Reply</button>}
-            {(comment.authorId === currentUserId || manager) && <button type="button" className="quiet-button" disabled={busy} onClick={() => void remove(comment)}>Delete</button>}
+            {writable && <button type="button" className="comment-action-button" disabled={busy} aria-label={`Reply to ${comment.authorName}`} onClick={() => { setReplyingTo(comment.id); setReplyBody(""); }}><SolidIcon name="reply" /></button>}
+            {(comment.authorId === currentUserId || manager) && <button type="button" className="comment-action-button danger" disabled={busy} aria-label={`Delete comment by ${comment.authorName}`} onClick={() => void remove(comment)}><SolidIcon name="trash" /></button>}
           </div>}
           {replyingTo === comment.id && <div className="comment-reply-composer">
             <RichTextEditor aria-label={`Reply to ${comment.authorName}`} value={replyBody} onChange={value => setReplyBody(value.slice(0, 10000))} placeholder="Write a reply..." mentionTargets={targets} />

@@ -145,14 +145,6 @@ export default function Admin() {
   }
   return (
     <Shell user={user} active="admin">
-      <header className="page-top">
-        <div className="breadcrumb">
-          Instance <span>/</span> Administration
-        </div>
-        <a href="/app" className="quiet-link">
-          Back to workspace ↗
-        </a>
-      </header>
       <div className="settings-body admin-body">
         <h1>Administration</h1>
         <p className="muted">

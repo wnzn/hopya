@@ -1,13 +1,26 @@
 .shared-navigation {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .shared-navigation .workspace-picker {
+  flex: 0 0 auto;
   margin-top: 0;
 }
 
+.shared-navigation > .inbox-link {
+  flex: 0 0 auto;
+}
+
 .sidebar-structure {
-  display: block;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .tree-row > a {
@@ -56,8 +69,6 @@
   flex: 0 0 16px;
   width: 16px;
   height: 16px;
-  fill: currentColor;
-  stroke: none;
 }
 
 .shared-navigation .tree-row > button.tree-toggle:first-child {
@@ -136,13 +147,13 @@
   background: transparent;
 }
 
-.shared-navigation .hierarchy-node-menu > button:hover {
+.shared-navigation .hierarchy-node-menu > button:hover:not(:disabled) {
   background: #ffffff12;
   color: var(--sidebar-bright);
 }
 
 .shared-navigation .hierarchy-node-menu > button.danger,
-.shared-navigation .hierarchy-node-menu > button.danger:hover {
+.shared-navigation .hierarchy-node-menu > button.danger:hover:not(:disabled) {
   color: var(--danger);
 }
 
@@ -184,8 +195,4 @@
 
 .breadcrumb a {
   color: var(--ink-soft);
-}
-
-.shell-has-shared-breadcrumbs .main-content > .page-top:not(.shared-page-top) {
-  display: none;
 }

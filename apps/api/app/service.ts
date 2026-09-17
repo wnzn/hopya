@@ -25,7 +25,7 @@ function runChecked<A>(effect: Effect.Effect<A, ServiceFailure>): A {
   return result.right
 }
 const findNodeRow = async (wid: string, nodeId: string): Promise<NodeRow> => {
-  const row = await db.get<NodeRow>('SELECT * FROM nodes WHERE workspaceId=? AND id=?', wid, nodeId)
+  const row = await db.get<NodeRow>(`SELECT ${nodeColumns} FROM nodes WHERE workspaceId=? AND id=?`, wid, nodeId)
   if (!row) throw new HttpError(404, 'Node not found')
   return row
 }
@@ -45,8 +45,15 @@ export async function lockWorkspaceHierarchy(wid: string) {
 }
 const id = z.string().uuid()
 const name = z.string().trim().min(1).max(120)
-const nodeIcon = z.enum(['diamond', 'briefcase', 'target', 'folder', 'archive', 'bookmark', 'list', 'checklist', 'calendar', 'flag'])
-const nodeColor = z.enum(['slate', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'rose'])
+const nodeIcon = z.enum(['diamond', 'briefcase', 'target', 'home', 'star', 'heart', 'globe', 'clock', 'mapPin', 'settings', 'lock', 'users', 'user', 'folder', 'archive', 'bookmark', 'list', 'checklist', 'calendar', 'flag', 'package', 'shoppingBag', 'fileText', 'inbox', 'trash', 'pencil', 'eye', 'eyeOff', 'sparkles', 'code', 'link', 'comment', 'save'])
+const legacyNodeColors = {
+  slate: '#64748b', orange: '#c45d0a', amber: '#9a7411', green: '#4d7a47',
+  teal: '#17776f', blue: '#2563a6', violet: '#7652a8', rose: '#a5415b',
+} as const
+const nodeColor = z.union([
+  z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase()),
+  z.enum(['slate', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'rose']).transform((value) => legacyNodeColors[value]),
+])
 export const emailSchema = z.string().trim().email().max(254).transform((value) => value.toLowerCase())
 export const passwordSchema = z.string().min(12).max(256)
 export const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -78,6 +85,8 @@ const itemSchema = z.object({
 const roleSchema = z.object({ name, permissions: z.array(z.enum(permissions)).max(permissions.length).transform((values) => [...new Set(values)]) }).strict()
 interface RoleRow extends Record<string, unknown> { id: string; workspaceId: string; name: string; permissions: string; isOwner: number }
 interface NodeRow extends Record<string, unknown> { id: string; workspaceId: string; name: string; description: string; kind: 'project' | 'folder' | 'list'; parentId: string | null; icon: z.infer<typeof nodeIcon> | null; color: z.infer<typeof nodeColor> | null; createdAt: string }
+export const nodeColumns = `id,workspaceId,name,kind,parentId,createdAt,description,
+  appearanceIcon AS icon,appearanceColor AS color`
 const dateFormat = z.enum(['yyyy-MM-dd', 'MMM d, yyyy', 'MMMM d, yyyy', 'dd/MM/yyyy'])
 export const formulaExpression = z.string().max(200)
 const fieldSchema = z.object({ name, type: z.enum(['text', 'number', 'date', 'datetime', 'checkbox', 'select', 'checklist', 'rating', 'formula']),
@@ -369,7 +378,7 @@ function assertCanGrant(actor: Membership, role: { permissions: Permission[]; is
   }
 }
 async function nodeInWorkspace(wid: string, nodeId: string): Promise<NodeRow> {
-  const node = await db.get<NodeRow>('SELECT * FROM nodes WHERE workspaceId=? AND id=?', wid, nodeId)
+  const node = await db.get<NodeRow>(`SELECT ${nodeColumns} FROM nodes WHERE workspaceId=? AND id=?`, wid, nodeId)
   if (!node) throw new HttpError(404, 'Node not found')
   return node
 }
@@ -522,7 +531,7 @@ export const service = {
   },
   async listNodes(userId: string, wid: string): Promise<NodeRow[]> {
     await requireStructureRead(userId, wid)
-    return db.all<NodeRow>('SELECT * FROM nodes WHERE workspaceId=? ORDER BY createdAt,id', wid)
+    return db.all<NodeRow>(`SELECT ${nodeColumns} FROM nodes WHERE workspaceId=? ORDER BY createdAt,id`, wid)
   },
   async createNode(userId: string, wid: string, input: unknown): Promise<NodeRow> {
     const data = z.object({ name, description: z.string().max(50000).optional(), kind: z.enum(['project', 'folder', 'list']), parentId: id.nullable().default(null), icon: nodeIcon.nullable().default(null), color: nodeColor.nullable().default(null) }).strict().parse(input)
@@ -543,14 +552,14 @@ export const service = {
         }
       }
       const node = { id: randomUUID(), workspaceId: wid, ...data, description: data.description ?? '', createdAt: now() }
-      await db.run('INSERT INTO nodes (id,workspaceId,name,kind,parentId,createdAt,description,icon,color) VALUES (@id,@workspaceId,@name,@kind,@parentId,@createdAt,@description,@icon,@color)', node)
+      await db.run('INSERT INTO nodes (id,workspaceId,name,kind,parentId,createdAt,description,appearanceIcon,appearanceColor) VALUES (@id,@workspaceId,@name,@kind,@parentId,@createdAt,@description,@icon,@color)', node)
       if (node.kind === 'project') await db.run('INSERT INTO project_field_configs(workspaceId,projectId,updatedAt) VALUES (?,?,?)', wid, node.id, node.createdAt)
       if (node.kind === 'list' && node.parentId === null) await db.run('INSERT INTO project_field_configs(workspaceId,projectId,updatedAt) VALUES (?,?,?)', wid, node.id, node.createdAt)
       if (node.kind === 'list') await db.run('INSERT INTO list_status_configs(workspaceId,listId,statuses,updatedAt) VALUES (?,?,?,?)', wid, node.id, node.parentId === null ? JSON.stringify(defaultStatuses) : null, node.createdAt)
       if (node.kind === 'list') await db.run("INSERT INTO list_tag_color_configs(workspaceId,listId,colors,updatedAt) VALUES (?,?,'{}',?)", wid, node.id, node.createdAt)
       await audit(userId, wid, 'node.create', node.id)
       await emitEvent({ event: 'node.created', workspaceId: wid, nodeId: node.id, actorId: userId })
-      return node
+      return nodeInWorkspace(wid, node.id)
     })
   },
   async updateNode(userId: string, wid: string, nodeId: string, input: unknown) {
@@ -596,7 +605,7 @@ export const service = {
           if (await nodeProject(wid, nodeId) !== ancestor.id) await assertInheritedSubtreeStatuses(wid, nodeId, (await projectConfiguration(wid, ancestor.id)).statuses)
         }
       }
-      const updated = await db.run(`UPDATE nodes SET name=?,parentId=?,description=?,icon=?,color=? WHERE workspaceId=? AND id=?
+      const updated = await db.run(`UPDATE nodes SET name=?,parentId=?,description=?,appearanceIcon=?,appearanceColor=? WHERE workspaceId=? AND id=?
         ${expectedParentId === undefined ? '' : `AND ${db.sql({ sqlite: 'parentId IS ?', pg: 'parentId IS NOT DISTINCT FROM ?' })}`}`,
         data.name ?? previous.name, parentId, data.description ?? previous.description, data.icon === undefined ? previous.icon : data.icon,
         data.color === undefined ? previous.color : data.color, wid, nodeId, ...(expectedParentId === undefined ? [] : [expectedParentId]))

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import { api, ApiError, label, message, priorities, workspacePath, type BuiltInField, type Detail, type Field, type Item } from "../lib/api";
-import { projectStatuses, projectDateFormat, statusLabel, statusStyle, tagStyle } from "../lib/project-statuses";
-import { formatFieldDate } from "../lib/field-values";
+import { projectStatuses, projectDateFormat, statusForDestination, statusLabel, statusStyle, tagStyle } from "../lib/project-statuses";
+import { formatFieldDate, taskDateRangeError } from "../lib/field-values";
 import TypedFieldInput from "./TypedFieldInput";
 import Select from "./Select";
 import SolidIcon from "./SolidIcon";
@@ -17,7 +17,7 @@ type Column = { key: string; name: string; width: number } & (
   | { core: CoreKey; field?: never }
   | { field: Field; core?: never }
 );
-type Draft = string | null | string[];
+type Draft = Item["customFields"][string];
 type Editing = { key: string; column: Column; baseline: Item; draft: Draft; tag: string; error: string; conflict: boolean };
 type Props = {
   items: Item[]; detail: Detail; view: "list" | "table"; projectId?: string | null;
@@ -114,7 +114,7 @@ function rawValue(item: Item, column: Column) {
 }
 function draftValue(item: Item, column: Column): Draft {
   const raw = rawValue(item, column);
-  return Array.isArray(raw) ? [...raw] : raw === null ? null : String(raw);
+  return Array.isArray(raw) ? [...raw] : raw as Draft;
 }
 
 export default function TaskTable({ items, detail, view, projectId, writable, onOpen, onSaved, onItemUpdated, onCreate, columnOrder, onColumnOrder, hiddenColumns = [], sort = null, onSort, selectedIds, onSelectionChange }: Props) {
@@ -373,15 +373,26 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
         setEditing(current => current && ({ ...current, error: "Enter a finite number or clear the value." }));
         return;
       }
-    } else if (column.field?.type === "checkbox") value = draft === null ? null : draft === "true";
+    } else if (column.field?.type === "checkbox") value = typeof draft === "boolean" ? draft : draft === null ? null : draft === "true";
     else if (column.field?.type === "date" || column.core === "startDate" || column.core === "dueDate") value = draft || null;
     else if (column.core === "title" || column.core === "description") value = draft ?? "";
     else if (column.field && draft === "") value = null;
+    const dateError = taskDateRangeError(
+      column.core === "startDate" ? value as string | null : baseline.startDate,
+      column.core === "dueDate" ? value as string | null : baseline.dueDate,
+    );
+    if (!reload && dateError) {
+      setEditing(current => current && ({ ...current, error: dateError }));
+      return;
+    }
     const original = rawValue(baseline, column);
     if (!reload && JSON.stringify(value) === JSON.stringify(original)) { close(nextFocusKey); return; }
+    const destinationStatus = column.core === "nodeId" && typeof value === "string"
+      ? statusForDestination(detail, value, baseline.status)
+      : null;
     const body = { expectedUpdatedAt: baseline.updatedAt, ...(column.field
       ? { customFields: { ...baseline.customFields, [column.field.id]: value } }
-      : { [column.core!]: value }) };
+      : { [column.core!]: value, ...(destinationStatus && destinationStatus !== baseline.status ? { status: destinationStatus } : {}) }) };
     const controller = new AbortController();
     request.current = controller;
     busyRef.current = true;
@@ -493,8 +504,6 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
     else if (column.core === "priority") options = priorities.map(value => ({ value, name: label(value) }));
     else if (column.core === "assigneeId") options = [{ value: null, name: "Unassigned" }, ...detail.members.filter(member => !member.disabled).map(member => ({ value: member.userId, name: `${member.name} (${member.email})` }))];
     else if (column.core === "nodeId") options = lists;
-    else if (type === "checkbox") options = [{ value: null, name: "Not set" }, { value: "true", name: "Yes" }, { value: "false", name: "No" }];
-    else if (type === "select") options = [{ value: null, name: "Not set" }, ...(column.field?.options || []).map(value => ({ value, name: value }))];
     const disabled = busy || !writable;
     const inputProps = { id: "task-cell-input", "aria-label": name, "aria-invalid": !!editing.error, "aria-describedby": editing.error ? "task-cell-error" : undefined, disabled };
     return <form className="task-cell-editor" aria-label={`Edit ${name}`} onSubmit={event => { event.preventDefault(); void submit(); }}
@@ -514,12 +523,14 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
         } else void submit();
       }
     }}>
-      <label className="sr-only" htmlFor="task-cell-input">{name}</label>
-      {column.field && ["datetime", "checklist", "rating"].includes(type!) ? <TypedFieldInput field={column.field} value={draft} disabled={disabled} compact onChange={value => {
-        const next = typeof value === "number" || typeof value === "boolean" ? String(value) : value;
-        updateDraft(next);
-        if (type === "datetime") void submit(false, editing.key, next);
-      }} /> : options ? <Select {...inputProps} autoFocus openOnMount value={JSON.stringify(draft)} onChange={event => {
+      {!column.field && <label className="sr-only" htmlFor="task-cell-input">{name}</label>}
+      {column.field ? <TypedFieldInput field={column.field} value={draft} disabled={disabled} compact id="task-cell-input"
+        ariaInvalid={!!editing.error} ariaDescribedBy={editing.error ? "task-cell-error" : undefined}
+        formulaValue={type === "formula" && typeof draft === "string" ? formula(baseline, draft) : undefined}
+        onChange={value => {
+          updateDraft(value);
+          if (["select", "checkbox", "date", "datetime"].includes(type!)) void submit(false, editing.key, value);
+        }} /> : options ? <Select {...inputProps} autoFocus openOnMount value={JSON.stringify(draft)} onChange={event => {
         const next = JSON.parse(event.target.value) as Draft;
         updateDraft(next);
         void submit(false, editing.key, next);
@@ -538,12 +549,14 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
           <button type="button" disabled={disabled || !editing.tag.trim()} onClick={addTag}>Add</button>
         </div>
       </> : column.core === "description" ? <textarea {...inputProps} value={String(draft ?? "")} maxLength={50000} onChange={event => updateDraft(event.target.value)} />
-        : <input {...inputProps} type={type === "number" ? "number" : type === "date" || column.core === "dueDate" || column.core === "startDate" ? "date" : "text"} step="any" required={column.core === "title"} maxLength={type === "formula" ? 200 : column.core === "title" ? 300 : 10000} value={String(draft ?? "")} onChange={event => {
+        : <input {...inputProps} type={type === "number" ? "number" : type === "date" || column.core === "dueDate" || column.core === "startDate" ? "date" : "text"} step="any"
+          min={column.core === "dueDate" ? baseline.startDate ?? undefined : undefined}
+          max={column.core === "startDate" ? baseline.dueDate ?? undefined : undefined}
+          required={column.core === "title"} maxLength={type === "formula" ? 200 : column.core === "title" ? 300 : 10000} value={String(draft ?? "")} onChange={event => {
           const next = event.target.value;
           updateDraft(next);
           if (event.target.type === "date") void submit(false, editing.key, next);
         }} />}
-      {type === "formula" && <output aria-label="Formula preview">{formula(baseline, String(draft ?? ""))}</output>}
       {editing.error && <p id="task-cell-error" role="alert">{editing.error}</p>}
       {editing.error && <div className="task-cell-actions">
         <button type="button" disabled={busy} onClick={() => close()}>Cancel</button>
@@ -586,7 +599,7 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
               <button type="button" className="task-sort-trigger" data-sort-column={column.key} aria-haspopup="menu"
                 aria-expanded={sortColumnKey === column.key} onClick={event => toggleSortMenu(column, event.currentTarget)}>
                 <span className="task-column-name">{column.name}</span>
-                <span aria-hidden="true">{activeSort?.direction === "asc" ? " ↑" : activeSort?.direction === "desc" ? " ↓" : " ↕"}</span>
+                <SolidIcon name={activeSort?.direction === "asc" ? "arrowUp" : activeSort?.direction === "desc" ? "arrowDown" : "sort"} />
               </button>
               {sortColumnKey === column.key && sortPosition && createPortal(<div ref={sortMenu} className="task-sort-menu" style={sortPosition} role="menu" aria-label={`Sort ${column.name}`}>
                 <button type="button" role="menuitemradio" aria-checked={activeSort?.direction === "asc"} onClick={() => applySort(column, { column: column.key, direction: "asc" })}>{labels.asc}</button>
@@ -677,7 +690,7 @@ export default function TaskTable({ items, detail, view, projectId, writable, on
       })
       }</tbody>
       {onCreate && writable && <tfoot><tr className="task-add-row"><td colSpan={orderedColumns.length + (selectable ? 1 : 0)} className="task-add-cell">
-        <button type="button" className="task-add-task" onClick={onCreate}><span aria-hidden="true">+</span> Add task</button>
+        <button type="button" className="task-add-task" onClick={onCreate}><SolidIcon name="plus" /> Add task</button>
       </td></tr></tfoot>}
     </table>
   </div>;

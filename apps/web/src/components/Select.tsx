@@ -12,6 +12,7 @@ import {
   type SelectHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
+import SolidIcon from "./SolidIcon";
 
 type Choice = { value: string; label: ReactNode; text: string; disabled: boolean; group?: string };
 type Props = SelectHTMLAttributes<HTMLSelectElement> & {
@@ -138,7 +139,7 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
       {choice.group && (index === 0 || choices[index - 1]?.group !== choice.group) && <div className="select-menu-group">{choice.group}</div>}
       <button id={`${listboxId}-option-${index}`} type="button" role="option" aria-selected={choice.value === selectedValue} disabled={choice.disabled}
         className={index === active ? "active" : ""} onPointerMove={() => setActive(index)} onClick={() => choose(choice)}>
-        <span>{choice.label}</span>{choice.value === selectedValue && <span aria-hidden="true">✓</span>}
+        <span>{choice.label}</span>{choice.value === selectedValue && <SolidIcon name="check" />}
       </button>
     </div>;
   const picker = open && position && <div id={listboxId} className={`select-menu${sidebarPicker ? " select-menu-sidebar" : ""}`} role="listbox" aria-labelledby={ariaLabelledBy ?? triggerId} style={position}
@@ -150,8 +151,9 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
   </div>;
   const portalTarget = rootRef.current?.closest("dialog") ?? (typeof document === "undefined" ? null : document.body);
 
-  return <div ref={rootRef} className={`custom-select${className ? ` ${className}` : ""}`} style={style}>
+  return <div ref={rootRef} className={`custom-select${className ? ` ${className}` : ""}`}>
     <button ref={triggerRef} id={triggerId} type="button" className="custom-select-trigger" disabled={disabled}
+      style={style}
       role="combobox" aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} aria-describedby={ariaDescribedBy} aria-invalid={ariaInvalid}
       aria-required={required || undefined} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listboxId : undefined}
       aria-activedescendant={open ? `${listboxId}-option-${active}` : undefined}
@@ -181,7 +183,7 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
           if (match >= 0) { event.preventDefault(); if (!open) openMenu(); setActive(match); }
         }
       }}>
-      <span className="custom-select-value">{selected?.label}</span><span className="custom-select-chevron" aria-hidden="true" />
+      <span className="custom-select-value">{selected?.label}</span><SolidIcon name="chevronDown" className="custom-select-chevron solid-icon" />
     </button>
     <select {...nativeProps} ref={nativeRef} value={value} defaultValue={defaultValue} disabled={disabled} required={required}
       className="custom-select-native" aria-hidden="true" tabIndex={-1} onChange={onChange}

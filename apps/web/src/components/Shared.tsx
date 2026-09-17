@@ -65,7 +65,7 @@ function PageTree({ state, documentId, pageItems, parentId = null, depth = 0, ro
   return <ul className="tree page-tree">{children.map(item => <li key={item.id}>
     <div className="tree-row"><span className="tree-toggle-spacer" aria-hidden="true" /><a href={`/app?workspace=${encodeURIComponent(state.workspaceId)}&node=${encodeURIComponent(documentId)}&task=${encodeURIComponent(item.id)}`}
       onClick={state.onItemPageSelect ? event => { event.preventDefault(); state.onItemPageSelect?.(item, documentId); } : undefined}>
-      <SolidIcon name="document" className="node-glyph solid-icon" /><span>{item.title}</span></a></div>
+      <SolidIcon name="fileText" className="node-glyph solid-icon" /><span>{item.title}</span></a></div>
     <PageTree state={state} documentId={documentId} pageItems={pageItems} parentId={item.id} depth={depth + 1} roots={roots} />
   </li>)}</ul>;
 }
@@ -82,7 +82,7 @@ function DocumentPageTree({ state, documents, parentDocumentId, depth = 0 }: {
       href={appHref(state.workspaceId, document.id)} onClick={state.onNodeSelect ? event => {
         event.preventDefault(); state.onNodeSelect?.(document.id);
       } : undefined}>
-      <SolidIcon name="document" className="node-glyph solid-icon" /><span>{document.title}</span></a></div>
+      <SolidIcon name="fileText" className="node-glyph solid-icon" /><span>{document.title}</span></a></div>
     <DocumentPageTree state={state} documents={documents} parentDocumentId={document.id} depth={depth + 1} />
   </li>)}</ul>;
 }
@@ -141,7 +141,7 @@ function NavigationTree({ state, collapsed, onToggle, menuNodeId, onMenu, parent
               </a>
               {(state.onRenameNode || state.onEditNode || state.onDeleteNode) && (
                 <button type="button" className="tree-edit" aria-label={`Options for ${node.name}`} aria-expanded={menuNodeId === node.id}
-                  onClick={() => onMenu(menuNodeId === node.id ? null : node.id)}>···</button>
+                  onClick={() => onMenu(menuNodeId === node.id ? null : node.id)}><SolidIcon name="more" /></button>
               )}
               {menuNodeId === node.id && <div className="hierarchy-node-menu" role="menu">
                 {state.onNodeSelect && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onNodeSelect?.(node.id); }}>Open</button>}
@@ -232,7 +232,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
         <nav className="sidebar-structure" aria-label="Workspace hierarchy">
           <div className="sidebar-section-title">
             STRUCTURE
-             {state.onCreateNode && <button type="button" aria-label="Add project, folder, list, or document" onClick={state.onCreateNode}>+</button>}
+             {state.onCreateNode && <button type="button" aria-label="Add project, folder, list, or document" onClick={state.onCreateNode}><SolidIcon name="plus" /></button>}
           </div>
           <a
             className={`all-tasks ${state.onNodeSelect && !state.selectedNodeId ? "selected" : ""}`}
@@ -340,9 +340,7 @@ export function Empty({
 }) {
   return (
     <div className="empty">
-      <div className="empty-mark" aria-hidden="true">
-        +
-      </div>
+      <div className="empty-mark" aria-hidden="true"><SolidIcon name="plus" /></div>
       <h2>{title}</h2>
       <p>{children}</p>
       {action}
@@ -385,6 +383,7 @@ export function Modal({
   headerActions,
   children,
   onClose,
+  closeOnBackdrop = true,
   focusFirstField = true,
   className,
 }: {
@@ -393,6 +392,7 @@ export function Modal({
   headerActions?: ReactNode;
   children: ReactNode;
   onClose: () => void;
+  closeOnBackdrop?: boolean;
   focusFirstField?: boolean;
   className?: string;
 }) {
@@ -408,7 +408,7 @@ export function Modal({
         onClose();
       }}
       onClick={(e) => {
-        if (e.target !== e.currentTarget) return;
+        if (!closeOnBackdrop || e.target !== e.currentTarget) return;
         const bounds = e.currentTarget.getBoundingClientRect();
         if (
           e.clientX < bounds.left ||
@@ -429,13 +429,43 @@ export function Modal({
             onClick={onClose}
             aria-label="Close dialog"
           >
-            ×
+            <SolidIcon name="x" />
           </button>
         </div>
       </div>
       {children}
     </dialog>
   );
+}
+export function CreateWorkspaceDialog({ onClose, onCreated }: {
+  onClose: () => void;
+  onCreated: (workspace: Workspace) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const name = String(new FormData(event.currentTarget).get("name"));
+      onCreated(await api<Workspace>("/workspaces", "POST", { name }));
+    } catch (cause) {
+      setError(message(cause));
+      setBusy(false);
+    }
+  }
+  return <Modal title="Create a workspace" onClose={() => { if (!busy) onClose(); }}>
+    <p className="muted">A separate space for a team, a client, or a new idea.</p>
+    <ErrorNotice error={error} />
+    <form onSubmit={submit} className="stack">
+      <label>
+        Workspace name
+        <input autoFocus name="name" required maxLength={120} placeholder="e.g. Studio team" />
+      </label>
+      <button className="primary" disabled={busy}>{busy ? "Creating..." : "Create workspace"}</button>
+    </form>
+  </Modal>;
 }
 export function useSession() {
   const [user, setUser] = useState<User | null>(null);
@@ -512,8 +542,6 @@ export function Shell({
   const [fallbackWorkspaceId, setFallbackWorkspaceId] = useState("");
   const [fallbackDetail, setFallbackDetail] = useState<Detail | null>(null);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [workspaceError, setWorkspaceError] = useState("");
-  const [workspaceBusy, setWorkspaceBusy] = useState(false);
   useEffect(() => {
     if (!user || navigation) return;
     const controller = new AbortController();
@@ -568,7 +596,6 @@ export function Shell({
   const effectiveNavigation: NavigationState = {
     ...sharedNavigation,
     onCreateWorkspace: sharedNavigation.onCreateWorkspace ?? (() => {
-      setWorkspaceError("");
       setCreatingWorkspace(true);
     }),
     onNodeSelect: sharedNavigation.onNodeSelect ?? (id => window.location.assign(appHref(sharedNavigation.workspaceId, id))),
@@ -606,21 +633,8 @@ export function Shell({
       setBusy(false);
     }
   }
-  async function createWorkspace(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setWorkspaceBusy(true);
-    setWorkspaceError("");
-    try {
-      const name = String(new FormData(event.currentTarget).get("name"));
-      const workspace = await api<Workspace>("/workspaces", "POST", { name });
-      window.location.assign(appHref(workspace.id));
-    } catch (cause) {
-      setWorkspaceError(message(cause));
-      setWorkspaceBusy(false);
-    }
-  }
   return (
-    <div className={`shell${pageLabel ? " shell-has-shared-breadcrumbs" : ""}`}>
+    <div className="shell">
       <header className="mobile-bar">
         <Brand className="brand" />
         <button
@@ -667,7 +681,7 @@ export function Shell({
             <span className="identity-text">
               <strong>{user?.name || "Your account"}</strong>
               <small>{user?.email}</small>
-            </span>
+            </span><SolidIcon name="chevronDown" className="account-menu-chevron solid-icon" />
           </summary>
           <nav className="account-links" aria-label="Account">
             <a href="/account" aria-current={active === "account" ? "page" : undefined}>Account settings</a>
@@ -698,7 +712,7 @@ export function Shell({
                 <path d="M216 8h56v48h-14V22h-28v34h-14V8Z" />
                 <path className="sidebar-attribution-signal" d="M174 22h26l-30 20h-26l30-20Z" />
               </svg>
-              <span className="sidebar-attribution-arrow" aria-hidden="true">↗</span>
+              <span className="sidebar-attribution-arrow" aria-hidden="true"><SolidIcon name="externalLink" /></span>
             </a>
           </p>
         </div>
@@ -708,25 +722,14 @@ export function Shell({
           <header className="page-top shared-page-top">
             <Breadcrumbs detail={sharedNavigation.detail} currentPage={pageLabel} />
             <a href={sharedNavigation.workspaceId ? appHref(sharedNavigation.workspaceId) : "/app"} className="quiet-link">
-              Back to work ↗
+              Back to work <SolidIcon name="externalLink" />
             </a>
           </header>
         )}
         {children}
       </main>
-      {creatingWorkspace && <Modal title="Create a workspace" onClose={() => {
-        if (!workspaceBusy) setCreatingWorkspace(false);
-      }}>
-        <p className="muted">A separate space for a team, a client, or a new idea.</p>
-        <ErrorNotice error={workspaceError} />
-        <form onSubmit={createWorkspace} className="stack">
-          <label>
-            Workspace name
-            <input autoFocus name="name" required maxLength={120} placeholder="e.g. Studio team" />
-          </label>
-          <button className="primary" disabled={workspaceBusy}>{workspaceBusy ? "Creating..." : "Create workspace"}</button>
-        </form>
-      </Modal>}
+      {creatingWorkspace && <CreateWorkspaceDialog onClose={() => setCreatingWorkspace(false)}
+        onCreated={workspace => window.location.assign(appHref(workspace.id))} />}
     </div>
   );
 }

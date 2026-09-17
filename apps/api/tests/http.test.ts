@@ -160,6 +160,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
       'database/migrations/0003_document_attribution',
       'database/migrations/0004_restore_document_subpages',
       'database/migrations/0005_document_page_placement',
+      'database/migrations/0006_node_appearance',
     ])
     assert.ok(status.data.migrations[0].appliedAt)
   })

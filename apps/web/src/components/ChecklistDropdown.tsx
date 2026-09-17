@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { Field, Item } from "../lib/api";
+import SolidIcon from "./SolidIcon";
 
 // Multi-select checklist as a compact dropdown with option search, used where
 // long single-column checkbox lists get awkward (task editor, table cells).
 // Value semantics match the checkbox list: toggle appends/removes, clear unsets.
-export default function ChecklistDropdown({ field, value, disabled, onChange, compact = false }: {
+export default function ChecklistDropdown({ field, value, disabled, onChange, compact = false, id, ariaInvalid, ariaDescribedBy }: {
   field: Field; value: Item["customFields"][string]; disabled?: boolean;
   onChange: (value: Item["customFields"][string]) => void;
   compact?: boolean;
+  id?: string;
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
 }) {
   const selected = Array.isArray(value) ? value : [];
   const [open, setOpen] = useState(compact);
@@ -27,10 +31,11 @@ export default function ChecklistDropdown({ field, value, disabled, onChange, co
     onChange(checked ? [...selected, option] : selected.filter((entry) => entry !== option));
   }
   return (
-    <fieldset disabled={disabled} className="stack bare-fieldset">
+    <fieldset disabled={disabled} className="stack bare-fieldset" aria-invalid={ariaInvalid || undefined} aria-describedby={ariaDescribedBy}>
       <legend className={compact ? "sr-only" : undefined}>{field.name}</legend>
       <div className="checklist-dropdown">
         <button
+          id={id}
           type="button"
           className="checklist-toggle"
           aria-expanded={open}
@@ -38,7 +43,7 @@ export default function ChecklistDropdown({ field, value, disabled, onChange, co
           onClick={() => setOpen(!open)}
         >
           <span>{summary}</span>
-          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <SolidIcon name={open ? "chevronDown" : "chevronRight"} />
         </button>
         {open && (
           <div

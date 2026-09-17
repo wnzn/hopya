@@ -20,15 +20,16 @@ import {
 } from "../lib/api";
 import {
   Empty,
+  CreateWorkspaceDialog,
   ErrorNotice,
   Loading,
-  Modal,
   Breadcrumbs,
   Shell,
   safeAncestorPath,
   useSession,
 } from "./Shared";
 import NodeGlyph from "./NodeGlyph";
+import SolidIcon, { type SolidIconName } from "./SolidIcon";
 import TaskViews, { type View } from "./TaskViews";
 import TaskEditor from "./TaskEditor";
 import ProjectFields from "./ProjectFields";
@@ -42,6 +43,14 @@ import DocumentEditor from "./DocumentEditor";
 function documentNode(document: NonNullable<Detail["documents"]>[number]): TreeNode {
   return { id: document.id, name: document.title, kind: "document", parentId: document.parentId, updatedAt: document.updatedAt };
 }
+
+const viewIcons: Record<View, SolidIconName> = {
+  list: "list",
+  board: "board",
+  calendar: "calendar",
+  gallery: "gallery",
+  gantt: "timeline",
+};
 
 export default function Dashboard() {
   const { user, error: authError } = useSession();
@@ -88,8 +97,6 @@ export default function Dashboard() {
     mode?: "rename" | "details";
   } | null>(null);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [workspaceError, setWorkspaceError] = useState("");
-  const [busy, setBusy] = useState(false);
   const [config, setConfig] = useState<Config | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
   const [fieldTarget, setFieldTarget] = useState<string | null>(null);
@@ -289,22 +296,6 @@ export default function Dashboard() {
     if (fresh.workspaceId !== activeWorkspace.current) return;
     setItems(current => current.map(item => item.id === fresh.id ? fresh : item));
   }
-  async function createWorkspace(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const name = String(new FormData(event.currentTarget).get("name"));
-    setBusy(true);
-    setWorkspaceError("");
-    try {
-      const workspace = await api<Workspace>("/workspaces", "POST", { name });
-      setWorkspaces((w) => [...w, workspace]);
-      if (workspaces.length === 0) activateWorkspace(workspace.id);
-      setCreatingWorkspace(false);
-    } catch (e) {
-      setWorkspaceError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
   async function move(item: Item, nextStatus: Item["status"]) {
     if (!detail || !projectStatuses(detail, item.nodeId).some(s => s.id === nextStatus)) return;
     setError("");
@@ -443,7 +434,6 @@ export default function Dashboard() {
       onNodeSelect: selectNode,
       onItemPageSelect: (item, documentId) => { selectNode(documentId); openTask(item); },
       onCreateWorkspace: () => {
-        setWorkspaceError("");
         setCreatingWorkspace(true);
       },
       onCreateNode: structureWritable || documentWritable ? () => setStructure({ initialKind: structureWritable ? "project" : "document" }) : undefined,
@@ -456,7 +446,7 @@ export default function Dashboard() {
       <header className="page-top">
         <Breadcrumbs detail={detail} nodeId={nodeId} />
         <a className="quiet-link" href="/settings">
-          Manage workspace ↗
+          Manage workspace <SolidIcon name="externalLink" />
         </a>
       </header>
       <div className="workspace-body">
@@ -475,9 +465,9 @@ export default function Dashboard() {
                     }
                   }} />
                 <button type="submit" className="inline-title-action inline-save" aria-label={`Save ${selectedNode.kind} name`}
-                  disabled={nodeNameBusy || !nodeName.trim()}><span aria-hidden="true">✓</span></button>
+                  disabled={nodeNameBusy || !nodeName.trim()}><SolidIcon name="check" /></button>
                 <button type="button" className="inline-title-action" aria-label={`Cancel renaming ${selectedNode.kind}`} disabled={nodeNameBusy}
-                  onClick={() => { setEditingNodeName(false); setNodeName(selectedNode.name); setNodeNameError(""); }}>×</button>
+                  onClick={() => { setEditingNodeName(false); setNodeName(selectedNode.name); setNodeNameError(""); }}><SolidIcon name="x" /></button>
               </form>
             ) : (
               <h1 ref={heading} tabIndex={-1}>
@@ -511,16 +501,17 @@ export default function Dashboard() {
                   aria-expanded={agentOpen}
                   onClick={() => setAgentOpen(!agentOpen)}
                 >
-                  ✧ Assistant
+                  <SolidIcon name="sparkles" /> Assistant
                 </button>
               )}
             {writable && selectedNode?.kind !== "document" && (
               <button
                 className="primary"
+                aria-label="+ New task"
                 disabled={loading || !scopedLists.length}
                 onClick={() => setEditor({ defaultNode: selectedNode?.kind === "list" ? selectedNode.id : undefined })}
               >
-                + New task
+                <SolidIcon name="plus" /> New task
               </button>
             )}
           </div>
@@ -632,14 +623,16 @@ export default function Dashboard() {
                         }
                       }}
                     >
-                      {v === "board"
+                      <SolidIcon name={viewIcons[v]} />
+                      <span>{v === "board"
                         ? "Board"
                         : v === "gantt"
                           ? "Timeline"
-                          : label(v)}
+                          : label(v)}</span>
                     </button>
                   ))}
                 </div>
+              </div>
                 <div className="filters">
                   {view === "list" && structureWritable && (
                     <button type="button" disabled={!selectedNode || selectedNode.kind === "document" || !selectedFieldOwner}
@@ -670,7 +663,6 @@ export default function Dashboard() {
                       ))}
                     </Select>
                   </label>
-                </div>
               </div>
               <div
                 ref={taskView}
@@ -820,34 +812,11 @@ export default function Dashboard() {
         <ProjectFields detail={detail} targetId={fieldTarget || undefined}
           onClose={() => setFieldTarget(null)} onUpdated={updateMetadata} />
       )}
-      {creatingWorkspace && (
-        <Modal
-          title="Create a workspace"
-          onClose={() => {
-            if (!busy) setCreatingWorkspace(false);
-          }}
-        >
-          <p className="muted">
-            A separate space for a team, a client, or a new idea.
-          </p>
-          <ErrorNotice error={workspaceError} />
-          <form onSubmit={createWorkspace} className="stack">
-            <label>
-              Workspace name
-              <input
-                autoFocus
-                name="name"
-                required
-                maxLength={120}
-                placeholder="e.g. Studio team"
-              />
-            </label>
-            <button className="primary" disabled={busy}>
-              {busy ? "Creating..." : "Create workspace"}
-            </button>
-          </form>
-        </Modal>
-      )}
+      {creatingWorkspace && <CreateWorkspaceDialog onClose={() => setCreatingWorkspace(false)} onCreated={workspace => {
+        setWorkspaces(current => current.some(value => value.id === workspace.id) ? current : [...current, workspace]);
+        setCreatingWorkspace(false);
+        activateWorkspace(workspace.id);
+      }} />}
       {agentOpen && detail && (
         <Agent
           key={workspaceId}

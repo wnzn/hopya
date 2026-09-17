@@ -35,6 +35,7 @@ import {
 import { changeSwitchBranch, deleteNode, flowEdges, insertNode, moveNode, nodeBranches, nodeLabel, publicHeaderNameError, removeEdges, runOutputRows, setNextNode, topToBottomGraph, updateItemSupported, upstreamChoices } from "../lib/automation-graph";
 import { ErrorNotice, Loading, Modal } from "./Shared";
 import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 
 const palette: Exclude<AutomationNodeType, "trigger">[] = ["http", "webhook", "email", "log", "update_item", "condition", "switch"];
 const stringValue = (value: unknown) => typeof value === "string" ? value : "";
@@ -1041,7 +1042,7 @@ function Inspector({
                 )
               }
             >
-              + {nodeLabel(type)}
+              <SolidIcon name="plus" /> {nodeLabel(type)}
             </button>
           ))}
         </div>

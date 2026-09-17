@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultStatuses, projectStatuses, projectDateFormat, statusLabel, statusStyle } from "./project-statuses";
-import { formatFieldDate, localDateTime } from "./field-values";
+import { defaultStatuses, projectStatuses, projectDateFormat, statusForDestination, statusLabel, statusStyle } from "./project-statuses";
+import { formatFieldDate, localDateTime, taskDateRangeError } from "./field-values";
 import type { Detail } from "./api";
 
 const data = { nodes: [{ id: "p", kind: "project", parentId: null }, { id: "f", kind: "folder", parentId: "p" }, { id: "l", kind: "list", parentId: "f" }], projectFields: [{ projectId: "p", statuses: [{ id: "shipped", name: "Released", color: "#abcdef", completed: true }], dateFormat: "dd/MM/yyyy" }] } as Detail;
@@ -18,6 +18,8 @@ test("list statuses override the owning project while projects, folders and inhe
   assert.deepEqual(projectStatuses(data, "missing"), defaultStatuses);
   assert.deepEqual(projectStatuses({ ...data, projectFields: undefined }, "l"), defaultStatuses);
   assert.equal(projectDateFormat(data, "missing"), "yyyy-MM-dd");
+  assert.equal(statusForDestination(data, "l", "shipped"), "shipped");
+  assert.equal(statusForDestination(data, "l", "removed_status"), "shipped");
 });
 test("status colors maintain AA contrast at extremes and the crossover, with a safe invalid fallback", () => {
   for (const color of ["#000000", "#ffffff", "#757575", "#767676", "#ff0000"]) {
@@ -38,4 +40,6 @@ test("date formatting preserves calendar dates and local timestamp editing prese
   const iso = "2026-09-07T04:30:12.123Z";
   assert.equal(new Date(localDateTime(iso)).toISOString(), iso);
   assert.equal(localDateTime("invalid"), "");
+  assert.equal(taskDateRangeError("2026-09-08", "2026-09-07"), "The due date must be on or after the start date.");
+  assert.equal(taskDateRangeError("2026-09-07", "2026-09-07"), "");
 });

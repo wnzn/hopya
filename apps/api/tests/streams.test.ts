@@ -65,7 +65,7 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   const workspace = await (await api('/workspaces', 'POST', { name: 'Snapshot' })).json() as { id: string }
   const wid = workspace.id
   const project = await (await api(`/workspaces/${wid}/nodes`, 'POST', { name: 'Project', kind: 'project' })).json() as { id: string; createdAt: string }
-  const list = await (await api(`/workspaces/${wid}/nodes`, 'POST', { name: 'List', kind: 'list' })).json() as { id: string; createdAt: string }
+  const list = await (await api(`/workspaces/${wid}/nodes`, 'POST', { name: 'List', kind: 'list', icon: 'sparkles', color: '#AbC123' })).json() as { id: string; createdAt: string }
   const detail = await (await api(`/workspaces/${wid}`)).json() as any
   const users: { id: string; token: string; tokenId: string; roleId: string }[] = []
   const timestamp = '2026-01-01T00:00:00.000Z'
@@ -125,7 +125,10 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     const data = JSON.parse(body)
     assert.deepEqual(Object.keys(data).sort(), ['attachments', 'commentReactions', 'comments', 'documentCommentReactions', 'documentComments', 'documentPages', 'documentSubpages', 'documents', 'exportedAt', 'fields', 'items', 'listStatusConfigs', 'listTagColorConfigs', 'nodes', 'projectFields', 'version', 'workspace'])
     assert.equal(data.version, 5); assert.equal(data.workspace.name, 'Snapshot')
-    assert.equal(data.nodes.find((node: any) => node.id === list.id).name, 'List')
+    const exportedList = data.nodes.find((node: any) => node.id === list.id)
+    assert.equal(exportedList.name, 'List')
+    assert.equal(exportedList.icon, 'sparkles'); assert.equal(exportedList.color, '#abc123')
+    assert.equal(Object.hasOwn(exportedList, 'appearanceIcon') || Object.hasOwn(exportedList, 'appearanceColor'), false)
     assert.equal(data.items.length, 800); assert.equal(data.items.at(-1).title, 'Item 799')
     assert.deepEqual(data.items.map((item: any) => item.id), ids)
     assert.ok(data.items.every((item: any) => item.description === description))

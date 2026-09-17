@@ -39,7 +39,7 @@
   background: var(--surface);
   cursor: pointer;
 }
-.project-field-options label:hover { border-color: var(--field-line); }
+.project-field-options label:not(:has(input:disabled)):hover { border-color: var(--field-line); }
 .project-field-options label:has(input:checked) {
   border-color: var(--signal-wash-line);
   background: var(--signal-wash);
@@ -94,9 +94,18 @@
 }
 .fields-manager-target-panel .fields-manager-panel-body { gap: 14px; }
 .fields-manager-tree { list-style: none; margin: 0; padding: 0; }
-.fields-manager-tree ul { list-style: none; margin: 0; padding-left: 16px; }
-.fields-manager-row { display: flex; gap: 5px; align-items: center; margin-bottom: 5px; }
+.fields-manager-tree ul {
+  list-style: none;
+  margin: 0 0 0 20px;
+  padding-left: 8px;
+  border-inline-start: 1px solid var(--line);
+}
+.fields-manager-row { position: relative; display: flex; align-items: center; margin-bottom: 5px; }
 .fields-manager-toggle {
+  position: absolute;
+  z-index: 1;
+  top: 5px;
+  left: 5px;
   flex: 0 0 32px;
   width: 32px;
   min-width: 32px;
@@ -114,15 +123,17 @@
   display: flex;
   gap: 9px;
   align-items: center;
+  justify-content: flex-start;
   min-height: 42px;
   padding: 7px 10px;
   text-align: left;
   overflow-wrap: anywhere;
-  border-color: transparent;
-  background: transparent;
+  border-color: var(--line);
+  background: var(--surface);
   box-shadow: none;
 }
-.fields-manager-target:hover { background: var(--wash); border-color: var(--line); }
+.fields-manager-row:has(> .fields-manager-toggle) > .fields-manager-target { padding-left: 44px; }
+.fields-manager-target:hover:not(:disabled) { background: var(--wash); border-color: var(--line); }
 .fields-manager-kind-icon { width: 16px; height: 16px; flex: 0 0 16px; color: var(--ink-soft); }
 .fields-manager-target-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
 .fields-manager-target-text > span { font-weight: 550; }
@@ -180,7 +191,7 @@
   background: var(--surface);
   cursor: pointer;
 }
-.list-status-source-options > label:hover { background: var(--wash); }
+.list-status-source-options > label:not(:has(input:disabled)):hover { background: var(--wash); }
 .list-status-source-options > label:has(input:checked) { border-color: var(--signal-wash-line); background: var(--signal-wash); }
 .list-status-source-options input[type="radio"] {
   width: 16px;

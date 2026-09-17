@@ -64,12 +64,12 @@
   padding: 6px 12px;
   font-weight: 500;
 }
-.task-table.task-table--grid .task-add-task:hover, .task-table.task-table--grid .task-add-task:focus-visible {
+.task-table.task-table--grid .task-add-task:hover:not(:disabled), .task-table.task-table--grid .task-add-task:focus-visible {
   color: var(--ink);
   background: var(--soft);
 }
 .task-table.task-table--grid .task-add-task:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
-.task-table.task-table--grid .task-add-task span { font-size: 16px; line-height: 1; margin-right: 4px; }
+.task-table.task-table--grid .task-add-task svg { width: 16px; height: 16px; margin-right: 4px; }
 
 .task-table.task-table-scroll {
   width: 100%;
@@ -88,7 +88,7 @@
 .task-table button { min-height: 40px; min-width: 40px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .task-table .task-title { min-width: 0; width: 100%; text-align: left; }
 .task-table .task-cell-edit { width: 100%; text-align: left; padding: 8px; color: var(--ink); background: transparent; border-color: transparent; font-weight: 400; align-items: center; }
-.task-table .task-cell-edit:hover, .task-table .task-cell-edit:focus-visible { border-color: var(--line); background: var(--soft); }
+.task-table .task-cell-edit:hover:not(:disabled), .task-table .task-cell-edit:focus-visible { border-color: var(--line); background: var(--soft); }
 .task-table .task-name-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .task-table .task-cell-content { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .task-table .task-cell-content > .task-cell-edit { flex: 1; width: auto; min-width: 0; }
@@ -165,8 +165,9 @@
   border-color: transparent;
   text-align: left;
 }
-.task-table .task-sort-trigger:hover,
+.task-table .task-sort-trigger:hover:not(:disabled),
 .task-table .task-sort-trigger:focus-visible { background: var(--soft); border-color: var(--line); }
+.task-table .task-sort-trigger svg { width: 13px; height: 13px; }
 .task-sort-menu {
   position: fixed;
   z-index: 100;
@@ -245,7 +246,7 @@
   letter-spacing: inherit;
   text-transform: inherit;
 }
-.task-table:not(.task-table--grid) .task-sort-trigger:hover,
+.task-table:not(.task-table--grid) .task-sort-trigger:hover:not(:disabled),
 .task-table:not(.task-table--grid) .task-sort-trigger:focus-visible {
   color: var(--ink);
   background: var(--soft);

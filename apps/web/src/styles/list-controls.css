@@ -33,9 +33,8 @@
   width: 100%;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--paper);
-  box-shadow: var(--shadow);
+  border-radius: 9px;
+  background: var(--surface);
 }
 .list-filter-heading,
 .list-filter-row,
@@ -48,6 +47,7 @@
 .list-filter-heading { justify-content: space-between; }
 .list-filter-heading button,
 .list-filter-row button { min-height: 34px; }
+.list-filter-heading button svg { width: 14px; height: 14px; }
 .list-filter-row select,
 .list-filter-row .custom-select,
 .list-filter-row input { min-width: 0; min-height: 36px; }
@@ -92,7 +92,7 @@
   font-size: 12px;
   font-weight: 550;
 }
-.list-controls-disclosure:hover,
+.list-controls-disclosure:hover:not(:disabled),
 .list-controls-disclosure:focus-visible {
   color: var(--ink);
   background: var(--wash);

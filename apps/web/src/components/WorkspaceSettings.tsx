@@ -14,6 +14,7 @@ import { ErrorNotice, Modal } from "./Shared";
 import ProjectFields from "./ProjectFields";
 import { FieldEditor, FieldSettings, fieldSettings } from "./FieldSettings";
 import Select from "./Select";
+import SolidIcon from "./SolidIcon";
 
 export default function WorkspaceSettings({
   detail: incomingDetail,
@@ -222,7 +223,7 @@ export default function WorkspaceSettings({
           </div>
           <div className="stack">
             <div>
-              <button onClick={() => setRoleEditor({})}>+ Create role</button>
+              <button aria-label="+ Create role" onClick={() => setRoleEditor({})}><SolidIcon name="plus" /> Create role</button>
             </div>
             <ul className="record-list">
               {detail.roles.map((role) => (

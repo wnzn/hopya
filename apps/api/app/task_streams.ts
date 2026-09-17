@@ -4,7 +4,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import { Effect } from 'effect'
 import { db, type SnapshotTransaction } from './database.js'
 import { authenticate } from './security.js'
-import { requirePermission, decodeField } from './service.js'
+import { requirePermission, decodeField, nodeColumns } from './service.js'
 import { HttpError } from './types.js'
 import { decodeItem, encodeRecord, itemColumns, itemQuery, type ItemRow } from './task_reads.js'
 
@@ -149,7 +149,7 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
   async function* parts(workspace: unknown): AsyncGenerator<string> {
     if (exporting) {
       yield `{"version":5,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
-      yield* records('SELECT id,workspaceId,name,kind,parentId,createdAt,description,icon,color',
+      yield* records(`SELECT ${nodeColumns}`,
         'FROM nodes WHERE workspaceId=?', [wid], ['createdAt', 'id'])
       yield '],"documents":['
       if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt,createdById,updatedById', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])

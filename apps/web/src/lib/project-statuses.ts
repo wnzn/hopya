@@ -16,6 +16,10 @@ export function projectStatuses(data: Detail, nodeId?: string | null): ProjectSt
   }
   return configuration(data, nodeId)?.statuses ?? defaultStatuses;
 }
+export function statusForDestination(data: Detail, nodeId: string, currentStatus: string): string {
+  const choices = projectStatuses(data, nodeId);
+  return choices.some(choice => choice.id === currentStatus) ? currentStatus : choices[0]?.id ?? "todo";
+}
 export function projectDateFormat(data: Detail, nodeId?: string | null): DateFormat {
   return configuration(data, nodeId)?.dateFormat ?? "yyyy-MM-dd";
 }

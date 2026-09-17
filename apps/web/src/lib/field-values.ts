@@ -1,6 +1,9 @@
 import type { DateFormat } from "./api";
 
 export const dateFormats: DateFormat[] = ["yyyy-MM-dd", "MMM d, yyyy", "MMMM d, yyyy", "dd/MM/yyyy"];
+export function taskDateRangeError(startDate?: string | null, dueDate?: string | null): string {
+  return startDate && dueDate && startDate > dueDate ? "The due date must be on or after the start date." : "";
+}
 export function formatFieldDate(value: string, format: DateFormat = "yyyy-MM-dd", datetime = false): string {
   const date = new Date(datetime ? value : `${value}T00:00:00`);
   if (!Number.isFinite(date.getTime())) return value;

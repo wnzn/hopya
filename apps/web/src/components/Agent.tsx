@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, message, workspacePath, type Proposal } from "../lib/api";
 import { plainText } from "../lib/rich-text";
 import { ErrorNotice, useDialog } from "./Shared";
+import SolidIcon from "./SolidIcon";
 
 export default function Agent({
   workspaceId,
@@ -87,7 +88,7 @@ export default function Agent({
           <h2>Workspace assistant</h2>
         </div>
         <button aria-label="Close assistant" onClick={onClose}>
-          ×
+          <SolidIcon name="x" />
         </button>
       </div>
       <div className="chat-log" role="log" aria-live="polite">

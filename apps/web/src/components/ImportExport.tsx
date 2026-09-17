@@ -661,28 +661,36 @@ export default function ImportExport() {
                     onChange={(event) => setSearch(event.target.value)}
                   />
                 </label>
-                <fieldset className="bare-fieldset">
+                <fieldset className="bare-fieldset export-format-fieldset">
                   <legend>Format</legend>
-                  <label className="inline-check">
-                    <input
-                      type="radio"
-                      name="export-format"
-                      value="csv"
-                      checked={exportFormat === "csv"}
-                      onChange={() => setExportFormat("csv")}
-                    />
-                    <span>CSV</span>
-                  </label>
-                  <label className="inline-check">
-                    <input
-                      type="radio"
-                      name="export-format"
-                      value="json"
-                      checked={exportFormat === "json"}
-                      onChange={() => setExportFormat("json")}
-                    />
-                    <span>JSON</span>
-                  </label>
+                  <div className="export-format-options">
+                    <label>
+                      <input
+                        type="radio"
+                        name="export-format"
+                        value="csv"
+                        checked={exportFormat === "csv"}
+                        onChange={() => setExportFormat("csv")}
+                      />
+                      <span>
+                        <strong>CSV</strong>
+                        <small>For spreadsheets and tabular tools</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="export-format"
+                        value="json"
+                        checked={exportFormat === "json"}
+                        onChange={() => setExportFormat("json")}
+                      />
+                      <span>
+                        <strong>JSON</strong>
+                        <small>For structured data and integrations</small>
+                      </span>
+                    </label>
+                  </div>
                 </fieldset>
                 <div className="button-group">
                   <button type="button" onClick={downloadExport}>

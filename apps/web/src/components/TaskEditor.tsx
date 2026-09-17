@@ -20,8 +20,8 @@ import ProjectFields from "./ProjectFields";
 import TypedFieldInput from "./TypedFieldInput";
 import Select from "./Select";
 import SolidIcon from "./SolidIcon";
-import { projectStatuses, projectDateFormat, statusStyle } from "../lib/project-statuses";
-import { formatFieldDate, localDateTime } from "../lib/field-values";
+import { projectStatuses, projectDateFormat, statusForDestination, statusStyle } from "../lib/project-statuses";
+import { formatFieldDate, localDateTime, taskDateRangeError } from "../lib/field-values";
 import { fieldOwnerForNode, hierarchyLabels, projectBuiltIns, projectCustomFields } from "../lib/project-fields";
 
 type Attachment = {
@@ -34,6 +34,8 @@ type Attachment = {
 type ChecklistEntry = { id: string; text: string; done: boolean };
 type ItemEx = Item & { checklist?: ChecklistEntry[]; parentId?: string | null };
 type DraftEx = ItemInput & { checklist: ChecklistEntry[]; parentId: string | null };
+const CHECKLIST_ID_MAX = 100;
+const CHECKLIST_TEXT_MAX = 200;
 
 function normalizeChecklist(value: unknown): ChecklistEntry[] {
   if (!Array.isArray(value)) return [];
@@ -43,7 +45,7 @@ function normalizeChecklist(value: unknown): ChecklistEntry[] {
       const record = entry as Record<string, unknown>;
       if (typeof record.id === "string" && typeof record.text === "string" && typeof record.done === "boolean") {
         if (record.id && record.text.trim())
-          out.push({ id: record.id.slice(0, 120), text: record.text.slice(0, 500), done: record.done });
+          out.push({ id: record.id.slice(0, CHECKLIST_ID_MAX), text: record.text.slice(0, CHECKLIST_TEXT_MAX), done: record.done });
       }
     }
   }
@@ -234,10 +236,9 @@ export default function TaskEditor({
   }
   function changeList(nodeId: string) {
     setDraft(currentDraft => {
-      const choices = projectStatuses(detail, nodeId);
-      const status = active && choices.some(choice => choice.id === currentDraft.status)
-        ? currentDraft.status
-        : choices[0]?.id || "todo";
+      const status = active
+        ? statusForDestination(detail, nodeId, currentDraft.status)
+        : projectStatuses(detail, nodeId)[0]?.id || "todo";
       return { ...currentDraft, nodeId, status };
     });
   }
@@ -420,8 +421,9 @@ export default function TaskEditor({
       setError("Add the pending tag or clear its input before saving.");
       return;
     }
-    if (nextDraft.startDate && nextDraft.dueDate && nextDraft.startDate > nextDraft.dueDate) {
-      setError("The due date must be on or after the start date.");
+    const dateError = taskDateRangeError(nextDraft.startDate, nextDraft.dueDate);
+    if (dateError) {
+      setError(dateError);
       return;
     }
     setBusy(true);
@@ -495,8 +497,9 @@ export default function TaskEditor({
       setError("Add the pending tag or clear its input before saving.");
       return;
     }
-    if (draft.startDate && draft.dueDate && draft.startDate > draft.dueDate) {
-      setError("The due date must be on or after the start date.");
+    const dateError = taskDateRangeError(draft.startDate, draft.dueDate);
+    if (dateError) {
+      setError(dateError);
       return;
     }
     setBusy(true);
@@ -535,7 +538,7 @@ export default function TaskEditor({
   function addChecklistItem() {
     const text = newChecklist.trim();
     if (!text || !writable) return;
-    const entry: ChecklistEntry = { id: newId(), text: text.slice(0, 500), done: false };
+    const entry: ChecklistEntry = { id: newId().slice(0, CHECKLIST_ID_MAX), text: text.slice(0, CHECKLIST_TEXT_MAX), done: false };
     setUploadOpen(false);
     void saveChecklist([...draft.checklist, entry]).then(saved => {
       if (saved) setNewChecklist(currentValue => currentValue.trim() === text ? "" : currentValue);
@@ -626,8 +629,9 @@ export default function TaskEditor({
       setChildError("Add a title before creating the subtask.");
       return;
     }
-    if (childDraft.startDate && childDraft.dueDate && childDraft.startDate > childDraft.dueDate) {
-      setChildError("The due date must be on or after the start date.");
+    const dateError = taskDateRangeError(childDraft.startDate, childDraft.dueDate);
+    if (dateError) {
+      setChildError(dateError);
       return;
     }
     setChildBusy(true);
@@ -738,131 +742,19 @@ export default function TaskEditor({
   function renderCustomEditor(field: Field) {
     const direct = ["select", "checkbox", "date", "datetime"].includes(field.type);
     const compact = direct || field.type === "checklist";
-    if (["datetime", "checklist", "rating"].includes(field.type))
-      return <TypedFieldInput field={field} compact={compact} value={draft.customFields[field.id] ?? null} disabled={!writable || busy}
-        onBlur={field.type === "datetime" ? event => {
+    return <TypedFieldInput field={field} compact={compact} value={draft.customFields[field.id] ?? null} disabled={!writable || busy}
+        formulaValue={field.type === "formula" ? formulaDisplay(field, draft) : undefined}
+        onDismiss={field.type === "select" ? cancelEditing : undefined}
+        ariaDescribedBy={field.type === "checkbox" ? `custom-${field.id}-state` : undefined}
+        onBlur={field.type === "date" || field.type === "datetime" ? event => {
           const original = current?.customFields[field.id];
-          const originalLocal = typeof original === "string" ? localDateTime(original) : "";
-          if (event.currentTarget.value === originalLocal) cancelEditing();
+          const originalInput = field.type === "datetime" && typeof original === "string" ? localDateTime(original) : original ?? "";
+          if (event.currentTarget.value === originalInput) cancelEditing();
         } : undefined}
-        onKeyDown={field.type === "datetime" ? event => {
+        onKeyDown={field.type === "date" || field.type === "datetime" ? event => {
           if (event.key === "Escape") { event.stopPropagation(); cancelEditing(); }
         } : undefined}
         onChange={value => (direct ? saveDirect : change)("customFields", { ...draft.customFields, [field.id]: value })} />;
-    return <label>
-      <span className={direct ? "sr-only" : undefined}>{field.name}</span>
-      {field.type === "checkbox" ? (
-        <input
-          type="checkbox"
-          autoFocus
-          disabled={!writable || busy}
-          aria-describedby={`custom-${field.id}-state`}
-          checked={draft.customFields[field.id] === true}
-          onChange={(e) =>
-            saveDirect("customFields", {
-              ...draft.customFields,
-              [field.id]: e.target.checked,
-            })
-          }
-        />
-      ) : field.type === "select" ? (
-        <Select
-          autoFocus
-          openOnMount
-          onDismiss={cancelEditing}
-          disabled={!writable || busy}
-          value={String(draft.customFields[field.id] ?? "")}
-          onChange={(e) =>
-            saveDirect("customFields", {
-              ...draft.customFields,
-              [field.id]: e.target.value || null,
-            })
-          }
-        >
-          <option value="">Not set</option>
-          {field.options?.map((option) => (
-            <option key={option}>{option}</option>
-          ))}
-        </Select>
-      ) : field.type === "formula" && field.settings?.formula !== undefined ? (
-        <output aria-label={`${field.name} calculated value`}>{formulaDisplay(field, draft) || "Not set"}</output>
-      ) : field.type === "formula" ? (
-        <>
-          {writable ? (
-            <input
-              autoFocus
-              type="text"
-              maxLength={200}
-              value={
-                draft.customFields[field.id] == null
-                  ? ""
-                  : String(draft.customFields[field.id])
-              }
-              onChange={(e) =>
-                change("customFields", {
-                  ...draft.customFields,
-                  [field.id]:
-                    e.target.value === ""
-                      ? null
-                      : e.target.value,
-                })
-              }
-            />
-          ) : (
-            <input
-              type="text"
-              readOnly
-              value={formulaDisplay(field, draft)}
-            />
-          )}
-          {writable &&
-            typeof draft.customFields[field.id] ===
-              "string" &&
-            (draft.customFields[field.id] as string).length >
-              0 && (
-              <small
-                id={`custom-${field.id}-state`}
-                aria-live="polite"
-              >
-                Preview: {formulaDisplay(field, draft)}
-              </small>
-            )}
-        </>
-      ) : (
-        <input
-          autoFocus
-          readOnly={!writable}
-          type={
-            field.type === "number"
-              ? "number"
-              : field.type === "date"
-                ? "date"
-                : "text"
-          }
-          step={field.type === "number" ? "any" : undefined}
-          maxLength={2000}
-          value={String(draft.customFields[field.id] ?? "")}
-          onFocus={(e) => { if (field.type === "date") { try { e.currentTarget.showPicker(); } catch {} } }}
-          onBlur={(e) => {
-            if (field.type === "date" && (e.currentTarget.value || null) === (current?.customFields[field.id] ?? null)) cancelEditing();
-          }}
-          onKeyDown={(e) => {
-            if (field.type === "date" && e.key === "Escape") { e.stopPropagation(); cancelEditing(); }
-          }}
-          onChange={(e) =>
-            (field.type === "date" ? saveDirect : change)("customFields", {
-              ...draft.customFields,
-              [field.id]:
-                e.target.value === ""
-                  ? null
-                  : field.type === "number"
-                    ? Number(e.target.value)
-                    : e.target.value,
-            })
-          }
-        />
-      )}
-    </label>;
   }
   function renderAddFields() {
     if (!structureWritable) return null;
@@ -881,7 +773,7 @@ export default function TaskEditor({
     return (
       <div className="inline-form task-detail-inline-actions">
         <button type="button" className="task-detail-save" aria-label="Save changes" disabled={busy || attachmentBusy || conflict} onClick={() => void save()}>
-          <span aria-hidden="true">✓</span> Save
+          <SolidIcon name="check" /> Save
         </button>
         <button type="button" disabled={busy} onClick={cancelEditing}>
           Cancel editing
@@ -904,9 +796,9 @@ export default function TaskEditor({
           placeholder="What needs to happen?" />
         <div className="inline-title-actions">
           <button type="button" className="inline-title-action inline-save" aria-label="Save title"
-            disabled={busy || attachmentBusy || conflict || !draft.title.trim()} onClick={() => void save()}>✓</button>
+            disabled={busy || attachmentBusy || conflict || !draft.title.trim()} onClick={() => void save()}><SolidIcon name="check" /></button>
           <button type="button" className="inline-title-action" aria-label="Cancel editing title" disabled={busy}
-            onClick={cancelEditing}>×</button>
+            onClick={cancelEditing}><SolidIcon name="x" /></button>
         </div>
       </div> : <h2 className="task-detail-heading-title">
       <button type="button" aria-label="Edit title" disabled={busy || !writable} onClick={() => openEditor("title")}>
@@ -1163,7 +1055,7 @@ export default function TaskEditor({
                   New checklist item
                   <input value={newChecklist} onChange={e => setNewChecklist(e.target.value)}
                     aria-label="New checklist item"
-                    maxLength={500} placeholder="e.g. Confirm scope"
+                    maxLength={CHECKLIST_TEXT_MAX} placeholder="e.g. Confirm scope"
                     onKeyDown={e => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -1193,108 +1085,10 @@ export default function TaskEditor({
                 <div className="form-grid">
                   {fields.map((field) => (
                     <div key={field.id} className="stack">
-                      {["datetime", "checklist", "rating"].includes(field.type) ? <TypedFieldInput field={field} value={draft.customFields[field.id] ?? null} disabled={!writable}
-                        onChange={value => change("customFields", { ...draft.customFields, [field.id]: value })} /> : <label>
-                        {field.name}
-                        {field.type === "checkbox" ? (
-                          <input
-                            type="checkbox"
-                            disabled={!writable}
-                            aria-describedby={`custom-${field.id}-state`}
-                            checked={draft.customFields[field.id] === true}
-                            onChange={(e) =>
-                              change("customFields", {
-                                ...draft.customFields,
-                                [field.id]: e.target.checked,
-                              })
-                            }
-                          />
-                        ) : field.type === "select" ? (
-                          <Select
-                            disabled={!writable}
-                            value={String(draft.customFields[field.id] ?? "")}
-                            onChange={(e) =>
-                              change("customFields", {
-                                ...draft.customFields,
-                                [field.id]: e.target.value || null,
-                              })
-                            }
-                          >
-                            <option value="">Not set</option>
-                            {field.options?.map((option) => (
-                              <option key={option}>{option}</option>
-                            ))}
-                          </Select>
-                        ) : field.type === "formula" && field.settings?.formula !== undefined ? (
-                          <output aria-label={`${field.name} calculated value`}>{formulaDisplay(field, draft) || "Not set"}</output>
-                        ) : field.type === "formula" ? (
-                          <>
-                            {writable ? (
-                              <input
-                                type="text"
-                                maxLength={200}
-                                value={
-                                  draft.customFields[field.id] == null
-                                    ? ""
-                                    : String(draft.customFields[field.id])
-                                }
-                                onChange={(e) =>
-                                  change("customFields", {
-                                    ...draft.customFields,
-                                    [field.id]:
-                                      e.target.value === ""
-                                        ? null
-                                        : e.target.value,
-                                  })
-                                }
-                              />
-                            ) : (
-                              <input
-                                type="text"
-                                readOnly
-                                value={formulaDisplay(field, draft)}
-                              />
-                            )}
-                            {writable &&
-                              typeof draft.customFields[field.id] ===
-                                "string" &&
-                              (draft.customFields[field.id] as string).length >
-                                0 && (
-                                <small
-                                  id={`custom-${field.id}-state`}
-                                  aria-live="polite"
-                                >
-                                  Preview: {formulaDisplay(field, draft)}
-                                </small>
-                              )}
-                          </>
-                        ) : (
-                          <input
-                            readOnly={!writable}
-                            type={
-                              field.type === "number"
-                                ? "number"
-                                : field.type === "date"
-                                  ? "date"
-                                  : "text"
-                            }
-                            step={field.type === "number" ? "any" : undefined}
-                            maxLength={2000}
-                            value={String(draft.customFields[field.id] ?? "")}
-                            onChange={(e) =>
-                              change("customFields", {
-                                ...draft.customFields,
-                                [field.id]:
-                                  e.target.value === ""
-                                    ? null
-                                    : field.type === "number"
-                                      ? Number(e.target.value)
-                                      : e.target.value,
-                              })
-                            }
-                          />
-                        )}
-                      </label>}
+                      <TypedFieldInput field={field} value={draft.customFields[field.id] ?? null} disabled={!writable}
+                        formulaValue={field.type === "formula" ? formulaDisplay(field, draft) : undefined}
+                        ariaDescribedBy={field.type === "checkbox" ? `custom-${field.id}-state` : undefined}
+                        onChange={value => change("customFields", { ...draft.customFields, [field.id]: value })} />
                       {(field.type === "date" || field.type === "datetime") && typeof draft.customFields[field.id] === "string" && <small>{formatFieldDate(draft.customFields[field.id] as string, field.settings?.dateFormat ?? dateFormat, field.type === "datetime")}</small>}
                       {field.type === "checkbox" && (
                         <>
@@ -1376,13 +1170,14 @@ export default function TaskEditor({
       heading={renderTaskHeading()}
       headerActions={<div ref={optionsMenu} className="task-options">
         <button type="button" className="icon-button" aria-label="Task options" aria-haspopup="menu" aria-expanded={menuOpen}
-          onClick={() => setMenuOpen(value => !value)}>⋯</button>
+          onClick={() => setMenuOpen(value => !value)}><SolidIcon name="more" /></button>
         {menuOpen && <div className="task-options-menu" role="menu" aria-label="Task options">
           {structureWritable && fieldOwner && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setFieldsOpen(true); }}>Add field to this list</button>}
           {shownItem && deletable && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setConfirmDelete(true); }}>Delete task</button>}
         </div>}
       </div>}
       className="task-detail-modal"
+      closeOnBackdrop={editing !== "description"}
       focusFirstField={!shownItem}
       onClose={() => {
         if (!busy && !attachmentBusy && !childBusy) onClose();
@@ -1692,7 +1487,7 @@ export default function TaskEditor({
                 New checklist item
                 <input value={newChecklist} onChange={e => setNewChecklist(e.target.value)}
                   aria-label="New checklist item"
-                  maxLength={500} placeholder="e.g. Confirm scope"
+                  maxLength={CHECKLIST_TEXT_MAX} placeholder="e.g. Confirm scope"
                   disabled={busy || conflict}
                   onKeyDown={e => {
                     if (e.key === "Enter") {
@@ -1715,7 +1510,7 @@ export default function TaskEditor({
             </div>
             {writable && (
               <button type="button" disabled={busy || attachmentBusy || childBusy} onClick={startSubtask}>
-                <span aria-hidden="true">+</span> Add subtask
+                <SolidIcon name="plus" /> Add subtask
               </button>
             )}
           </div>
@@ -1731,7 +1526,7 @@ export default function TaskEditor({
                   <button type="button" disabled={busy || attachmentBusy || childBusy} onClick={() => openSubtask(sub)}>
                     <SolidIcon name="subtask" />
                     <span>{sub.title || "Untitled subtask"}</span>
-                    <span className="task-detail-subtask-open" aria-hidden="true">›</span>
+                    <SolidIcon name="chevronRight" className="task-detail-subtask-open solid-icon" />
                   </button>
                 </li>
               ))}

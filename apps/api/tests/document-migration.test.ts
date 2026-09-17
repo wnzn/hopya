@@ -13,11 +13,12 @@ const { default: lucidDb } = await import('@adonisjs/lucid/services/db')
 const { default: DocumentAttributionMigration } = await import('../database/migrations/0003_document_attribution.js')
 const { default: RestoreDocumentSubpagesMigration } = await import('../database/migrations/0004_restore_document_subpages.js')
 const { default: DocumentPagePlacementMigration } = await import('../database/migrations/0005_document_page_placement.js')
+const { default: NodeAppearanceMigration } = await import('../database/migrations/0006_node_appearance.js')
 const { db, service } = await import('../app/core.js')
 const { documentService } = await import('../app/documents.js')
 after(async () => { await closeDatabase(); rmSync(directory, { recursive: true, force: true }) })
 
-test('SQLite attribution upgrade preserves document pages, comments, and reactions', async () => {
+test('SQLite additive upgrades preserve referenced contents and convert legacy node appearance', async () => {
   const owner = randomUUID()
   await db.run('INSERT INTO users(id,name,email,createdAt) VALUES (?,?,?,?)', owner, 'Owner', `${owner}@example.test`, new Date().toISOString())
   const workspace = await service.createWorkspace(owner, { name: 'Migration safety' })
@@ -48,4 +49,18 @@ test('SQLite attribution upgrade preserves document pages, comments, and reactio
   assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_subpages WHERE workspaceId=?', workspace.id))!.count, 1)
   await new DocumentPagePlacementMigration(client, 'database/migrations/0005_document_page_placement').execUp()
   assert.equal((await db.get<{ placement: string }>('SELECT placement FROM document_subpages WHERE pageDocumentId=?', subpage.id))!.placement, 'page')
+
+  await db.run("UPDATE nodes SET icon='bookmark',color='violet' WHERE workspaceId=? AND id=?", workspace.id, project.id)
+  await client.rawQuery('ALTER TABLE nodes DROP COLUMN "appearanceColor"')
+  await client.rawQuery('ALTER TABLE nodes DROP COLUMN "appearanceIcon"')
+  await new NodeAppearanceMigration(client, 'database/migrations/0006_node_appearance').execUp()
+  const migrated = (await service.listNodes(owner, workspace.id)).find((node) => node.id === project.id)!
+  assert.equal(migrated.name, 'Project')
+  assert.equal(migrated.icon, 'bookmark')
+  assert.equal(migrated.color, '#7652a8')
+  assert.equal((await service.getItem(owner, workspace.id, task.id)).title, 'Task page')
+  const cleared = await service.updateNode(owner, workspace.id, project.id, { icon: null, color: null })
+  assert.equal(cleared.icon, null)
+  assert.equal(cleared.color, null)
+  assert.deepEqual(await db.get('SELECT icon,color FROM nodes WHERE id=?', project.id), { icon: 'bookmark', color: 'violet' })
 })

@@ -137,6 +137,26 @@ test('node patch schema rejects empty/condition-only, unknown and malformed muta
   assert.equal(project.parentId, null)
 })
 
+test('expanded node appearance normalizes, persists, exports, and rejects unsafe values atomically', async () => {
+  const f = await fixture()
+  const styled = await service.updateNode(f.owner.id, f.wid, f.folder.id, { icon: 'globe', color: '#AbC123' })
+  assert.equal(styled.icon, 'globe')
+  assert.equal(styled.color, '#abc123')
+  assert.deepEqual(Object.keys(styled).sort(), ['color', 'createdAt', 'description', 'icon', 'id', 'kind', 'name', 'parentId', 'workspaceId'])
+  const stored = await db.get<{ icon: string | null; color: string | null; appearanceIcon: string; appearanceColor: string }>(
+    'SELECT icon,color,appearanceIcon,appearanceColor FROM nodes WHERE workspaceId=? AND id=?', f.wid, f.folder.id)
+  assert.deepEqual(stored, { icon: null, color: null, appearanceIcon: 'globe', appearanceColor: '#abc123' })
+  assert.deepEqual((await service.exportWorkspace(f.owner.id, f.wid)).nodes.find((node) => node.id === f.folder.id), styled)
+
+  const audits = await countAudits()
+  for (const patch of [{ color: 'url(https://unsafe.example)' }, { icon: 'unknown' }]) {
+    await assert.rejects(() => service.updateNode(f.owner.id, f.wid, f.folder.id, patch))
+  }
+  assert.deepEqual((await service.listNodes(f.owner.id, f.wid)).find((node) => node.id === f.folder.id), styled)
+  assert.equal(await countAudits(), audits)
+  assert.equal((await service.updateNode(f.owner.id, f.wid, f.folder.id, { color: 'orange' })).color, '#c45d0a')
+})
+
 test('subtasks validate same-workspace parents, block deletion with children, and survive cross-list moves', async () => {
   const f = await fixture(); const other = await fixture()
   const parent = await service.createItem(f.owner.id, f.wid, { title: 'Parent', nodeId: f.list.id })
