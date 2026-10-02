@@ -1,157 +1,83 @@
-# Hopya
-
-Hopya is a self-hosted task manager for teams that want a private, straightforward workspace without a mandatory cloud service. Organize work into projects, folders, and lists, then use List, Board, Calendar, Gallery, or Timeline views over the same tasks.
-
-> Hopya is an early release. Back up your data and review the [security](docs/security.md) and [deployment](docs/deployment.md) guidance before using it for important workloads.
+<div align="center">
+  <h1>Hopya</h1>
+  <p><strong>Your work, on your server.</strong></p>
+  <p>A self-hosted task and project management app for teams.<br>
+  Tasks, documents, tables, and automations in a private workspace.</p>
+  <p>
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#features">Features</a> ·
+    <a href="#documentation">Documentation</a> ·
+    <a href="https://github.com/wnzn/hopya/issues">Feedback</a>
+  </p>
+  <p>
+    <a href="https://github.com/wnzn/hopya/actions/workflows/ci.yml"><img src="https://github.com/wnzn/hopya/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT license"></a>
+  </p>
+  <p>
+    <img src="docs/assets/hopya-hero.png" alt="Hopya project management: tasks, calendar, views, and collaboration beside a dark-mode task list." width="960">
+  </p>
+</div>
 
 ## Features
 
-- Multiple workspaces with protected ownership, members, and custom roles
-- Projects, folders, lists, tasks, subtasks, checklists, statuses, priorities, tags, dates, and assignees
-- Workspace Inbox notifications, user/task/structure mentions, threaded comments, and emoji reactions
-- Configurable text, number, date, datetime, checkbox, select, checklist, rating, and formula fields
-- List, Board, Calendar, Gallery, and Timeline views
-- Standalone Documents and spreadsheet-style Tables with typed columns, full-data filters, ordering, calculations and CSV/JSON transfer
-- Optional live PostgreSQL, MySQL and SQLite Tables with permission-checked cell write-back
-- Private attachments and image upload/paste in task bodies and comments, using local or optional S3-compatible storage
-- Gallery covers and carousels from task-body images
-- Local accounts with profile pictures, optional OIDC sign-in, password recovery, revocable API tokens, and audit records
-- JSON/CSV task import and export, plus complete workspace JSON exports
-- Versioned graphical automation graphs with conditional routing, write-only credential profiles, run monitoring, and legacy linear compatibility
-- Optional webhook, email, HTTP automation, AI-assisted proposals, and MCP access
-- Responsive layouts and keyboard-accessible controls
+- **Organize your work.** Workspaces, projects, folders, and lists, with tasks, subtasks, checklists, and custom fields—including formulas.
+- **Choose your view.** List, Board (Kanban), Calendar, Gallery, and Timeline over the same tasks, with responsive layouts and keyboard-accessible controls.
+- **Keep content together.** Rich-text Documents and spreadsheet-style Tables with typed columns, filters, sorting, calculations, and CSV/JSON transfer. Connect live PostgreSQL, MySQL, or SQLite Tables with permission-checked cell editing.
+- **Collaborate in context.** Assignees, statuses, priorities, tags, threaded comments, mentions, reactions, and a workspace Inbox. Custom roles control each member's access.
+- **Make work visual.** Private attachments, image upload and paste in task bodies and comments, Gallery image carousels, and profile pictures.
+- **Connect your tools.** Visual automation workflows with branching, HTTP and email actions, and run monitoring. A REST API, optional AI-assisted task proposals, and Model Context Protocol (MCP) access.
+- **Own your data.** SQLite or PostgreSQL, local or S3-compatible file storage, local accounts or OIDC sign-in, revocable API tokens, audit records, and task/workspace exports.
+
+Local accounts, SQLite, and filesystem storage work out of the box. Cloud services and AI are optional; no vendor account is required.
+
+> **Early release.** Back up your data and review the [deployment](docs/deployment.md) and [security](docs/security.md) guides before using Hopya for important workloads.
 
 ## Quick Start
 
-You need Docker Engine and Docker Compose. Node.js 24 is optional and only needed for the easiest configuration initializer and local development.
-
-1. Generate a private `.env`:
-
-   ```sh
-   npm run init:env
-   ```
-
-   Without Node.js on the host, run the initializer through Docker:
-
-   ```sh
-   docker run --rm --network none --read-only --cap-drop ALL \
-     --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
-     -v "$PWD:/work" -w /work node:24-bookworm-slim \
-     node --experimental-strip-types ops/init-env.ts
-   ```
-
-2. Start Hopya:
-
-   ```sh
-   docker compose up -d --build --wait
-   ```
-
-3. Open [http://localhost:8888](http://localhost:8888), then create the first administrator using `SETUP_TOKEN` from `.env`.
-
-The default deployment listens only on `127.0.0.1`. For remote access, place Hopya behind a trusted HTTPS reverse proxy and set `APP_URL` to the exact public origin. Do not expose the private API or web containers directly.
-
-Useful commands:
+You need Git, Docker Engine, and Docker Compose. With Node.js 24 installed, run:
 
 ```sh
-docker compose ps
-docker compose logs -f api web proxy
+git clone https://github.com/wnzn/hopya.git
+cd hopya
+npm run init:env
 docker compose up -d --build --wait
-docker compose down
 ```
 
-Each Git tag publishes `ghcr.io/<owner>/<repository>-api:<tag>` and `ghcr.io/<owner>/<repository>-web:<tag>`. To deploy those exact images instead of building locally, set `HOPYA_API_IMAGE` and `HOPYA_WEB_IMAGE` in `.env`, then run `docker compose pull api web` followed by `docker compose up -d --no-build --wait`. Branch pushes do not publish containers.
-
-`docker compose down` removes containers but leaves the ignored `./data` directory intact. Do not delete that directory unless you intentionally want to delete all Hopya data.
-
-## First Workspace
-
-1. Select **Create your first workspace**. It becomes the active workspace automatically.
-2. Add a project and a list. Folders are optional.
-3. Create a task and switch between views as needed.
-4. Open **Workspace settings** to manage members, roles, fields, exports, and workspace ownership actions.
-5. Open **Account settings** from the user menu to manage your profile picture, personal details, appearance, sign-in security and personal tokens.
-
-See the [user guide](docs/user-guide.md) for everyday workflows and permissions.
-
-## Configuration
-
-The generated `.env` contains the required private values. Keep it out of Git and backups that are not encrypted.
-
-| Setting | Purpose |
-| --- | --- |
-| `APP_URL` | Exact browser origin, including HTTPS and a nonstandard port if used |
-| `APP_KEY` | Stable application secret; changing it invalidates signed state |
-| `SETUP_TOKEN` | One-time secret used to create the first administrator |
-| `AUTOMATION_KEYRING` | API-only encryption keys for optional write-only automation credentials |
-| `AUTOMATION_NETWORK_EXCEPTIONS` | Exact origins exempted from default automation destination restrictions |
-| `SQL_ALLOWED_HOSTS`, `SQL_SQLITE_ROOT`, `SQL_CONNECTION_KEY` | Optional live Table destinations, local database root and separate credential-encryption key |
-| `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8888` |
-| `LANDING_ENABLED` | Enable the optional public landing page; off by default |
-| `REGISTRATION_ENABLED` | Allow public local-account registration; off by default |
-| `SMTP_URL`, `SMTP_FROM` | Enable password recovery and email delivery |
-| `STORAGE_DRIVER`, `S3_*`, `AWS_*` | Select filesystem or private S3-compatible attachments |
-| `OIDC_*` | Configure an optional standards-compliant OIDC provider |
-| `AI_*` | Configure an optional AI provider and model |
-| `DB_CONNECTION`, `DATABASE_URL` | Select SQLite (default) or PostgreSQL |
-
-All integrations are optional. Empty provider settings keep the cloud-free core operational. SQLite needs no database configuration. To use the bundled PostgreSQL profile, set `COMPOSE_PROFILES=postgres` and `DB_CONNECTION=pg`; the initializer already generates matching private `DATABASE_URL` and `POSTGRES_PASSWORD` values. See [deployment](docs/deployment.md), [integrations](docs/integrations.md), and [OIDC setup](docs/oidc-setup.md) for details.
-
-## Landing Page
-
-The public landing page is disabled by default, so `/` redirects to sign-in. To enable it, set `LANDING_ENABLED=true` in `.env`, recreate the API and web services, and enable **Landing page** under **Administration > Site settings** if an administrator previously disabled it.
-
-To change its headline, description, button label, or footer note, edit the four plain-text values in `apps/web/src/landing.json`. Keep the file valid JSON; HTML is not supported.
-
-Rebuild the web image after editing:
+<details>
+<summary>Docker-only setup (no Node.js on the host)</summary>
 
 ```sh
-docker compose up -d --build web
+git clone https://github.com/wnzn/hopya.git
+cd hopya
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
+  -v "$PWD:/work" -w /work node:24-bookworm-slim \
+  node --experimental-strip-types ops/init-env.ts
+docker compose up -d --build --wait
 ```
 
-Set `LANDING_ENABLED=false` and recreate the API and web services to force the landing page off again. The operator setting takes precedence over the administrator control.
+</details>
 
-## Data And Backups
+Open **[localhost:8888](http://localhost:8888)** and create the first administrator using `SETUP_TOKEN` from the generated `.env`. The initializer creates private secrets, leaves existing configuration intact, and creates no default accounts.
 
-Filesystem attachments and the default SQLite database are stored in the ignored `./data` directory. PostgreSQL data uses the `hopya_postgres-data` volume. Workspace exports do not include account credentials or attachment bytes and are not complete backups.
+Create a workspace, add a list, and capture your first task. Projects and folders help organize larger workspaces. The [user guide](docs/user-guide.md) covers views, collaboration, and account/workspace settings.
 
-For a reliable backup:
+The default setup runs on one server, listens on `127.0.0.1:8888`, and stores the SQLite database and files in `./data`. For remote access, follow the [HTTPS setup](docs/deployment.md#https) and set `APP_URL` to your public origin. Keep private API and web ports internal.
 
-1. Stop Hopya so database and attachment writes are closed.
-2. Archive `./data` and, when selected, take a consistent PostgreSQL backup.
-3. Store an encrypted copy of `.env` separately.
-4. Test restoration into a new volume before relying on the backup.
+[Configuration](docs/deployment.md#configuration) · [PostgreSQL](docs/deployment.md#postgresql) · [Backups](docs/deployment.md#backup-and-restore) · [Upgrades](docs/deployment.md#upgrades)
 
-Follow the [backup and restore guide](docs/deployment.md#backup-and-restore) for commands and recovery cautions.
-
-## Development
-
-Use Node.js 24, pinned in `.node-version`.
-
-```sh
-npm run init:env -- --development
-npm ci
-npm run dev
-```
-
-Open `http://localhost:4321`. Before submitting changes, run:
-
-```sh
-npm run check
-```
-
-The normal check runs TypeScript validation, API/unit tests, and production builds. Browser tests are separate:
-
-```sh
-npm run test:browser
-```
-
-Additional deployment and browser verification remain available for deliberate local runs with `npm run test:deployment` and `npm run test:browser`.
+Workspace exports contain portable records and file metadata, not account credentials or file bytes. Use the backup guide for a complete recovery copy, including your private `.env`.
 
 ## API And MCP
 
-The REST API is available under `/api/v1`. Create a personal token in **Account settings** and send it as `Authorization: Bearer <token>`. See the [REST reference](docs/api.md).
+The [REST API](docs/api.md) is available under `/api/v1`. Create a personal token in **Account settings** and send it as `Authorization: Bearer <token>`.
 
-MCP supports a local stdio process:
+MCP supports a local stdio process and an opt-in SSE endpoint. Both use the token owner's current workspace permissions and are read-only by default; enabling mutation tools still requires the client to obtain human approval for each write.
+
+<details>
+<summary>Connect an MCP client</summary>
+
+For stdio, use Node.js 24, run `npm ci` and `npm run build -w @hopya/api` in your checkout, then configure your MCP client to launch:
 
 ```text
 Command: node
@@ -162,20 +88,41 @@ Environment:
   HOPYA_API_TOKEN=<personal token>
 ```
 
-MCP is read-only by default. For Docker Compose, set `HOPYA_MCP_ALLOW_WRITES=true` in `.env` and recreate the API service to expose mutation tools; the MCP client must still obtain explicit human approval for each write.
+For SSE, enable it in **Administration > Site settings**, connect to `https://your-hopya.example/api/v1/mcp/sse`, and configure `Authorization: Bearer <personal token>` as a header. Keep tokens in the client's private configuration, never in the URL.
 
-Site administrators may also enable the disabled-by-default SSE transport in **Administration > Site settings**. Connect an SSE-compatible MCP client to `https://your-hopya.example/api/v1/mcp/sse` and configure `Authorization: Bearer <personal token>` as a header. Never place the token in the URL. Disabling SSE immediately closes active sessions; sessions otherwise expire after 30 minutes. Both transports expose the same tools and enforce the token owner's current workspace permissions.
+See the [MCP integration guide](docs/integrations.md#mcp) for write enablement, tools, and transport limits.
+
+</details>
 
 ## Documentation
 
-- [Deployment and recovery](docs/deployment.md)
-- [User guide](docs/user-guide.md)
-- [Security boundaries](docs/security.md)
-- [Integrations](docs/integrations.md)
-- [OIDC setup](docs/oidc-setup.md)
-- [REST API](docs/api.md)
-- [Architecture](docs/architecture.md)
+| Guide | What's inside |
+| --- | --- |
+| [User guide](docs/user-guide.md) | Tasks, views, Documents, Tables, collaboration, and settings |
+| [Deployment](docs/deployment.md) | Docker, configuration, HTTPS, storage, backups, and upgrades |
+| [Integrations](docs/integrations.md) | AI, MCP, S3-compatible storage, and [OIDC setup](docs/oidc-setup.md) |
+| [Images](docs/images.md) | Private uploads, Gallery covers, draft recovery, and [profile photos](docs/profile-photos.md) |
+| [Security](docs/security.md) | Authentication, workspace permissions, and integration boundaries |
+| [Architecture](docs/architecture.md) | Application design, [REST API](docs/api.md), and [Effect workflows](docs/effect-workflows.md) |
+
+## Development
+
+Built with **TypeScript, AdonisJS, Astro, React, and Effect**. Use Node.js 24, pinned in [`.node-version`](.node-version).
+
+From a fresh checkout:
+
+```sh
+npm run init:env -- --development
+npm ci
+npm run dev
+```
+
+Open **[localhost:4321](http://localhost:4321)**. The initializer refuses to replace an existing `.env`; use a separate checkout for development if you already configured the Docker deployment.
+
+`npm run check` runs typechecks, API/unit tests, and production builds. Browser tests (`npm run test:browser`) and deployment verification (`npm run test:deployment`) are separate, explicit runs.
+
+Bug reports and focused pull requests are welcome. [Open an issue](https://github.com/wnzn/hopya/issues) with reproduction steps, your version, and the expected and actual behavior.
 
 ## License
 
-Hopya is available under the [MIT License](LICENSE).
+[MIT](LICENSE) · Wenzani Labs LLC
