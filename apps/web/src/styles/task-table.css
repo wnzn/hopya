@@ -259,8 +259,8 @@
 }
 .task-table:not(.task-table--grid) th[aria-sort="ascending"],
 .task-table:not(.task-table--grid) th[aria-sort="descending"] {
+  /* The direction arrow indicates sorting; a filled header resembles selection. */
   color: var(--ink);
-  background: var(--signal-wash);
 }
 .task-table:not(.task-table--grid) .task-cell-edit { padding: 7px 8px; }
 .task-table:not(.task-table--grid) tbody tr:last-child td {

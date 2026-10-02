@@ -220,7 +220,7 @@ export default function Help() {
                   <li>Links are checked before they apply; unsafe targets are rejected.</li>
                   <li>
                     Task bodies, comments and replies support private images.
-                    Choose Image, paste an image file or drop it into the editor.
+                    Choose the Add image icon, paste an image file or drop it into the editor.
                     PNG, JPEG, GIF and WebP files may be up to 10 MiB each.
                     A new task can include images before its first save.
                   </li>

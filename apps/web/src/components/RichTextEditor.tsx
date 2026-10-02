@@ -675,7 +675,7 @@ export default function RichTextEditor({
             () => editor?.chain().toggleCodeBlock().run(),
           )}
           {toolbarButton("Link", <SolidIcon name="link" />, editor?.isActive("link") ?? false, openLinkRow)}
-          {imageTarget && toolbarButton('Add image', 'Image', false, () => imageInput.current?.click())}
+          {imageTarget && toolbarButton('Add image', <SolidIcon name="gallery" />, false, () => imageInput.current?.click())}
           </>}
         </div>}
       {imageTarget && !readOnly && <input ref={imageInput} type="file" accept={IMAGE_ACCEPT} multiple hidden aria-label="Upload body images"

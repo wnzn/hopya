@@ -1,6 +1,6 @@
 # Private body and discussion images
 
-Task bodies, new-task/subtask bodies, comments and replies have an **Image** toolbar action. Pasting or dropping image files uses the same uploader. The shared document discussion panel supports images too. Select an image in the editor to edit its description or remove the node. PNG, JPEG, GIF and WebP files are supported, up to 10 MiB each; the API checks raster containers and dimensions (16,384 pixels per side, at most 40 megapixels). It does not transcode images or run an antivirus scanner. SVG, HTML, data URLs, arbitrary paths and remote image URLs cannot render as body images. External-image HTML paste retains its text and reports that the image must be uploaded as a file.
+Task bodies, new-task/subtask bodies, comments and replies have an image icon in the toolbar, labeled **Add image** in its tooltip and for screen readers. Pasting or dropping image files uses the same uploader. The shared document discussion panel supports images too. Select an image in the editor to edit its description or remove the node. PNG, JPEG, GIF and WebP files are supported, up to 10 MiB each; the API checks raster containers and dimensions (16,384 pixels per side, at most 40 megapixels). It does not transcode images or run an antivirus scanner. SVG, HTML, data URLs, arbitrary paths and remote image URLs cannot render as body images. External-image HTML paste retains its text and reports that the image must be uploaded as a file.
 
 ## Saving and drafts
 
