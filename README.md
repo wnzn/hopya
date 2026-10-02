@@ -11,8 +11,11 @@ Hopya is a self-hosted task manager for teams that want a private, straightforwa
 - Workspace Inbox notifications, user/task/structure mentions, threaded comments, and emoji reactions
 - Configurable text, number, date, datetime, checkbox, select, checklist, rating, and formula fields
 - List, Board, Calendar, Gallery, and Timeline views
-- Private attachments on local storage or an optional S3-compatible service
-- Local accounts, optional OIDC sign-in, password recovery, revocable API tokens, and audit records
+- Standalone Documents and spreadsheet-style Tables with typed columns, full-data filters, ordering, calculations and CSV/JSON transfer
+- Optional live PostgreSQL, MySQL and SQLite Tables with permission-checked cell write-back
+- Private attachments and image upload/paste in task bodies and comments, using local or optional S3-compatible storage
+- Gallery covers and carousels from task-body images
+- Local accounts with profile pictures, optional OIDC sign-in, password recovery, revocable API tokens, and audit records
 - JSON/CSV task import and export, plus complete workspace JSON exports
 - Versioned graphical automation graphs with conditional routing, write-only credential profiles, run monitoring, and legacy linear compatibility
 - Optional webhook, email, HTTP automation, AI-assisted proposals, and MCP access
@@ -65,8 +68,8 @@ Each Git tag publishes `ghcr.io/<owner>/<repository>-api:<tag>` and `ghcr.io/<ow
 1. Select **Create your first workspace**. It becomes the active workspace automatically.
 2. Add a project and a list. Folders are optional.
 3. Create a task and switch between views as needed.
-4. Open **Settings** to manage members, roles, fields, exports, and workspace ownership actions.
-5. Open **Account settings** from the user menu to update personal details or credentials.
+4. Open **Workspace settings** to manage members, roles, fields, exports, and workspace ownership actions.
+5. Open **Account settings** from the user menu to manage your profile picture, personal details, appearance, sign-in security and personal tokens.
 
 See the [user guide](docs/user-guide.md) for everyday workflows and permissions.
 
@@ -81,6 +84,7 @@ The generated `.env` contains the required private values. Keep it out of Git an
 | `SETUP_TOKEN` | One-time secret used to create the first administrator |
 | `AUTOMATION_KEYRING` | API-only encryption keys for optional write-only automation credentials |
 | `AUTOMATION_NETWORK_EXCEPTIONS` | Exact origins exempted from default automation destination restrictions |
+| `SQL_ALLOWED_HOSTS`, `SQL_SQLITE_ROOT`, `SQL_CONNECTION_KEY` | Optional live Table destinations, local database root and separate credential-encryption key |
 | `BIND_ADDRESS`, `HTTP_PORT` | Host listener; defaults to `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Enable the optional public landing page; off by default |
 | `REGISTRATION_ENABLED` | Allow public local-account registration; off by default |
@@ -145,7 +149,7 @@ Additional deployment and browser verification remain available for deliberate l
 
 ## API And MCP
 
-The REST API is available under `/api/v1`. Create a personal token in **Settings** and send it as `Authorization: Bearer <token>`. See the [REST reference](docs/api.md).
+The REST API is available under `/api/v1`. Create a personal token in **Account settings** and send it as `Authorization: Bearer <token>`. See the [REST reference](docs/api.md).
 
 MCP supports a local stdio process:
 

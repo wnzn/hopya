@@ -505,8 +505,9 @@ for (const mobile of [false, true]) {
             json: { error: "Current password is incorrect" },
           });
         account.name = body.name;
+        account.email = body.email;
         if (body.password) tokens = [];
-        return route.fulfill({ json: { success: true } });
+        return route.fulfill({ json: account });
       }
       if (path === "/auth/tokens") {
         if (method === "GET") return route.fulfill({ json: tokens });
@@ -523,9 +524,9 @@ for (const mobile of [false, true]) {
       }
       await route.fallback();
     });
-    await page.goto("/settings");
+    await page.goto("/account");
     await page.getByLabel("Display name").fill("Updated owner");
-    await page.getByRole("button", { name: "Save profile" }).press("Enter");
+    await page.getByRole("button", { name: "Save account" }).press("Enter");
     await expect(
       page.getByText("Your profile has been updated."),
     ).toBeVisible();
@@ -533,7 +534,7 @@ for (const mobile of [false, true]) {
     expect(requests[0]).toEqual({
       path: "/auth/profile",
       method: "PATCH",
-      body: { name: "Updated owner" },
+      body: { name: "Updated owner", email: user.email },
     });
     await page.getByLabel("Token name").fill("Local client");
     await page.getByRole("button", { name: "Create token" }).press("Enter");
@@ -567,7 +568,7 @@ for (const mobile of [false, true]) {
     await page
       .getByLabel("New password", { exact: true })
       .fill("test-only-new-password");
-    await page.getByRole("button", { name: "Save profile" }).click();
+    await page.getByRole("button", { name: "Save account" }).click();
     await expect(
       page.getByText("Current password is incorrect", { exact: true }),
     ).toBeVisible();
@@ -575,10 +576,10 @@ for (const mobile of [false, true]) {
       "test-only-new-password",
     );
     passwordError = false;
-    await page.getByRole("button", { name: "Save profile" }).press("Enter");
+    await page.getByRole("button", { name: "Save account" }).press("Enter");
     await expect(
       page.getByText(
-        "Password updated. Other sessions and existing tokens have been revoked.",
+        "Account updated. Other sessions and existing tokens have been revoked.",
       ),
     ).toBeVisible();
     await expect(
@@ -607,6 +608,7 @@ for (const mobile of [false, true]) {
         method: "PATCH",
         body: {
           name: "Updated owner",
+          email: user.email,
           currentPassword: "test-only-old-password",
           password: "test-only-new-password",
         },

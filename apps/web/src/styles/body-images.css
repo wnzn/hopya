@@ -1,0 +1,37 @@
+.rich-editor .tiptap img, .comment-body img {
+  display: inline-block;
+  max-width: 100%;
+  max-height: 520px;
+  height: auto;
+  object-fit: contain;
+  vertical-align: middle;
+  border-radius: 6px;
+  background: var(--wash);
+}
+.rich-editor .tiptap img.ProseMirror-selectednode { outline: 2px solid var(--focus); outline-offset: 2px; }
+.rich-image-description, .rich-image-uploads, .rich-image-notice { padding: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.rich-image-description, .rich-image-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rich-image-description label, .rich-image-upload span { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.rich-image-uploads p { margin: 0 0 8px; }
+.rich-image-upload + .rich-image-upload { margin-top: 8px; }
+.rich-image-notice button { margin-left: 8px; }
+.gallery-grid .body-image-carousel { position: relative; border-bottom: 1px solid var(--line); overflow: hidden; }
+.gallery-grid .gallery-image-open {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 0;
+  padding: 0; border: 0; border-radius: 0; background: var(--wash); color: var(--ink-soft);
+}
+.gallery-image-open img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.gallery-image-open img[hidden] { display: none; }
+.gallery-image-empty { font-size: 12px; }
+.gallery-image-state { position: absolute; top: 38%; left: 0; right: 0; text-align: center; pointer-events: none; color: var(--ink-soft); font-size: 12px; }
+.gallery-image-retry { position: absolute; left: 50%; top: 52%; transform: translateX(-50%); }
+.gallery-image-controls { position: absolute; display: flex; align-items: center; gap: 8px; bottom: 8px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.gallery-image-controls button { display: grid; place-items: center; padding: 0; width: 34px; height: 34px; min-height: 34px; border: 0; background: transparent; }
+.gallery-image-controls span { min-width: 40px; text-align: center; font-size: 11px; }
+.gallery-grid .task-card-footer.gallery-task-open { border: 0; border-radius: 0; background: transparent; color: inherit; }
+.gallery-grid .gallery-task-open:focus-visible, .gallery-grid .gallery-image-open:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; }
+.body-draft-notice { font-size: 12px; color: var(--ink-soft); overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .gallery-image-controls button { width: 44px; height: 44px; min-height: 44px; }
+  .rich-image-description button, .rich-image-upload button, .gallery-image-retry { min-height: 44px; }
+}

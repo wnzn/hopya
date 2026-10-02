@@ -175,9 +175,11 @@ export const db: DatabaseApi = {
   async beginSnapshot(): Promise<SnapshotTransaction> {
     const client = lucidDb.connection()
     const dialect = dialectOf(client)
-    const transaction = await client.transaction(dialect === 'pg' ? { isolationLevel: 'repeatable read' } : undefined)
+    const transaction = await client.transaction()
     try {
-      if (dialect === 'pg') await transaction.rawQuery('SET TRANSACTION READ ONLY')
+      // Lucid's self-managed transaction overload currently drops its options.
+      // Set both modes explicitly before the first read pins the PG snapshot.
+      if (dialect === 'pg') await transaction.rawQuery('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
     } catch (error) {
       await transaction.rollback()
       throw error
@@ -226,11 +228,14 @@ export const dbAsync = <A>(fn: () => Promise<A>, message: string): Effect.Effect
   })
 
 const unwrapCause = (cause: Cause.Cause<unknown>): unknown => {
-  const failure = Cause.failureOption(cause)
-  if (failure._tag === 'Some') return failure.value
-  const defect = Cause.dieOption(cause)
-  if (defect._tag === 'Some') return defect.value
-  return cause
+  const failure = cause.reasons.find(Cause.isFailReason)
+  if (failure) return failure.error
+  const defect = cause.reasons.find(Cause.isDieReason)
+  if (defect) return defect.defect
+  // Preserve cancellation as cancellation at Promise boundaries, without
+  // exposing an Effect runtime wrapper as an application/domain error.
+  if (Cause.hasInterruptsOnly(cause)) return new DOMException('Operation interrupted', 'AbortError')
+  return new Error('Effect failed without an error')
 }
 
 export const runSyncThrow = <A, E>(effect: Effect.Effect<A, E>): A => {
@@ -239,8 +244,8 @@ export const runSyncThrow = <A, E>(effect: Effect.Effect<A, E>): A => {
   throw unwrapCause(exit.cause)
 }
 
-export const runPromiseThrow = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
-  Effect.runPromiseExit(effect).then((exit) => {
+export const runPromiseThrow = <A, E>(effect: Effect.Effect<A, E>, options?: { signal?: AbortSignal }): Promise<A> =>
+  Effect.runPromiseExit(effect, options).then((exit) => {
     if (Exit.isSuccess(exit)) return exit.value
     throw unwrapCause(exit.cause)
   })

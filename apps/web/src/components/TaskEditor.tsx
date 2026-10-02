@@ -23,6 +23,8 @@ import SolidIcon from "./SolidIcon";
 import { projectStatuses, projectDateFormat, statusForDestination, statusStyle } from "../lib/project-statuses";
 import { formatFieldDate, localDateTime, taskDateRangeError } from "../lib/field-values";
 import { fieldOwnerForNode, hierarchyLabels, projectBuiltIns, projectCustomFields } from "../lib/project-fields";
+import { readTextDraft, writeTextDraft } from '../lib/text-drafts';
+import { imageQueue } from '../lib/image-upload-queue';
 
 type Attachment = {
   id: string;
@@ -79,6 +81,18 @@ function newId(): string {
   }
 }
 
+function recoveredTaskDraft(key: string): { draft: DraftEx; updatedAt: string | null } | null {
+  try {
+    const raw = readTextDraft(key);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved?.draft || typeof saved.draft.title !== 'string' || typeof saved.draft.description !== 'string' ||
+      typeof saved.draft.nodeId !== 'string' || saved.draft.description.length > 50000 || saved.draft.title.length > 300 ||
+      !(saved.updatedAt === null || typeof saved.updatedAt === 'string')) return null;
+    return { draft: toDraft(saved.draft) as DraftEx, updatedAt: saved.updatedAt };
+  } catch { return null; }
+}
+
 export default function TaskEditor({
   detail: incomingDetail,
   item,
@@ -114,11 +128,19 @@ export default function TaskEditor({
   const listLabels = hierarchyLabels(detail.nodes, lists);
   const fixedDestination = !proposal && !!defaultNode && lists.some(node => node.id === defaultNode);
   const initialActive = (item ?? null) as ItemEx | null;
+  const draftRoot = `hopya.task-draft:${currentUserId ?? 'current'}:${detail.workspace.id}`;
+  const newDraftId = `${proposal ? 'proposal' : 'new'}:${defaultNode ?? ''}:${initialParentId ?? ''}`;
+  const [initialRecovery] = useState(() => recoveredTaskDraft(`${draftRoot}:${item?.id ?? newDraftId}`));
+  const draftPersistenceDisabled = useRef(false);
   const [active, setActive] = useState<ItemEx | null>(initialActive);
+  const draftKey = `${draftRoot}:${active?.id ?? newDraftId}`;
+  const childDraftKey = `${draftRoot}:child:${active?.id ?? ''}`;
   const [stack, setStack] = useState<ItemEx[]>([]);
   const [current, setCurrent] = useState<ItemEx | null>(initialActive);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [draftRevision, setDraftRevision] = useState<string | null>(initialRecovery ? initialRecovery.updatedAt : initialActive?.updatedAt ?? null);
+  const [editing, setEditing] = useState<string | null>(item && (initialRecovery || imageQueue(draftKey).jobs.length) ? 'description' : null);
   const [draft, setDraft] = useState<DraftEx>(() => {
+    if (initialRecovery) return initialRecovery.draft;
     if (item) {
       const base = toDraft(item as ItemEx);
       return base as DraftEx;
@@ -157,13 +179,17 @@ export default function TaskEditor({
     value !== null && !fields.some(field => field.id === id));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [conflict, setConflict] = useState(false);
+  const [conflict, setConflict] = useState(Boolean(item && initialRecovery && initialRecovery.updatedAt !== item.updatedAt));
+  const [draftStorageError, setDraftStorageError] = useState(false);
+  const [bodyImagesPending, setBodyImagesPending] = useState(false);
+  const [childImagesPending, setChildImagesPending] = useState(false);
   const [commentAnchor, setCommentAnchor] = useState<TextSelection | null>(null);
   const [commentAnnotations, setCommentAnnotations] = useState<TextAnnotation[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
-  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentRequestBusy, setAttachmentBusy] = useState(false);
+  const attachmentBusy = attachmentRequestBusy || bodyImagesPending || childImagesPending;
   const [uploadOpen, setUploadOpen] = useState(false);
   const [attachmentLoading, setAttachmentLoading] = useState(!!item);
   const [attachmentReady, setAttachmentReady] = useState(false);
@@ -181,6 +207,24 @@ export default function TaskEditor({
   const structureWritable = detail.permissions.includes("structure:write");
   const isNew = !active && !creatingChild;
   const shownItem = active;
+  const hasDraft = current ? JSON.stringify(draft) !== JSON.stringify(toDraft(current)) : Boolean(draft.title || draft.description || draft.checklist.length || draft.tags.length || draft.dueDate || draft.startDate || Object.keys(draft.customFields).length);
+  useEffect(() => {
+    if (draftPersistenceDisabled.current) return;
+    // Recovery must retain its original revision even after a fresh task was
+    // loaded. Reopening a conflicted draft must not silently accept that task.
+    setDraftStorageError(!writeTextDraft(draftKey, hasDraft ? JSON.stringify({ draft, updatedAt: draftRevision }) : ''));
+  }, [draft, draftKey, draftRevision, hasDraft]);
+  useEffect(() => {
+    if (!childDraft) return;
+    setDraftStorageError(!writeTextDraft(childDraftKey, JSON.stringify({ draft: childDraft, updatedAt: null })));
+  }, [childDraft, childDraftKey]);
+  useEffect(() => {
+    if (!hasDraft && !childDraft) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [hasDraft, childDraft]);
+  function clearTaskDraft(key = draftKey) { writeTextDraft(key, ''); }
   function selectForComment(selection: TextSelection) {
     setCommentAnchor(selection);
   }
@@ -253,6 +297,7 @@ export default function TaskEditor({
     setEditing(key);
   }
   function cancelEditing() {
+    if (bodyImagesPending || childImagesPending) return;
     if (!current) {
       setEditing(null);
       return;
@@ -401,6 +446,8 @@ export default function TaskEditor({
       // Preserve the node/status reconciliation previously applied to drafts:
       // keep the reloaded values verbatim; the editor derives choices per list.
       setCurrent(fresh);
+      setDraftRevision(fresh.updatedAt);
+      clearTaskDraft();
       setActive(fresh);
       setDraft(nextDraft);
       setNewTag("");
@@ -469,12 +516,14 @@ export default function TaskEditor({
       const updated = await api<ItemEx>(
         `${base}/${active!.id}`,
         "PATCH",
-        { ...changed, expectedUpdatedAt: current!.updatedAt },
+        { ...changed, expectedUpdatedAt: draftRevision ?? current!.updatedAt },
       );
       setCurrent(updated);
+      setDraftRevision(updated.updatedAt);
+      clearTaskDraft();
       setActive(updated);
       setDraft(toDraft(updated) as DraftEx);
-      if (Object.hasOwn(changed, "description")) setCommentAnchor(null);
+      if (Object.hasOwn(changed, "description")) { setCommentAnchor(null); setAttachmentRetry(value => value + 1); }
       setEditing(null);
       setConflict(false);
       setBusy(false);
@@ -506,6 +555,8 @@ export default function TaskEditor({
     try {
       const input = { ...draft };
       await api(base, "POST", input);
+      draftPersistenceDisabled.current = true;
+      clearTaskDraft();
       onSaved();
     } catch (e) {
       setError(message(e));
@@ -519,10 +570,11 @@ export default function TaskEditor({
     try {
       const updated = await api<ItemEx>(
         `${base}/${active.id}`, "PATCH",
-        { checklist: next, expectedUpdatedAt: current.updatedAt },
+        { checklist: next, expectedUpdatedAt: draftRevision ?? current.updatedAt },
       );
       const normalized = normalizeChecklist(updated.checklist);
       setCurrent(updated);
+      setDraftRevision(updated.updatedAt);
       setActive(updated);
       setDraft(d => ({ ...d, checklist: normalized }));
       onItemUpdated?.(updated);
@@ -551,6 +603,7 @@ export default function TaskEditor({
     void saveChecklist(draft.checklist.filter(entry => entry.id !== id));
   }
   function openSubtask(sub: ItemEx) {
+    if (hasDraft && !window.confirm('Open the subtask? Your current task draft is kept in this tab.')) return;
     if (onOpenItem && sub.parentId !== undefined) {
       // Prefer host navigation when provided; fall back to in-dialog switching.
       try {
@@ -564,9 +617,11 @@ export default function TaskEditor({
     setStack(s => [...s, active]);
     setActive(sub);
     setCurrent(sub);
-    setDraft(toDraft(sub) as DraftEx);
-    setEditing(null);
-    setConflict(false);
+    const recovery = recoveredTaskDraft(`${draftRoot}:${sub.id}`);
+    setDraftRevision(recovery ? recovery.updatedAt : sub.updatedAt);
+    setDraft(recovery?.draft ?? toDraft(sub) as DraftEx);
+    setEditing(recovery ? 'description' : null);
+    setConflict(Boolean(recovery && recovery.updatedAt !== sub.updatedAt));
     setError("");
     setConfirmDelete(false);
     setCommentAnchor(null);
@@ -578,14 +633,17 @@ export default function TaskEditor({
     setChildDraft(null);
   }
   function goBack() {
+    if (hasDraft && !window.confirm('Go back? Your current task draft is kept in this tab.')) return;
     setStack(s => {
       if (!s.length) return s;
       const parent = s[s.length - 1];
       setActive(parent);
       setCurrent(parent);
-      setDraft(toDraft(parent) as DraftEx);
-      setEditing(null);
-      setConflict(false);
+      const recovery = recoveredTaskDraft(`${draftRoot}:${parent.id}`);
+      setDraftRevision(recovery ? recovery.updatedAt : parent.updatedAt);
+      setDraft(recovery?.draft ?? toDraft(parent) as DraftEx);
+      setEditing(recovery ? 'description' : null);
+      setConflict(Boolean(recovery && recovery.updatedAt !== parent.updatedAt));
       setError("");
       setConfirmDelete(false);
       setCommentAnchor(null);
@@ -603,7 +661,7 @@ export default function TaskEditor({
     if (!active || !writable) return;
     const nodeId = active.nodeId;
     const choices = projectStatuses(detail, nodeId);
-    setChildDraft({
+    setChildDraft(recoveredTaskDraft(childDraftKey)?.draft ?? {
       title: "",
       description: "",
       nodeId,
@@ -637,6 +695,7 @@ export default function TaskEditor({
     setChildBusy(true);
     try {
       await api(base, "POST", childDraft);
+      clearTaskDraft(childDraftKey);
       onSaved();
     } catch (e) {
       setChildError(message(e));
@@ -648,6 +707,8 @@ export default function TaskEditor({
     setError("");
     try {
       await api(`${base}/${active!.id}`, "DELETE");
+      draftPersistenceDisabled.current = true;
+      clearTaskDraft();
       onSaved();
     } catch (e) {
       setError(message(e));
@@ -775,7 +836,7 @@ export default function TaskEditor({
         <button type="button" className="task-detail-save" aria-label="Save changes" disabled={busy || attachmentBusy || conflict} onClick={() => void save()}>
           <SolidIcon name="check" /> Save
         </button>
-        <button type="button" disabled={busy} onClick={cancelEditing}>
+        <button type="button" disabled={busy || attachmentBusy} onClick={cancelEditing}>
           Cancel editing
         </button>
       </div>
@@ -855,6 +916,8 @@ export default function TaskEditor({
           <p className="muted">Creating a subtask (parent linked).</p>
         )}
         <ErrorNotice error={error} />
+        {hasDraft && <p className="body-draft-notice">Your task draft is kept in this tab. Uncommitted image uploads expire after 24 hours.</p>}
+        {draftStorageError && <p role="alert">Browser draft storage is unavailable. Keep this editor open until you save.</p>}
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -880,10 +943,14 @@ export default function TaskEditor({
             <div className="stack">
               <span>Body</span>
               <RichTextEditor
+                key={draftKey}
+                draftKey={draftKey}
+                imageTarget={{ workspaceId: detail.workspace.id, kind: 'task-body' }}
+                onImagePendingChange={setBodyImagesPending}
                 aria-label="Body"
                 value={draft.description}
-                onChange={(v) => change("description", v.slice(0, 50000))}
-                readOnly={!writable}
+                onChange={(v) => change("description", v)}
+                readOnly={!writable || busy}
                 placeholder="Add context, decisions, or a useful next step..."
                 mentionTargets={richMentionTargets}
               />
@@ -1126,13 +1193,17 @@ export default function TaskEditor({
             </details>}
           </fieldset>
           <div className="modal-actions">
+            {hasDraft && <button type="button" disabled={busy || attachmentBusy} onClick={() => {
+              if (!window.confirm('Discard this task draft and its pending image references?')) return;
+              draftPersistenceDisabled.current = true; clearTaskDraft(); onClose();
+            }}>Discard draft</button>}
             <span className="spacer" />
             <button
               type="button"
               disabled={busy || attachmentBusy}
               onClick={onClose}
             >
-              Cancel
+              Close (keep draft)
             </button>
             {writable && (
               <button
@@ -1202,15 +1273,16 @@ export default function TaskEditor({
           </label>
           <div className="stack">
             <span>Body</span>
-            <RichTextEditor aria-label="Body" value={childDraft.description}
-              onChange={v => setChildDraft({ ...childDraft, description: v.slice(0, 50000) })}
+            <RichTextEditor key={childDraftKey} draftKey={childDraftKey} imageTarget={{ workspaceId: detail.workspace.id, kind: 'task-body' }} onImagePendingChange={setChildImagesPending}
+              aria-label="Body" value={childDraft.description} readOnly={childBusy}
+              onChange={v => setChildDraft(currentDraft => currentDraft ? { ...currentDraft, description: v } : currentDraft)}
               placeholder="Add context, decisions, or a useful next step..." mentionTargets={richMentionTargets} />
           </div>
           <div className="inline-form">
-            <button type="button" disabled={childBusy} onClick={() => { setCreatingChild(false); setChildDraft(null); setChildError(""); }}>
-              Cancel subtask
+            <button type="button" disabled={childBusy || attachmentBusy} onClick={() => { setCreatingChild(false); setChildDraft(null); setChildError(""); }}>
+              Close subtask (keep draft)
             </button>
-            <button type="submit" className="primary" disabled={childBusy || !childDraft.title.trim()}>
+            <button type="submit" className="primary" disabled={childBusy || attachmentBusy || !childDraft.title.trim()}>
               {childBusy ? "Saving..." : "Create subtask"}
             </button>
           </div>
@@ -1218,6 +1290,8 @@ export default function TaskEditor({
       ) : (
       <>
       <ErrorNotice error={error} />
+      {draftStorageError && <p role="alert">Browser draft storage is unavailable. Keep this editor open until you save.</p>}
+      {hasDraft && <p className="body-draft-notice">Your unsaved task draft is kept in this tab. Uncommitted image uploads expire after 24 hours.</p>}
       {conflict && (
         <div className="notice">
           <p>
@@ -1340,13 +1414,17 @@ export default function TaskEditor({
             )}
           </div>
           <RichTextEditor
+            key={draftKey}
+            draftKey={draftKey}
+            imageTarget={{ workspaceId: detail.workspace.id, kind: 'task-body', resourceId: active!.id }}
+            onImagePendingChange={setBodyImagesPending}
             aria-label="Body"
             value={draft.description}
             onChange={(v) => {
               if (editing !== "description" || !writable) return;
-              change("description", v.slice(0, 50000));
+              change("description", v);
             }}
-            readOnly={editing !== "description" || !writable}
+            readOnly={editing !== "description" || !writable || busy}
             placeholder="Add context, decisions, or a useful next step..."
             mentionTargets={richMentionTargets}
             commentRevision={shownItem?.bodyRevision ?? 1}

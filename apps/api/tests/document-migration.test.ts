@@ -14,11 +14,13 @@ const { default: DocumentAttributionMigration } = await import('../database/migr
 const { default: RestoreDocumentSubpagesMigration } = await import('../database/migrations/0004_restore_document_subpages.js')
 const { default: DocumentPagePlacementMigration } = await import('../database/migrations/0005_document_page_placement.js')
 const { default: NodeAppearanceMigration } = await import('../database/migrations/0006_node_appearance.js')
+const { default: ResourceAppearanceMigration } = await import('../database/migrations/0009_resource_appearance.js')
 const { db, service } = await import('../app/core.js')
 const { documentService } = await import('../app/documents.js')
+const { tableService } = await import('../app/tables.js')
 after(async () => { await closeDatabase(); rmSync(directory, { recursive: true, force: true }) })
 
-test('SQLite additive upgrades preserve referenced contents and convert legacy node appearance', async () => {
+test('additive upgrades preserve referenced contents and convert legacy node appearance', async () => {
   const owner = randomUUID()
   await db.run('INSERT INTO users(id,name,email,createdAt) VALUES (?,?,?,?)', owner, 'Owner', `${owner}@example.test`, new Date().toISOString())
   const workspace = await service.createWorkspace(owner, { name: 'Migration safety' })
@@ -30,23 +32,35 @@ test('SQLite additive upgrades preserve referenced contents and convert legacy n
   await documentService.linkPage(owner, workspace.id, document.id, { itemId: task.id })
   const comment = await documentService.createComment(owner, workspace.id, document.id, { body: 'Keep me' })
   await documentService.updateCommentReaction(owner, workspace.id, document.id, comment.id, { emoji: '👍', active: true })
+  const table = await tableService.createTable(owner, workspace.id, { name: 'Keep this Table', parentId: project.id })
+  const column = await tableService.createColumn(owner, workspace.id, table.id, { name: 'Value', type: 'text' })
+  const record = await tableService.createRecord(owner, workspace.id, table.id, { values: { [column.id]: 'Keep this record' } })
 
   const client = lucidDb.connection()
+  for (const resource of ['documents', 'tables']) {
+    await client.rawQuery(`ALTER TABLE "${resource}" DROP COLUMN "color"`)
+    await client.rawQuery(`ALTER TABLE "${resource}" DROP COLUMN "icon"`)
+  }
+  await new ResourceAppearanceMigration(client, 'database/migrations/0009_resource_appearance').execUp()
+  assert.equal((await documentService.getDocument(owner, workspace.id, document.id)).icon, null)
+  assert.equal((await tableService.getTable(owner, workspace.id, table.id)).color, null)
+  assert.deepEqual(await tableService.getRecord(owner, workspace.id, table.id, record.id), record)
+  assert.deepEqual((await tableService.listColumns(owner, workspace.id, table.id)).map(value => value.id), [column.id])
   await client.rawQuery('ALTER TABLE documents DROP COLUMN "updatedById"')
   await client.rawQuery('ALTER TABLE documents DROP COLUMN "createdById"')
   await new DocumentAttributionMigration(client, 'database/migrations/0003_document_attribution').execUp()
 
-  assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_subpages WHERE workspaceId=?', workspace.id))!.count, 1)
-  assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_pages WHERE workspaceId=?', workspace.id))!.count, 1)
-  assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_comments WHERE workspaceId=?', workspace.id))!.count, 1)
-  assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_comment_reactions WHERE workspaceId=?', workspace.id))!.count, 1)
+  assert.equal(Number((await db.get<{ count: number | string }>('SELECT count(*) AS count FROM document_subpages WHERE workspaceId=?', workspace.id))!.count), 1)
+  assert.equal(Number((await db.get<{ count: number | string }>('SELECT count(*) AS count FROM document_pages WHERE workspaceId=?', workspace.id))!.count), 1)
+  assert.equal(Number((await db.get<{ count: number | string }>('SELECT count(*) AS count FROM document_comments WHERE workspaceId=?', workspace.id))!.count), 1)
+  assert.equal(Number((await db.get<{ count: number | string }>('SELECT count(*) AS count FROM document_comment_reactions WHERE workspaceId=?', workspace.id))!.count), 1)
   assert.equal((await db.get<{ createdById: string; updatedById: string }>('SELECT createdById,updatedById FROM documents WHERE id=?', document.id))!.createdById, owner)
   assert.equal((await db.get<{ createdById: string }>('SELECT createdById FROM documents WHERE id=?', subpage.id))!.createdById, owner)
 
   await client.rawQuery('ALTER TABLE document_subpages DROP COLUMN placement')
   await db.run('DELETE FROM document_subpages WHERE workspaceId=?', workspace.id)
   await new RestoreDocumentSubpagesMigration(client, 'database/migrations/0004_restore_document_subpages').execUp()
-  assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM document_subpages WHERE workspaceId=?', workspace.id))!.count, 1)
+  assert.equal(Number((await db.get<{ count: number | string }>('SELECT count(*) AS count FROM document_subpages WHERE workspaceId=?', workspace.id))!.count), 1)
   await new DocumentPagePlacementMigration(client, 'database/migrations/0005_document_page_placement').execUp()
   assert.equal((await db.get<{ placement: string }>('SELECT placement FROM document_subpages WHERE pageDocumentId=?', subpage.id))!.placement, 'page')
 

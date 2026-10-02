@@ -73,7 +73,10 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
 
   await t.test('configuration has no secrets and unsafe unauthenticated endpoints require matching origin', async () => {
     const config = await request('/config')
-    assert.deepEqual(config.data, { landingEnabled: true, registrationEnabled: false, setupRequired: true, ssoEnabled: false, aiEnabled: false, passwordResetEnabled: false })
+    assert.deepEqual(config.data, { landingEnabled: true, showSidebarAttribution: true, registrationEnabled: false, setupRequired: true, ssoEnabled: false, aiEnabled: false, passwordResetEnabled: false })
+    const missingLogo = await request('/site/logo')
+    assert.equal(missingLogo.status, 404)
+    assert.equal(missingLogo.data.error, 'No custom logo')
     for (const endpoint of ['/auth/setup', '/auth/login', '/auth/register', '/auth/logout', '/missing']) {
       assert.equal((await request(endpoint, { method: 'POST', body: {}, origin: null })).status, 403)
       assert.equal((await request(endpoint, { method: 'POST', body: {}, origin: 'https://evil.example' })).status, 403)
@@ -161,8 +164,38 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
       'database/migrations/0004_restore_document_subpages',
       'database/migrations/0005_document_page_placement',
       'database/migrations/0006_node_appearance',
+      'database/migrations/0007_tables',
+      'database/migrations/0008_table_connections',
+      'database/migrations/0009_resource_appearance',
+      'database/migrations/0010_rich_text_images',
+      'database/migrations/0011_profile_photos',
     ])
     assert.ok(status.data.migrations[0].appliedAt)
+  })
+  await t.test('sidebar attribution is globally visible by default and only audited admin updates can change it', async () => {
+    assert.equal((await request('/site/settings', { cookie: adminCookie })).data.showSidebarAttribution, true)
+    assert.equal((await request('/site/settings', { cookie: otherCookie })).status, 403)
+    const update = (body: unknown, cookie = adminCookie, originOverride?: string | null) => request('/site/settings', { method: 'PATCH', cookie, body, origin: originOverride })
+    assert.equal((await update({ showSidebarAttribution: false }, '')).status, 401)
+    assert.equal((await update({ showSidebarAttribution: false }, otherCookie)).status, 403)
+    assert.equal((await update({ showSidebarAttribution: false }, adminCookie, 'https://evil.example')).status, 403)
+    assert.equal((await update({ showSidebarAttribution: 'false' })).status, 400)
+    const hidden = await update({ showSidebarAttribution: false })
+    assert.equal(hidden.status, 200)
+    assert.equal(hidden.data.showSidebarAttribution, false)
+    assert.equal((await request('/site/settings', { cookie: adminCookie })).data.showSidebarAttribution, false)
+    assert.equal((await request('/config')).data.showSidebarAttribution, false)
+    const audit = await database!.get<{ actorId: string; workspaceId: string | null; details: string }>("SELECT actorId,workspaceId,details FROM audit_logs WHERE action='site.settings.update' ORDER BY createdAt DESC LIMIT 1")
+    assert.equal(audit!.actorId, adminId)
+    assert.equal(audit!.workspaceId, null)
+    assert.deepEqual(JSON.parse(audit!.details), { showSidebarAttribution: false })
+    await database!.run("CREATE TRIGGER fail_settings_audit BEFORE INSERT ON audit_logs WHEN NEW.action='site.settings.update' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
+    try {
+      assert.equal((await update({ showSidebarAttribution: true })).status, 409)
+      assert.equal((await request('/config')).data.showSidebarAttribution, false, 'An audit failure must roll back the setting')
+    } finally { await database!.run('DROP TRIGGER fail_settings_audit') }
+    assert.equal((await update({ showSidebarAttribution: true })).data.showSidebarAttribution, true)
+    assert.equal((await request('/config')).data.showSidebarAttribution, true)
   })
   await t.test('workspace structure, role and item endpoints follow the REST contract', async () => {
     const workspace = await request('/workspaces', { method: 'POST', cookie: adminCookie, body: { name: 'Workspace' } })
@@ -170,7 +203,7 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     workspaceId = workspace.data.id
     assert.equal((await request(`/workspaces/${workspaceId}`, { cookie: otherCookie })).status, 403)
     const detail = await request(`/workspaces/${workspaceId}`, { cookie: adminCookie })
-    assert.deepEqual(Object.keys(detail.data).sort(), ['documentPages', 'documents', 'fields', 'listStatusConfigs', 'listTagColorConfigs', 'members', 'nodes', 'permissions', 'projectFields', 'role', 'roles', 'workspace'])
+    assert.deepEqual(Object.keys(detail.data).sort(), ['documentPages', 'documents', 'fields', 'listStatusConfigs', 'listTagColorConfigs', 'members', 'nodes', 'permissions', 'projectFields', 'role', 'roles', 'tables', 'workspace'])
     assert.deepEqual(detail.data.documents, [])
     ownerRoleId = detail.data.roles.find((role: any) => role.isOwner).id
     viewerRoleId = detail.data.roles.find((role: any) => role.name === 'Viewer').id
@@ -187,7 +220,76 @@ test('real Adonis HTTP contract and authentication security', { timeout: 60000 }
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { description: '' } })).data.description, '')
     assert.equal((await request(`/workspaces/${workspaceId}/items?status=done&search=Implement`, { cookie: adminCookie })).data.length, 1)
     assert.equal((await request(`/workspaces/${workspaceId}/items/${itemId}`, { method: 'PATCH', cookie: adminCookie, body: { dueDate: '2026-02-30' } })).status, 400)
-    assert.equal((await request(`/workspaces/${workspaceId}/export`, { cookie: adminCookie })).data.version, 5)
+    const document = await request(`/workspaces/${workspaceId}/documents`, { method: 'POST', cookie: adminCookie, body: { title: 'Styled document', icon: 'bookmark', color: '#123ABC' } })
+    assert.equal(document.status, 201)
+    const table = await request(`/workspaces/${workspaceId}/tables`, { method: 'POST', cookie: adminCookie, body: { name: 'Styled Table' } })
+    assert.equal(table.status, 201)
+    assert.equal((await request(`/workspaces/${workspaceId}/tables/${table.data.id}`, { method: 'PATCH', cookie: adminCookie, body: { icon: 'calendar', color: '#123ABC', expectedUpdatedAt: table.data.updatedAt } })).status, 200)
+    const exported = await request(`/workspaces/${workspaceId}/export`, { cookie: adminCookie })
+    assert.equal(exported.data.version, 8)
+    assert.deepEqual([exported.data.documents[0].icon, exported.data.documents[0].color], ['bookmark', '#123abc'])
+    assert.deepEqual([exported.data.tables[0].icon, exported.data.tables[0].color], ['calendar', '#123abc'])
+  })
+  await t.test('profile photos persist privately, validate raster bytes, and track current sharing and photo revisions', async () => {
+    const path = '/auth/profile/photo'
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1foAAAAASUVORK5CYII='
+    const payload = { contentType: 'image/png', data: png }
+    const upload = (body: unknown, cookie = adminCookie, originOverride?: string | null) => request(path, { method: 'PUT', cookie, body, origin: originOverride })
+    const photo = (url: string, cookie = adminCookie) => fetch(`${base}${url}`, { headers: cookie ? { cookie } : {} })
+    assert.equal((await request('/auth/me', { cookie: adminCookie })).data.photoUrl, null)
+    assert.equal((await upload(payload, '')).status, 401)
+    assert.equal((await upload(payload, adminCookie, 'https://evil.example')).status, 403)
+    assert.equal((await upload({ ...payload, userId: otherId })).status, 400)
+    assert.equal((await upload({ ...payload, contentType: 'image/svg+xml' })).status, 415)
+    assert.equal((await upload({ ...payload, contentType: 'image/jpeg' })).status, 415)
+    assert.equal((await upload({ ...payload, data: Buffer.from('<html>not an image</html>').toString('base64') })).status, 415)
+    assert.equal((await upload({ ...payload, data: Buffer.alloc(512 * 1024 + 1).toString('base64') })).status, 413)
+    const saved = await upload(payload)
+    assert.equal(saved.status, 200)
+    const url = saved.data.photoUrl as string
+    assert.match(url, new RegExp(`^/api/v1/users/${adminId}/photo\\?v=`))
+    assert.deepEqual(Object.keys(saved.data), ['photoUrl'])
+    assert.equal((await request('/auth/me', { cookie: adminCookie })).data.photoUrl, url)
+    assert.equal((await photo(url, '')).status, 401)
+    assert.equal((await photo(url, otherCookie)).status, 404)
+    const image = await photo(url)
+    assert.equal(image.status, 200)
+    assert.match(image.headers.get('content-type')!, /^image\/png/)
+    assert.equal(image.headers.get('x-content-type-options'), 'nosniff')
+    assert.equal(image.headers.get('cache-control'), 'private, no-store')
+    assert.equal(image.headers.get('content-disposition'), 'inline')
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from(png, 'base64'))
+    assert.equal((await request(`/workspaces/${workspaceId}/members`, { method: 'POST', cookie: adminCookie, body: { email: 'other@example.test', roleId: viewerRoleId } })).status, 201)
+    assert.equal((await photo(url, otherCookie)).status, 200)
+    assert.equal((await request(`/workspaces/${workspaceId}`, { cookie: otherCookie })).data.members.find((member: any) => member.userId === adminId).photoUrl, url)
+    const task = (await request(`/workspaces/${workspaceId}/items`, { method: 'POST', cookie: adminCookie, body: { title: 'Photo discussion', nodeId: listId } })).data
+    const comments = `/workspaces/${workspaceId}/items/${task.id}/comments`
+    assert.equal((await request(comments, { method: 'POST', cookie: adminCookie, body: { body: 'Profile photo author' } })).data.authorPhotoUrl, url)
+    assert.equal((await request(comments, { cookie: otherCookie })).data[0].authorPhotoUrl, url)
+    const document = (await request(`/workspaces/${workspaceId}/documents`, { method: 'POST', cookie: adminCookie, body: { title: 'Photo discussion' } })).data
+    const documentComments = `/workspaces/${workspaceId}/documents/${document.id}/comments`
+    assert.equal((await request(documentComments, { method: 'POST', cookie: adminCookie, body: { body: 'Document author photo' } })).data.authorPhotoUrl, url)
+    assert.equal((await request(documentComments, { cookie: otherCookie })).data[0].authorPhotoUrl, url)
+    await request(`/workspaces/${workspaceId}/items/${task.id}`, { method: 'DELETE', cookie: adminCookie })
+    await request(`/workspaces/${workspaceId}/documents/${document.id}`, { method: 'DELETE', cookie: adminCookie })
+    await request(`/workspaces/${workspaceId}/members/${otherId}`, { method: 'DELETE', cookie: adminCookie })
+    assert.equal((await photo(url, otherCookie)).status, 404, 'A remembered URL cannot retain access after membership removal')
+    const replaced = await upload(payload)
+    assert.notEqual(replaced.data.photoUrl, url)
+    assert.equal((await photo(url)).status, 404)
+    assert.equal((await photo(replaced.data.photoUrl)).status, 200)
+    assert.equal((await request('/auth/profile', { method: 'PATCH', cookie: adminCookie, body: { name: 'Admin' } })).data.photoUrl, replaced.data.photoUrl)
+    assert.equal((await database!.get<{ count: number }>('SELECT count(*) AS count FROM profile_photos WHERE userId=?', adminId))!.count, 1)
+    const audits = await database!.all<{ details: string }>("SELECT details FROM audit_logs WHERE action='user.photo.update' AND actorId=?", adminId)
+    for (const audit of audits) assert.deepEqual(JSON.parse(audit.details), { contentType: 'image/png', size: Buffer.from(png, 'base64').length })
+    assert.equal(JSON.stringify((await request(`/workspaces/${workspaceId}/export`, { cookie: adminCookie })).data).includes(png), false)
+    const peerPhoto = await upload(payload, otherCookie)
+    assert.equal((await photo(peerPhoto.data.photoUrl)).status, 200, 'Site administrators can preview another active account photo')
+    assert.equal((await request(path, { method: 'DELETE', cookie: otherCookie })).data.photoUrl, null)
+    assert.equal((await photo(replaced.data.photoUrl)).status, 200, 'Removing your photo must not remove another account photo')
+    assert.equal((await request(path, { method: 'DELETE', cookie: adminCookie })).data.photoUrl, null)
+    assert.equal((await photo(replaced.data.photoUrl)).status, 404)
+    assert.equal((await request('/auth/me', { cookie: adminCookie })).data.photoUrl, null)
   })
   await t.test('bulk archive is revision-checked and excluded from ordinary reads', async () => {
     const created = await request(`/workspaces/${workspaceId}/items`, { method: 'POST', cookie: adminCookie, body: { title: 'Archive me', nodeId: listId } })

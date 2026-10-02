@@ -1,4 +1,5 @@
 export type User = {
+  photoUrl?: string | null;
   id: string;
   name: string;
   email: string;
@@ -7,6 +8,7 @@ export type User = {
 };
 export type Config = {
   landingEnabled: boolean;
+  showSidebarAttribution: boolean;
   logo?: string;
   registrationEnabled: boolean;
   setupRequired: boolean;
@@ -148,6 +150,7 @@ export type AutomationRun = {
 };
 export type SiteSettings = {
   landingDisabled: boolean;
+  showSidebarAttribution: boolean;
   landingOperatorEnabled: boolean;
   mcpSseEnabled: boolean;
   logo: { updatedAt: string; url: string } | null;
@@ -215,6 +218,9 @@ export const permissions = [
   "documents:read",
   "documents:write",
   "documents:delete",
+  "tables:read",
+  "tables:write",
+  "tables:delete",
   "comments:create",
   "comments:manage",
   "structure:write",
@@ -233,6 +239,7 @@ export type Role = {
   isOwner: boolean;
 };
 export type Member = {
+  photoUrl?: string | null;
   userId: string;
   name: string;
   email: string;
@@ -243,7 +250,7 @@ export type TreeNode = {
   id: string;
   name: string;
   description?: string;
-  kind: "project" | "folder" | "list" | "document";
+  kind: "project" | "folder" | "list" | "document" | "table";
   parentId: string | null;
   icon?: NodeIcon | null;
   color?: string | null;
@@ -254,6 +261,8 @@ export type DocumentSummary = {
   workspaceId: string;
   parentId: string | null;
   title: string;
+  icon?: NodeIcon | null;
+  color?: string | null;
   createdAt: string;
   updatedAt: string;
   parentDocumentId?: string | null;
@@ -261,6 +270,53 @@ export type DocumentSummary = {
 };
 export type DocumentRecord = DocumentSummary & { body: string; bodyRevision: number; createdByName: string | null; updatedByName: string | null };
 export type DocumentPage = { documentId: string; itemId: string; position: number };
+export type TableSummary = {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  name: string;
+  icon?: NodeIcon | null;
+  color?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type TableColumnType = "text" | "number" | "date" | "datetime" | "checkbox" | "select";
+export type TableColumn = {
+  readOnly?: boolean;
+  sourceType?: string;
+  primaryKey?: boolean;
+  id: string;
+  workspaceId: string;
+  tableId: string;
+  name: string;
+  type: TableColumnType;
+  options: string[];
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+};
+export type TableValue = string | number | boolean | null;
+export type TableColumnSummary = {
+  count: number;
+  empty: number;
+  sum?: number | null;
+  average?: number | null;
+  min?: number | null;
+  max?: number | null;
+  earliest?: string | null;
+  latest?: string | null;
+  checked?: number;
+  unchecked?: number;
+};
+export type TableCalculations = { recordCount: number; columns: Record<string, TableColumnSummary> };
+export type TableRecord = {
+  id: string;
+  workspaceId: string;
+  tableId: string;
+  values: Record<string, TableValue>;
+  createdAt: string;
+  updatedAt: string;
+};
 export type Field = {
   id: string;
   name: string;
@@ -302,6 +358,7 @@ export type Detail = {
   roles: Role[];
   nodes: TreeNode[];
   documents?: DocumentSummary[];
+  tables?: TableSummary[];
   documentPages?: DocumentPage[];
   fields: Field[];
   projectFields?: ProjectFieldConfiguration[];
@@ -334,6 +391,7 @@ export type ItemInput = Omit<
   "id" | "workspaceId" | "createdAt" | "updatedAt" | "bodyRevision"
 >;
 export type Comment = {
+  authorPhotoUrl?: string | null;
   id: string;
   workspaceId: string;
   itemId?: string;

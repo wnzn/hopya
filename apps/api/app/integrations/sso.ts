@@ -97,14 +97,14 @@ const pkceChallengeEffect = (codeVerifier: string): Effect.Effect<string, SsoFai
 // the same 401 instead of hanging the callback past the flow lifetime.
 const exchangeEffect = (config: oidc.Configuration, currentUrl: URL, flow: Flow, state: string): Effect.Effect<oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers, SsoFailure> =>
   Effect.mapError(
-    Effect.timeoutFail(
+    Effect.timeoutOrElse(
       Effect.tryPromise({
         try: () => oidc.authorizationCodeGrant(config, currentUrl, {
           pkceCodeVerifier: flow.codeVerifier, expectedState: state, expectedNonce: flow.nonce, idTokenExpected: true,
         }),
         catch: () => new SsoAuthFailed(),
       }),
-      { duration: '15 seconds', onTimeout: () => new SsoAuthFailed() },
+      { duration: '15 seconds', orElse: () => Effect.fail(new SsoAuthFailed()) },
     ),
     (failure): SsoFailure => failure,
   )

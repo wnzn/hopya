@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, message, workspacePath, type Detail, type Notification, type Workspace } from "../lib/api";
-import { ErrorNotice, Loading, Shell, useSession, type NavigationState } from "./Shared";
+import { Empty, ErrorNotice, Loading, Shell, useSession, type NavigationState } from "./Shared";
 
 export default function Inbox() {
   const { user, error: authError } = useSession();
@@ -10,20 +10,24 @@ export default function Inbox() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
+  const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState("");
   useEffect(() => {
     if (!user) return;
     const controller = new AbortController();
+    setLoadingWorkspaces(true); setError("");
     api<Workspace[]>("/workspaces", "GET", undefined, controller.signal).then(rows => {
       if (controller.signal.aborted) return;
       const requested = new URLSearchParams(location.search).get("workspace");
       let stored: string | null = null;
       try { stored = localStorage.getItem("hopya.workspace"); } catch {}
       const selected = rows.find(row => row.id === requested)?.id ?? rows.find(row => row.id === stored)?.id ?? rows[0]?.id ?? "";
-      setWorkspaces(rows); setWorkspaceId(selected);
-    }).catch(cause => { if (!controller.signal.aborted) { setError(message(cause)); setLoading(false); } });
+      setWorkspaces(rows); setWorkspaceId(current => rows.some(row => row.id === current) ? current : selected);
+    }).catch(cause => { if (!controller.signal.aborted) setError(message(cause)); })
+      .finally(() => { if (!controller.signal.aborted) setLoadingWorkspaces(false); });
     return () => controller.abort();
-  }, [user]);
+  }, [user?.id, revision]);
   useEffect(() => {
     if (!workspaceId) { setDetail(null); setNotifications([]); setLoading(false); return; }
     const controller = new AbortController();
@@ -36,9 +40,9 @@ export default function Inbox() {
       setDetail(nextDetail); setNotifications(rows); setLoading(false);
     }).catch(cause => { if (!controller.signal.aborted) { setError(message(cause)); setLoading(false); } });
     return () => controller.abort();
-  }, [workspaceId]);
+  }, [workspaceId, revision]);
   function selectWorkspace(id: string) {
-    if (!workspaces.some(workspace => workspace.id === id)) return;
+    if (id === workspaceId || !workspaces.some(workspace => workspace.id === id)) return;
     setWorkspaceId(id); setDetail(null); setNotifications([]);
     try { localStorage.setItem("hopya.workspace", id); } catch {}
     history.replaceState(null, "", `/inbox?workspace=${encodeURIComponent(id)}`);
@@ -67,7 +71,8 @@ export default function Inbox() {
       <h1>Inbox</h1>
       <p className="muted">Task assignments and mentions in this workspace.</p>
       <ErrorNotice error={authError || error} />
-      {!user || loading ? <Loading /> : notifications.length === 0 ? <div className="empty"><h2>You&apos;re all caught up</h2><p>No notifications in this workspace.</p></div> : (
+      {(authError || error) && <button type="button" disabled={!!busy} onClick={() => authError ? window.location.reload() : setRevision(value => value + 1)}>Retry inbox</button>}
+      {authError || error ? null : !user || loadingWorkspaces || loading ? <Loading /> : !workspaceId ? <Empty title="Choose a workspace" action={<a className="button" href="/app">Open workspace</a>}>Create or join a workspace to see assignments and mentions.</Empty> : notifications.length === 0 ? <div className="empty"><h2>You&apos;re all caught up</h2><p>No notifications in this workspace.</p></div> : (
         <ol className="inbox-list" aria-label="Notifications">
           {notifications.map(row => <li key={row.id} className={row.readAt ? "" : "unread"}>
             <a href={`/app?workspace=${encodeURIComponent(workspaceId)}&task=${encodeURIComponent(row.itemId)}${row.commentId ? `&comment=${encodeURIComponent(row.commentId)}` : ""}`}>
@@ -77,8 +82,8 @@ export default function Inbox() {
               <time dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleString()}</time>
             </a>
             <div className="button-group">
-              <button type="button" disabled={busy === row.id} onClick={() => void toggle(row)}>{row.readAt ? "Mark unread" : "Mark read"}</button>
-              <button type="button" disabled={busy === row.id} onClick={() => void remove(row)}>Delete</button>
+              <button type="button" disabled={!!busy} onClick={() => void toggle(row)}>{row.readAt ? "Mark unread" : "Mark read"}</button>
+              <button type="button" disabled={!!busy} onClick={() => void remove(row)}>Delete</button>
             </div>
           </li>)}
         </ol>

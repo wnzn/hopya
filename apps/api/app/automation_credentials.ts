@@ -1,12 +1,14 @@
 import type { HttpContext, Router } from '@adonisjs/core/http'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
-import { Effect } from 'effect'
+import { Effect, Semaphore } from 'effect'
 import { z } from 'zod'
 import { audit, db } from './core.js'
 import { authenticate } from './security.js'
 import { requirePermission } from './service.js'
 import { HttpError } from './types.js'
-import { outboundHttpError, pinnedRequestEffect, resolvePinnedDestination } from './pinned_http.js'
+import { outboundHttpError, pinnedRequestEffect, resolvePinnedDestination, resolvePinnedDestinationEffect } from './pinned_http.js'
+import { runPromiseThrow } from './database.js'
+import { automationIO } from './automation_effects.js'
 
 export const credentialTypes = ['bearer', 'api_key', 'basic', 'custom_headers', 'oauth2'] as const
 export type CredentialType = typeof credentialTypes[number]
@@ -94,13 +96,14 @@ function normalizeBinding(origin: string, pathPrefix: string | null) {
 }
 
 const refreshLocks = new Map<string, Promise<void>>()
-async function tokenRequest(url: string, body: URLSearchParams): Promise<Record<string, unknown>> {
-  const destination = await resolvePinnedDestination(url, true)
-  const outcome = await Effect.runPromise(Effect.either(pinnedRequestEffect(destination, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString(), timeoutMs: 15_000, maxResponseBytes: 32 * 1024 })))
-  if (outcome._tag === 'Left') throw outboundHttpError(outcome.left)
-  if (outcome.right.status < 200 || outcome.right.status >= 300) throw new HttpError(502, 'OAuth token endpoint rejected the request')
-  try { return JSON.parse(outcome.right.body.toString('utf8')) as Record<string, unknown> } catch { throw new HttpError(502, 'OAuth token endpoint returned malformed JSON') }
-}
+const tokenSlots = Semaphore.makeUnsafe(4)
+const tokenRequestEffect = Effect.fnUntraced(function* (url: string, body: URLSearchParams) {
+  const destination = yield* resolvePinnedDestinationEffect(url, true)
+  const response = yield* pinnedRequestEffect(destination, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString(), timeoutMs: 15_000, maxResponseBytes: 32 * 1024 }).pipe(Effect.mapError(outboundHttpError))
+  if (response.status < 200 || response.status >= 300) return yield* Effect.fail(new HttpError(502, 'OAuth token endpoint rejected the request'))
+  return yield* Effect.try({ try: () => JSON.parse(response.body.toString('utf8')) as Record<string, unknown>, catch: () => new HttpError(502, 'OAuth token endpoint returned malformed JSON') })
+}, tokenSlots.withPermits(1), Effect.timeoutOrElse({ duration: '20 seconds', orElse: () => Effect.fail(new HttpError(502, 'OAuth token request timed out')) }))
+const tokenRequest = (url: string, body: URLSearchParams) => runPromiseThrow(tokenRequestEffect(url, body))
 async function refreshOAuth(row: CredentialRow, secret: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (!secret.accessToken) throw new HttpError(409, 'OAuth credential is not connected')
   if (!secret.expiresAt || Date.parse(String(secret.expiresAt)) > Date.now() + 30_000) return secret
@@ -117,12 +120,12 @@ async function refreshOAuth(row: CredentialRow, secret: Record<string, unknown>)
     const token = parsed.data
     const next = { ...secret, accessToken: token.access_token, refreshToken: token.refresh_token ?? secret.refreshToken, expiresAt: token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined }
     const encrypted = encrypt(next, row.workspaceId, row.id, row.version + 1, row.type), now = new Date().toISOString()
-    await db.transaction(async () => {
+    await runPromiseThrow(automationIO(() => db.transaction(async () => {
       const current = await credential(row.workspaceId, row.id, true)
       if (current.version !== row.version) return
       await db.run('INSERT INTO automation_credential_versions (workspaceId,credentialId,version,keyId,encrypted,createdAt) VALUES (?,?,?,?,?,?)', row.workspaceId, row.id, row.version + 1, encrypted.keyId, encrypted.encrypted, now)
       await db.run('UPDATE automation_credentials SET version=?,updatedAt=? WHERE workspaceId=? AND id=? AND version=?', row.version + 1, now, row.workspaceId, row.id, row.version)
-    })
+    })))
   })().finally(() => refreshLocks.delete(key))
   refreshLocks.set(key, work); await work
   const current = await credential(row.workspaceId, row.id, true)
@@ -135,18 +138,26 @@ async function loadCredential(wid: string, id: string, version?: number): Promis
   return decrypt(stored, wid, id, selected, row.type)
 }
 
-export async function applyCredential(wid: string, id: string, destination: URL, headers: Record<string, string>): Promise<{ url: URL; redactions: string[] }> {
-  const row = await credential(wid, id, true)
-  if (destination.origin !== row.origin || row.pathPrefix && !(destination.pathname === row.pathPrefix || destination.pathname.startsWith(`${row.pathPrefix.replace(/\/$/, '')}/`))) throw new HttpError(400, 'Credential destination binding does not match')
-  let secret = await loadCredential(wid, id)
-  if (row.type === 'oauth2') secret = await refreshOAuth(row, secret)
+export const applyCredentialEffect = Effect.fnUntraced(function* (wid: string, id: string, destination: URL, headers: Record<string, string>) {
+  const row = yield* automationIO(() => credential(wid, id, true))
+  if (destination.origin !== row.origin || row.pathPrefix && !(destination.pathname === row.pathPrefix || destination.pathname.startsWith(`${row.pathPrefix.replace(/\/$/, '')}/`))) return yield* Effect.fail(new HttpError(400, 'Credential destination binding does not match'))
+  let secret = yield* automationIO(() => loadCredential(wid, id, row.version))
+  // Refresh is single-flight and may rotate a remote token. Await persistence
+  // before releasing its lock/worker even if the consumer is interrupted.
+  if (row.type === 'oauth2') secret = yield* Effect.uninterruptible(Effect.tryPromise({
+    try: () => refreshOAuth(row, secret),
+    catch: (error) => error instanceof HttpError ? error : new HttpError(503, 'OAuth credential refresh failed'),
+  }))
+  yield* automationIO(() => credential(wid, id, true))
   const redactions: string[] = [], add = (...values: unknown[]) => { for (const value of values) if (typeof value === 'string' && value) redactions.push(value) }
   if (row.type === 'bearer' || row.type === 'oauth2') { const token = String(row.type === 'bearer' ? secret.token : secret.accessToken); headers.authorization = `Bearer ${token}`; add(headers.authorization, token) }
   if (row.type === 'basic') { const pair = `${secret.username}:${secret.password}`, encoded = Buffer.from(pair).toString('base64'); headers.authorization = `Basic ${encoded}`; add(headers.authorization, encoded, pair, secret.username, secret.password) }
   if (row.type === 'custom_headers') { Object.assign(headers, secret.headers); for (const [name, value] of Object.entries(secret.headers as Record<string, string>)) add(`${name}: ${value}`, value) }
   if (row.type === 'api_key') { const name = String(secret.name), value = String(secret.value); headers[name] = value; add(`${name}: ${value}`, value) }
   return { url: destination, redactions: [...new Set(redactions)].sort((left, right) => right.length - left.length) }
-}
+})
+
+export const applyCredential = (wid: string, id: string, destination: URL, headers: Record<string, string>) => runPromiseThrow(applyCredentialEffect(wid, id, destination, headers))
 
 export function redactCredentialOutput(body: string, redactions: readonly string[]): string {
   const secrets = [...new Set(redactions.filter(Boolean))].sort((left, right) => right.length - left.length)

@@ -9,6 +9,9 @@ import { z } from 'zod'
 import { authenticate, requirePermission, service, db, audit, HttpError, type Permission } from '../core.js'
 import { runPromiseThrow } from '../database.js'
 import { dataDir } from '../settings.js'
+import { documentService } from '../documents.js'
+import { rasterContentType, type ImageKind, type ImageRow } from '../rich_text_images.js'
+import { requireMembership } from '../service.js'
 
 const maxBytes = 10 * 1024 * 1024
 const objectDirectory = join(dataDir, 'objects')
@@ -19,7 +22,9 @@ const uploadSchema = z.object({
 }).strict()
 interface StoredObject { objectKey: string; driver: 'filesystem' | 's3'; location: string; createdAt: string }
 interface Attachment extends StoredObject { id: string; workspaceId: string; itemId: string; name: string; contentType: string; size: number }
-const metadata = ({ id, name, size, contentType, createdAt }: Attachment) => ({ id, name, size, contentType, createdAt })
+const metadata = ({ id, name, size, contentType, createdAt }: Pick<Attachment, 'id' | 'name' | 'size' | 'contentType' | 'createdAt'>) => ({ id, name, size, contentType, createdAt })
+const imageUploadSchema = uploadSchema.extend({ kind: z.enum(['task-body', 'task-comment', 'document-comment']), resourceId: z.string().uuid().optional() })
+  .refine((value) => value.kind === 'task-body' || value.resourceId !== undefined, 'Comment images require a resource')
 
 // --- Typed storage failures (Effect values, mapped at the route boundary) ---
 // Every failure below surfaces as the same HttpError status/message the routes
@@ -59,9 +64,9 @@ const resolveBackendEffect = (): Effect.Effect<Backend, StorageMisconfigured> =>
 })
 
 function backend(): Backend {
-  const result = Effect.runSync(Effect.either(resolveBackendEffect()))
-  if (result._tag === 'Left') throw new HttpError(503, result.left.message)
-  return result.right
+  const result = Effect.runSync(Effect.result(resolveBackendEffect()))
+  if (result._tag === 'Failure') throw new HttpError(503, result.failure.message)
+  return result.success
 }
 
 const validateObjectKeyEffect = (objectKey: string): Effect.Effect<void, InvalidObjectKey> =>
@@ -166,6 +171,47 @@ async function attachment(ctx: HttpContext): Promise<Attachment> {
   return row
 }
 
+async function authorizeImageUpload(ctx: HttpContext, kind: ImageKind, resourceId?: string) {
+  const user = await authenticate(ctx)
+  const wid = z.string().uuid().parse(ctx.params.wid)
+  await requirePermission(user.id, wid, kind === 'document-comment' ? 'documents:read' : 'items:read')
+  await requirePermission(user.id, wid, kind === 'task-body' ? 'items:write' : 'comments:create')
+  if (resourceId) {
+    if (kind === 'document-comment') await documentService.getDocument(user.id, wid, resourceId)
+    else await service.getItem(user.id, wid, resourceId)
+  }
+  return user
+}
+
+async function authorizedImage(ctx: HttpContext): Promise<ImageRow & StoredObject> {
+  const user = await authenticate(ctx)
+  const wid = z.string().uuid().parse(ctx.params.wid)
+  const imageId = z.string().uuid().parse(ctx.params.imageId)
+  await requireMembership(user.id, wid)
+  const row = await db.get<ImageRow & StoredObject>(`SELECT i.*,o.driver,o.location FROM rich_text_images i JOIN storage_objects o ON o.objectKey=i.objectKey WHERE i.workspaceId=? AND i.id=?`, wid, imageId)
+  if (!row) throw new HttpError(404, 'Image not found')
+  await requirePermission(user.id, wid, row.kind === 'document-comment' ? 'documents:read' : 'items:read')
+  if (!row.committedAt) {
+    if (row.createdBy !== user.id || row.expiresAt <= new Date().toISOString()) throw new HttpError(404, 'Image draft is unavailable')
+    await authorizeImageUpload(ctx, row.kind, row.documentId ?? row.itemId ?? undefined)
+  } else if (row.documentId) await documentService.getDocument(user.id, wid, row.documentId)
+  else await service.getItem(user.id, wid, row.itemId!)
+  if (row.commentId && !await db.get('SELECT id FROM comments WHERE workspaceId=? AND itemId=? AND id=? AND deletedAt IS NULL', wid, row.itemId, row.commentId) ||
+    row.documentCommentId && !await db.get('SELECT id FROM document_comments WHERE workspaceId=? AND documentId=? AND id=? AND deletedAt IS NULL', wid, row.documentId, row.documentCommentId)) throw new HttpError(404, 'Image not found')
+  return row
+}
+
+function sendBytes(ctx: HttpContext, row: Pick<Attachment, 'name'>, bytes: Buffer, inline = false) {
+  const encoded = encodeURIComponent(row.name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+  ctx.response.header('Content-Type', inline ? rasterContentType(bytes) : 'application/octet-stream')
+  ctx.response.header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="download"; filename*=UTF-8''${encoded}`)
+  ctx.response.header('X-Content-Type-Options', 'nosniff')
+  ctx.response.header('Content-Security-Policy', "default-src 'none'; sandbox")
+  ctx.response.header('Cross-Origin-Resource-Policy', 'same-origin')
+  ctx.response.header('Cache-Control', 'private, no-store')
+  ctx.response.send(bytes)
+}
+
 /** Operator-only hook: run regularly on the single API replica, with the same DATA_DIR
  * and storage env. No public route. Repeat while scanned === 100 and deleted > 0;
  * investigate failed objects rather than spinning indefinitely. An object ledger
@@ -174,20 +220,28 @@ async function attachment(ctx: HttpContext): Promise<Attachment> {
 export async function collectStorageGarbage(): Promise<{ scanned: number; deleted: number; failed: number }> {
   const store = backend()
   store.client?.destroy()
+  // Expiry is checked at claim/read time too. Bound each sweep so abandoned
+  // drafts never keep objects alive indefinitely or monopolize the writer.
+  await db.run(`DELETE FROM rich_text_images WHERE id IN (SELECT id FROM rich_text_images WHERE committedAt IS NULL AND expiresAt<? ORDER BY expiresAt LIMIT 100)`, new Date().toISOString())
   const rows = await db.all(`SELECT o.* FROM storage_objects o WHERE o.driver=? AND o.location=? AND o.createdAt<?
-    AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey) ORDER BY o.createdAt LIMIT 100`,
+    AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey)
+    AND NOT EXISTS (SELECT 1 FROM rich_text_images i WHERE i.objectKey=o.objectKey) ORDER BY o.createdAt LIMIT 100`,
     store.driver, store.location, new Date(Date.now() - 86400000).toISOString()) as unknown as StoredObject[]
   // Each row is its own Effect that can only resolve to counted outcomes, so a
   // failed DELETE can never reject the collection. Sequential (concurrency 1)
   // preserves single-writer SQLite semantics on the shared connection.
   const collectRow = (row: StoredObject): Effect.Effect<'deleted' | 'failed', never> =>
-    Effect.catchAll(
+    Effect.catch(
       Effect.gen(function* () {
         yield* Effect.tryPromise({
           try: () => objectOperation(row, 'delete'),
           catch: (error) => error as unknown,
         })
-        yield* Effect.promise(() => db.run('DELETE FROM storage_objects WHERE objectKey=? AND NOT EXISTS (SELECT 1 FROM attachments WHERE objectKey=?)', row.objectKey, row.objectKey))
+        yield* Effect.tryPromise({
+          try: () => db.run(`DELETE FROM storage_objects WHERE objectKey=? AND NOT EXISTS (SELECT 1 FROM attachments WHERE objectKey=?)
+            AND NOT EXISTS (SELECT 1 FROM rich_text_images WHERE objectKey=?)`, row.objectKey, row.objectKey, row.objectKey),
+          catch: () => new StorageUnavailable(),
+        })
         return 'deleted' as const
       }),
       () => Effect.succeed('failed' as const),
@@ -197,6 +251,65 @@ export async function collectStorageGarbage(): Promise<{ scanned: number; delete
 }
 
 export function registerStorage(router: Router): void {
+  const images = '/api/v1/workspaces/:wid/images'
+  router.post(images, async (ctx) => {
+    // Authenticate before parsing the larger upload body.
+    await authenticate(ctx)
+    const data = imageUploadSchema.parse(ctx.request.body())
+    const user = await authorizeImageUpload(ctx, data.kind, data.resourceId)
+    const bytes = Buffer.from(data.data, 'base64')
+    if (bytes.length > maxBytes) throw new HttpError(413, 'Image exceeds 10 MiB')
+    if (bytes.toString('base64') !== data.data) throw new HttpError(400, 'Invalid base64 image data')
+    const contentType = rasterContentType(bytes)
+    const store = backend(); store.client?.destroy()
+    const row: ImageRow & StoredObject = { id: randomUUID(), objectKey: randomUUID(), driver: store.driver, location: store.location,
+      workspaceId: ctx.params.wid, kind: data.kind, itemId: data.kind === 'document-comment' ? null : data.resourceId ?? null,
+      documentId: data.kind === 'document-comment' ? data.resourceId! : null, commentId: null, documentCommentId: null, attachmentId: null,
+      createdBy: user.id, name: data.name, contentType, size: bytes.length, createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(), committedAt: null }
+    await db.transaction(async () => {
+      await db.run('INSERT INTO storage_objects(objectKey,driver,location,createdAt) VALUES (@objectKey,@driver,@location,@createdAt)', row)
+      await audit(user.id, row.workspaceId, 'image.upload.start', row.id)
+    })
+    let uploaded = false
+    try {
+      await objectOperation(row, 'put', bytes); uploaded = true
+      await db.transaction(async () => {
+        await authorizeImageUpload(ctx, data.kind, data.resourceId)
+        await db.get(`SELECT id FROM users WHERE id=? ${db.sql({ pg: 'FOR UPDATE', sqlite: '' })}`, user.id)
+        const count = await db.get<{ count: number | string }>('SELECT count(*) AS count FROM rich_text_images WHERE createdBy=? AND committedAt IS NULL AND expiresAt>?', user.id, new Date().toISOString())
+        if (Number(count!.count) >= 50) throw new HttpError(429, 'At most 50 pending images per account; save or discard a draft first')
+        if (row.expiresAt <= new Date().toISOString()) throw new HttpError(409, 'Image upload expired')
+        await db.run(`INSERT INTO rich_text_images(id,workspaceId,objectKey,kind,itemId,documentId,createdBy,name,contentType,size,createdAt,expiresAt)
+          VALUES (@id,@workspaceId,@objectKey,@kind,@itemId,@documentId,@createdBy,@name,@contentType,@size,@createdAt,@expiresAt)`, row)
+        await audit(user.id, row.workspaceId, 'image.upload', row.id, { kind: row.kind, size: row.size })
+      })
+    } catch (error) {
+      try { await objectOperation(row, 'delete'); if (uploaded) await db.run('DELETE FROM storage_objects WHERE objectKey=?', row.objectKey) } catch { /* GC retries compensation. */ }
+      throw error
+    }
+    ctx.response.status(201)
+    const downloadUrl = `/api/v1/workspaces/${row.workspaceId}/images/${row.id}`
+    return { ...metadata(row), url: `${downloadUrl}/inline`, downloadUrl, expiresAt: row.expiresAt }
+  })
+  for (const inline of [false, true]) router.get(`${images}/:imageId${inline ? '/inline' : ''}`, async (ctx) => {
+    const row = await authorizedImage(ctx)
+    const bytes = await objectOperation(row, 'get')
+    const fresh = await authorizedImage(ctx)
+    if (fresh.objectKey !== row.objectKey || bytes.length !== row.size) throw new HttpError(503, 'Attachment storage unavailable')
+    sendBytes(ctx, row, bytes, inline)
+  })
+  router.delete(`${images}/:imageId`, async (ctx) => {
+    const user = await authenticate(ctx)
+    await db.transaction(async () => {
+      const row = await authorizedImage(ctx)
+      if (row.committedAt || row.createdBy !== user.id) throw new HttpError(409, 'Only your pending image drafts may be discarded here')
+      const removed = await db.run('DELETE FROM rich_text_images WHERE workspaceId=? AND id=? AND committedAt IS NULL', row.workspaceId, row.id)
+      if (!removed.changes) throw new HttpError(409, 'Image already committed')
+      await audit(user.id, row.workspaceId, 'image.discard', row.id)
+    })
+    return { success: true }
+  })
   const path = '/api/v1/workspaces/:wid/items/:id/attachments'
   router.get(path, async (ctx) => {
     await authorize(ctx, 'items:read')
@@ -239,18 +352,13 @@ export function registerStorage(router: Router): void {
     ctx.response.status(201)
     return metadata(row)
   })
-  router.get(`${path}/:attachmentId`, async (ctx) => {
+  for (const inline of [false, true]) router.get(`${path}/:attachmentId${inline ? '/inline' : ''}`, async (ctx) => {
     await authorize(ctx, 'items:read')
     const row = await attachment(ctx)
     const bytes = await objectOperation(row, 'get')
     await authorize(ctx, 'items:read')
     if ((await attachment(ctx)).objectKey !== row.objectKey || bytes.length !== row.size) throw new HttpError(503, 'Attachment storage unavailable')
-    const encoded = encodeURIComponent(row.name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
-    ctx.response.header('Content-Type', 'application/octet-stream')
-    ctx.response.header('Content-Disposition', `attachment; filename="download"; filename*=UTF-8''${encoded}`)
-    ctx.response.header('X-Content-Type-Options', 'nosniff')
-    ctx.response.header('Cache-Control', 'private, no-store')
-    ctx.response.send(bytes)
+    sendBytes(ctx, row, bytes, inline)
   })
   router.delete(`${path}/:attachmentId`, async (ctx) => {
     const user = await authorize(ctx, 'items:delete')

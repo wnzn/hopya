@@ -50,7 +50,7 @@ export function resolveNodeColor(color?: string | null) {
 }
 
 export default function NodeGlyph({ node, className = "node-glyph" }: { node: Pick<TreeNode, "kind" | "icon" | "color">; className?: string }) {
-  const icon = node.icon || (node.kind === "project" ? "diamond" : node.kind === "folder" ? "folder" : node.kind === "document" ? "bookmark" : "list");
+  const icon = node.icon ? icons[node.icon] : node.kind === "table" ? "table" : node.kind === "project" ? "diamond" : node.kind === "folder" ? "folder" : node.kind === "document" ? "bookmark" : "list";
   const color = resolveNodeColor(node.color);
-  return <SolidIcon name={icons[icon]} className={`${className} solid-icon`} style={color ? { color } as CSSProperties : undefined} />;
+  return <SolidIcon name={icon} className={`${className} solid-icon`} style={color ? { color } as CSSProperties : undefined} />;
 }

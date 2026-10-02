@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   api,
+  ApiError,
   label,
   loadWorkspaceItems,
   message,
@@ -14,6 +15,7 @@ import {
   type Config,
   type Detail,
   type Item,
+  type NodeIcon,
   type Proposal,
   type TreeNode,
   type Workspace,
@@ -29,6 +31,7 @@ import {
   useSession,
 } from "./Shared";
 import NodeGlyph from "./NodeGlyph";
+import NodeIconPicker from "./NodeIconPicker";
 import SolidIcon, { type SolidIconName } from "./SolidIcon";
 import TaskViews, { type View } from "./TaskViews";
 import TaskEditor from "./TaskEditor";
@@ -39,10 +42,8 @@ import { projectStatuses } from "../lib/project-statuses";
 import StructureEditor from "./StructureEditor";
 import Agent from "./Agent";
 import DocumentEditor from "./DocumentEditor";
-
-function documentNode(document: NonNullable<Detail["documents"]>[number]): TreeNode {
-  return { id: document.id, name: document.title, kind: "document", parentId: document.parentId, updatedAt: document.updatedAt };
-}
+import TableResourceEditor from "./TableResourceEditor";
+import { documentHierarchyNode, hierarchyEntries as getHierarchyEntries } from "../lib/shared-navigation";
 
 const viewIcons: Record<View, SolidIconName> = {
   list: "list",
@@ -104,6 +105,7 @@ export default function Dashboard() {
   const [nodeName, setNodeName] = useState("");
   const [nodeNameBusy, setNodeNameBusy] = useState(false);
   const [nodeNameError, setNodeNameError] = useState("");
+  const [nodeNameConflict, setNodeNameConflict] = useState(false);
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
   const requestId = useRef(0);
@@ -182,7 +184,7 @@ export default function Dashboard() {
           setItems(nextItems);
           const query = new URLSearchParams(window.location.search);
           const requested = query.get("workspace") === workspaceId ? query.get("node") ?? "" : "";
-           const hierarchyEntries: TreeNode[] = [...nextDetail.nodes, ...(nextDetail.documents ?? []).map(documentNode)];
+           const hierarchyEntries = [...getHierarchyEntries(nextDetail), ...(nextDetail.documents ?? []).filter(document => document.parentDocumentId).map(documentHierarchyNode)];
            const requestedIsValid = Boolean(requested && safeAncestorPath(hierarchyEntries, requested).length);
           if (requested && !requestedIsValid) updateContextUrl(workspaceId);
           setNodeId((current) => {
@@ -252,11 +254,11 @@ export default function Dashboard() {
     setStatus("");
   }
   function selectWorkspace(id: string) {
-    if (!workspaces.some((workspace) => workspace.id === id)) return;
+    if (id === workspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
     activateWorkspace(id);
   }
   function selectNode(id: string) {
-    const entries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(documentNode)] : [];
+    const entries = detail ? [...getHierarchyEntries(detail), ...(detail.documents ?? []).filter(document => document.parentDocumentId).map(documentHierarchyNode)] : [];
     if (id && (!detail || !safeAncestorPath(entries, id).length)) return;
     setNodeId(id);
     if (workspaceId) updateContextUrl(workspaceId, id);
@@ -284,7 +286,9 @@ export default function Dashboard() {
     if (!detail) return;
     setError("");
     try {
-      await api(`${workspacePath(detail.workspace.id)}/${node.kind === "document" ? "documents" : "nodes"}/${node.id}`, "DELETE");
+      const path = node.kind === "document" ? `${workspacePath(detail.workspace.id)}/documents/${node.id}`
+        : node.kind === "table" ? `${workspacePath(detail.workspace.id)}/tables/${node.id}` : `${workspacePath(detail.workspace.id)}/nodes/${node.id}`;
+      await api(path, "DELETE");
       refresh();
     } catch (cause) { setError(message(cause)); }
   }
@@ -314,15 +318,20 @@ export default function Dashboard() {
       if (id === requestId.current) setError(message(e));
     }
   }
-  const hierarchyEntries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(documentNode)] : [];
+  const hierarchyEntries = detail ? getHierarchyEntries(detail) : [];
   const selectedNode = hierarchyEntries.find((n) => n.id === nodeId);
   const selectedDocument = detail?.documents?.find(document => document.id === nodeId);
+  const selectedTable = detail?.tables?.find(table => table.id === nodeId);
   const selectedFieldOwner = detail ? fieldOwnerForNode(detail.nodes, nodeId) : undefined;
   useEffect(() => {
     setEditingNodeName(false);
     setNodeName(selectedNode?.name || "");
     setNodeNameError("");
-  }, [selectedNode?.id, selectedNode?.name]);
+    setNodeNameConflict(false);
+  }, [selectedNode?.id]);
+  useEffect(() => {
+    if (!editingNodeName) setNodeName(selectedNode?.name || "");
+  }, [editingNodeName, selectedNode?.name]);
   async function saveNodeName(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail || !selectedNode || nodeNameBusy) return;
@@ -337,11 +346,17 @@ export default function Dashboard() {
     }
     setNodeNameBusy(true);
     setNodeNameError("");
+    setNodeNameConflict(false);
     try {
       if (selectedNode.kind === "document") {
         const updated = await api<{ id: string; title: string; parentId: string | null; updatedAt: string }>(`${workspacePath(detail.workspace.id)}/documents/${selectedNode.id}`, "PATCH", { title: name, expectedUpdatedAt: selectedNode.updatedAt });
         setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
           documents: current.documents?.map(document => document.id === updated.id ? { ...document, title: updated.title, parentId: updated.parentId, updatedAt: updated.updatedAt } : document),
+        } : current);
+      } else if (selectedNode.kind === "table") {
+        const updated = await api<NonNullable<Detail["tables"]>[number]>(`${workspacePath(detail.workspace.id)}/tables/${selectedNode.id}`, "PATCH", { name, expectedUpdatedAt: selectedNode.updatedAt });
+        setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
+          tables: current.tables?.map(table => table.id === updated.id ? updated : table),
         } : current);
       } else {
         const updated = await api<TreeNode>(`${workspacePath(detail.workspace.id)}/nodes/${selectedNode.id}`, "PATCH", { name });
@@ -349,9 +364,41 @@ export default function Dashboard() {
       }
       setEditingNodeName(false);
     } catch (cause) {
-      setNodeNameError(message(cause));
+      const conflict = selectedNode.kind === "table" && cause instanceof ApiError && cause.status === 409;
+      setNodeNameConflict(conflict);
+      setNodeNameError(conflict ? `${message(cause)}. The name remains available; reload before retrying.` : message(cause));
     } finally {
       setNodeNameBusy(false);
+    }
+  }
+  async function reloadConflictedTable() {
+    if (!detail || selectedNode?.kind !== "table") return;
+    setNodeNameBusy(true);
+    setNodeNameError("");
+    try {
+      const fresh = await api<NonNullable<Detail["tables"]>[number]>(`${workspacePath(detail.workspace.id)}/tables/${selectedNode.id}`);
+      setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
+        tables: current.tables?.map(table => table.id === fresh.id ? fresh : table),
+      } : current);
+      setNodeNameConflict(false);
+      requestAnimationFrame(() => document.getElementById("hierarchy-title")?.focus());
+    } catch (cause) { setNodeNameError(message(cause)); }
+    finally { setNodeNameBusy(false); }
+  }
+  async function saveNodeIcon(icon: NodeIcon | null) {
+    if (!detail || !selectedNode || !selectedNodeWritable || icon === (selectedNode.icon ?? null)) return;
+    if (selectedNode.kind === "table") {
+      const updated = await api<NonNullable<Detail["tables"]>[number]>(`${workspacePath(detail.workspace.id)}/tables/${selectedNode.id}`, "PATCH", {
+        icon, expectedUpdatedAt: selectedNode.updatedAt,
+      });
+      setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
+        tables: current.tables?.map(table => table.id === updated.id ? updated : table),
+      } : current);
+    } else {
+      const updated = await api<TreeNode>(`${workspacePath(detail.workspace.id)}/nodes/${selectedNode.id}`, "PATCH", { icon });
+      setDetail(current => current && current.workspace.id === detail.workspace.id ? { ...current,
+        nodes: current.nodes.map(node => node.id === updated.id ? updated : node),
+      } : current);
     }
   }
   const allowedIds = new Set<string>();
@@ -386,8 +433,8 @@ export default function Dashboard() {
           .toLowerCase()
           .includes(deferredSearch.toLowerCase())),
   );
-  const groupedChildren = detail && (!selectedNode || (selectedNode.kind !== "list" && selectedNode.kind !== "document"))
-    ? hierarchyEntries.filter(node => node.kind !== "document" && (selectedNode ? node.parentId === selectedNode.id : node.parentId === null))
+  const groupedChildren = detail && (!selectedNode || (selectedNode.kind !== "list" && selectedNode.kind !== "document" && selectedNode.kind !== "table"))
+    ? detail.nodes.filter(node => selectedNode ? node.parentId === selectedNode.id : node.parentId === null)
     : undefined;
   const readable = detail?.permissions.includes("items:read") || false;
   const writable =
@@ -396,6 +443,12 @@ export default function Dashboard() {
     detail?.permissions.includes("structure:write") || false;
   const documentReadable = detail?.permissions.includes("documents:read") || false;
   const documentWritable = detail?.permissions.includes("documents:write") || false;
+  const documentEditable = documentReadable && documentWritable;
+  const tableReadable = detail?.permissions.includes("tables:read") || false;
+  const tableWritable = detail?.permissions.includes("tables:write") || false;
+  const tableEditable = tableReadable && tableWritable;
+  const tableDeletable = detail?.permissions.includes("tables:delete") || false;
+  const selectedNodeWritable = selectedNode?.kind === "document" ? documentEditable : selectedNode?.kind === "table" ? tableEditable : structureWritable;
   const defaultTaskNode = selectedNode?.kind === "list" ? selectedNode.id : scopedLists[0]?.id;
   useEffect(() => {
     if (!detail) return;
@@ -403,8 +456,9 @@ export default function Dashboard() {
     const action = query.get("structure");
     if (action !== "create" && action !== "rename" && action !== "details") return;
     const target = action === "create" ? undefined : hierarchyEntries.find(node => node.id === query.get("node"));
-    if (action === "create") setStructure({ initialKind: structureWritable ? "project" : "document" });
-    else if (target) setStructure({ node: target, mode: action });
+    const canEditTarget = target && (target.kind === "document" ? documentEditable : target.kind === "table" ? tableEditable : structureWritable);
+    if (action === "create" && (structureWritable || documentWritable || tableWritable)) setStructure({ initialKind: structureWritable ? "project" : documentWritable ? "document" : "table" });
+    else if (action !== "create" && target && canEditTarget) setStructure({ node: target, mode: action });
     query.delete("structure");
     history.replaceState(null, "", `${window.location.pathname}?${query}`);
   }, [detail?.workspace.id]);
@@ -436,12 +490,12 @@ export default function Dashboard() {
       onCreateWorkspace: () => {
         setCreatingWorkspace(true);
       },
-      onCreateNode: structureWritable || documentWritable ? () => setStructure({ initialKind: structureWritable ? "project" : "document" }) : undefined,
-      onRenameNode: structureWritable || documentWritable ? (node) => setStructure({ node, mode: "rename" }) : undefined,
-      onEditNode: structureWritable || documentWritable ? (node) => setStructure({ node, mode: "details" }) : undefined,
-      onDeleteNode: structureWritable || detail?.permissions.includes("documents:delete") ? deleteHierarchyNode : undefined,
-      canEditNode: node => node.kind === "document" ? documentWritable : structureWritable,
-      canDeleteNode: node => node.kind === "document" ? Boolean(detail?.permissions.includes("documents:delete")) : structureWritable,
+      onCreateNode: structureWritable || documentWritable || tableWritable ? () => setStructure({ initialKind: structureWritable ? "project" : documentWritable ? "document" : "table" }) : undefined,
+      onRenameNode: structureWritable || documentWritable || tableWritable ? (node) => setStructure({ node, mode: "rename" }) : undefined,
+      onEditNode: structureWritable || documentWritable || tableWritable ? (node) => setStructure({ node, mode: "details" }) : undefined,
+      onDeleteNode: structureWritable || detail?.permissions.includes("documents:delete") || tableDeletable ? deleteHierarchyNode : undefined,
+      canEditNode: node => node.kind === "document" ? documentEditable : node.kind === "table" ? tableEditable : structureWritable,
+      canDeleteNode: node => node.kind === "document" ? Boolean(detail?.permissions.includes("documents:delete")) : node.kind === "table" ? tableDeletable : structureWritable,
     }}>
       <header className="page-top">
         <Breadcrumbs detail={detail} nodeId={nodeId} />
@@ -450,9 +504,13 @@ export default function Dashboard() {
         </a>
       </header>
       <div className="workspace-body">
-        {!selectedDocument && <section className="workspace-heading">
+        {!selectedDocument && <section className={`workspace-heading${selectedTable ? " table-workspace-heading" : ""}`}>
           <div>
-            {selectedNode && (selectedNode.kind === "document" ? documentWritable : structureWritable) ? editingNodeName ? (
+            {selectedNode ? <div className="resource-title-row">
+              {selectedNodeWritable ? <NodeIconPicker key={selectedNode.id} kind={selectedNode.kind} value={selectedNode.icon ?? null}
+                color={selectedNode.color ?? null} compact label={`Change ${selectedNode.kind} icon`}
+                disabled={nodeNameBusy || editingNodeName} onChange={saveNodeIcon} /> : <NodeGlyph node={selectedNode} />}
+              {selectedNodeWritable && editingNodeName ? (
               <form className="hierarchy-title-editor inline-title-editor" onSubmit={saveNodeName}>
                 <label className="sr-only" htmlFor="hierarchy-title">{`Rename ${selectedNode.kind}`}</label>
                 <input id="hierarchy-title" autoFocus value={nodeName} maxLength={selectedNode.kind === "document" ? 300 : 120} required
@@ -462,28 +520,32 @@ export default function Dashboard() {
                       setEditingNodeName(false);
                       setNodeName(selectedNode.name);
                       setNodeNameError("");
+                      setNodeNameConflict(false);
                     }
                   }} />
                 <button type="submit" className="inline-title-action inline-save" aria-label={`Save ${selectedNode.kind} name`}
-                  disabled={nodeNameBusy || !nodeName.trim()}><SolidIcon name="check" /></button>
+                  disabled={nodeNameBusy || !nodeName.trim() || nodeNameConflict}><SolidIcon name="check" /></button>
                 <button type="button" className="inline-title-action" aria-label={`Cancel renaming ${selectedNode.kind}`} disabled={nodeNameBusy}
-                  onClick={() => { setEditingNodeName(false); setNodeName(selectedNode.name); setNodeNameError(""); }}><SolidIcon name="x" /></button>
+                  onClick={() => { setEditingNodeName(false); setNodeName(selectedNode.name); setNodeNameError(""); setNodeNameConflict(false); }}><SolidIcon name="x" /></button>
               </form>
-            ) : (
+            ) : selectedNodeWritable ? (
               <h1 ref={heading} tabIndex={-1}>
                 <button type="button" className="hierarchy-title-button" aria-label={`Rename ${selectedNode.kind}`}
-                  onClick={() => setEditingNodeName(true)}><NodeGlyph node={selectedNode} />{selectedNode.name}</button>
+                  onClick={() => { setEditingNodeName(true); setNodeNameConflict(false); }}>{selectedNode.name}</button>
               </h1>
             ) : (
+              <h1 ref={heading} tabIndex={-1}>{selectedNode.name}</h1>
+            )}</div> : (
               <h1 ref={heading} tabIndex={-1}>
                 {detail && !readable ? detail.workspace.name : "All tasks"}
               </h1>
             )}
             <ErrorNotice error={nodeNameError} />
+            {nodeNameConflict && <button type="button" disabled={nodeNameBusy} onClick={reloadConflictedTable}>Reload current Table and keep draft</button>}
             {selectedNode?.kind === "project" && selectedNode.description && (
               <p className="project-description">{selectedNode.description}</p>
             )}
-             {selectedNode?.kind !== "document" && <p className="muted">
+            {selectedNode?.kind !== "document" && selectedNode?.kind !== "table" && <p className="muted">
               {detail && !readable
                 ? "Manage the parts of this workspace available to your role."
                 : loading
@@ -494,7 +556,7 @@ export default function Dashboard() {
              </p>}
           </div>
           <div className="heading-actions">
-            {readable &&
+            {readable && selectedNode?.kind !== "table" &&
               config?.aiEnabled &&
               detail?.permissions.includes("agent:use") && (
                 <button
@@ -504,7 +566,7 @@ export default function Dashboard() {
                   <SolidIcon name="sparkles" /> Assistant
                 </button>
               )}
-            {writable && selectedNode?.kind !== "document" && (
+            {writable && selectedNode?.kind !== "document" && selectedNode?.kind !== "table" && (
               <button
                 className="primary"
                 aria-label="+ New task"
@@ -557,7 +619,11 @@ export default function Dashboard() {
           </Empty>
         ) : (
           detail &&
-          (selectedDocument ? !documentReadable ? (
+          (selectedTable ? !tableReadable && !tableWritable ? (
+            <section className="notice" aria-labelledby="table-access-heading"><h2 id="table-access-heading">Table access is not included in your role</h2><p>You can see this hierarchy entry but cannot read its columns or records.</p></section>
+          ) : (
+            <TableResourceEditor key={selectedTable.id} detail={detail} table={selectedTable} currentUserId={user?.id} />
+          ) : selectedDocument ? !documentReadable ? (
             <section className="notice" aria-labelledby="document-access-heading"><h2 id="document-access-heading">Document access is not included in your role</h2><p>You can see this hierarchy entry but cannot read its contents.</p></section>
           ) : (
             <DocumentEditor key={selectedDocument.id} detail={detail} summary={selectedDocument} items={items} currentUserId={user?.id}
@@ -566,7 +632,15 @@ export default function Dashboard() {
                   ? { ...current, documents: [...(current.documents ?? []), document] } : current);
                 selectNode(document.id);
               }} onDocumentDeleted={fallbackId => { setRevision(value => value + 1); selectNode(fallbackId); }}
-              onChanged={() => setRevision(value => value + 1)} />
+              onChanged={updated => {
+                if (!updated) { setRevision(value => value + 1); return; }
+                // Metadata saves must not remount the editor and discard an open body draft.
+                setDetail(current => current?.workspace.id === updated.workspaceId ? { ...current,
+                  documents: current.documents?.map(document => document.id === updated.id ? { ...document,
+                    title: updated.title, parentId: updated.parentId, icon: updated.icon, color: updated.color, updatedAt: updated.updatedAt,
+                  } : document),
+                } : current);
+              }} />
           ) : !readable ? (
             <section className="notice" aria-labelledby="task-access-heading">
               <h2 id="task-access-heading">

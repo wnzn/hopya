@@ -8,7 +8,7 @@ import { fixture, user } from "./fixture";
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     const toggle = page.getByLabel("Account menu", { exact: true });
     const account = page.getByRole("link", { name: "Account settings", exact: true });
-    const settings = page.getByRole("link", { name: "Settings", exact: true });
+    const settings = page.getByRole("link", { name: "Workspace settings", exact: true });
     const fieldManagement = page.getByRole("link", { name: "Field management" });
     const importExport = page.getByRole("link", { name: "Import & export" });
     const integrations = page.getByRole("link", { name: "Webhooks & automations" });

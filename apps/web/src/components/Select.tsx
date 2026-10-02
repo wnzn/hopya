@@ -19,6 +19,7 @@ type Props = SelectHTMLAttributes<HTMLSelectElement> & {
   openOnMount?: boolean;
   onDismiss?: () => void;
   pinnedValue?: string;
+  triggerLabel?: ReactNode;
 };
 
 function choicesFrom(children: ReactNode, group?: string): Choice[] {
@@ -49,6 +50,7 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
   openOnMount,
   onDismiss,
   pinnedValue,
+  triggerLabel,
   style,
   ...nativeProps
 }, forwardedRef) {
@@ -73,15 +75,17 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
   const place = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const below = window.innerHeight - rect.bottom;
-    const maxHeight = Math.min(280, Math.max(120, below >= 160 ? below - 8 : rect.top - 8));
+    const below = Math.max(0, window.innerHeight - rect.bottom - 11);
+    const above = Math.max(0, Math.min(rect.top - 11, window.innerHeight - 16));
+    const opensBelow = below >= 160 || below >= above;
+    const width = Math.min(Math.max(rect.width, 180), Math.max(0, window.innerWidth - 16));
     setPosition({
       position: "fixed",
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 180) - 8)),
-      top: below >= 160 ? rect.bottom + 3 : undefined,
-      bottom: below < 160 ? window.innerHeight - rect.top + 3 : undefined,
-      width: Math.max(rect.width, 180),
-      maxHeight,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: opensBelow ? Math.max(8, rect.bottom + 3) : undefined,
+      bottom: opensBelow ? undefined : Math.max(8, window.innerHeight - rect.top + 3),
+      width,
+      maxHeight: Math.min(280, opensBelow ? below : above),
     });
   };
   useEffect(() => {
@@ -111,9 +115,13 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
     if (!open) return;
     document.getElementById(`${listboxId}-option-${active}`)?.scrollIntoView({ block: "nearest" });
   }, [active, listboxId, open]);
+  useEffect(() => {
+    if (disabled && open) { setOpen(false); onDismiss?.(); }
+  }, [disabled, open, onDismiss]);
+  useEffect(() => () => window.clearTimeout(searchTimer.current), []);
 
   function choose(next: Choice) {
-    if (next.disabled) return;
+    if (disabled || next.disabled) return;
     if (value === undefined) setUncontrolled(next.value);
     const target = nativeRef.current!;
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
@@ -130,15 +138,18 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
   }
   function openMenu() {
     if (disabled) return;
-    setActive(Math.max(0, choices.findIndex(choice => choice.value === selectedValue)));
+    const first = choices.findIndex(choice => !choice.disabled);
+    if (first < 0) return;
+    const selectedIndex = choices.findIndex(choice => choice.value === selectedValue && !choice.disabled);
+    setActive(selectedIndex < 0 ? first : selectedIndex);
     setOpen(true);
   }
 
   const sidebarPicker = Boolean(rootRef.current?.closest(".sidebar"));
   const renderChoice = (choice: Choice, index: number) => <div key={`${choice.group ?? ""}:${choice.value}:${index}`}>
       {choice.group && (index === 0 || choices[index - 1]?.group !== choice.group) && <div className="select-menu-group">{choice.group}</div>}
-      <button id={`${listboxId}-option-${index}`} type="button" role="option" aria-selected={choice.value === selectedValue} disabled={choice.disabled}
-        className={index === active ? "active" : ""} onPointerMove={() => setActive(index)} onClick={() => choose(choice)}>
+      <button id={`${listboxId}-option-${index}`} type="button" tabIndex={-1} role="option" aria-selected={choice.value === selectedValue} disabled={choice.disabled}
+        className={index === active ? "active" : ""} onPointerMove={() => { if (!choice.disabled) setActive(index); }} onClick={() => choose(choice)}>
         <span>{choice.label}</span>{choice.value === selectedValue && <SolidIcon name="check" />}
       </button>
     </div>;
@@ -156,11 +167,12 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
       style={style}
       role="combobox" aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} aria-describedby={ariaDescribedBy} aria-invalid={ariaInvalid}
       aria-required={required || undefined} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listboxId : undefined}
-      aria-activedescendant={open ? `${listboxId}-option-${active}` : undefined}
+      aria-activedescendant={open && choices[active] ? `${listboxId}-option-${active}` : undefined}
       onClick={() => {
         if (!open) openMenu();
         else { setOpen(false); onDismiss?.(); }
       }} onKeyDown={event => {
+        if (event.nativeEvent.isComposing) return;
         if (event.key === "Escape") {
           if (open) { event.stopPropagation(); setOpen(false); onDismiss?.(); }
           return;
@@ -172,8 +184,11 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
           event.preventDefault();
           const choice = choices[active];
           if (choice) choose(choice);
-        } else if (open && event.key === "Home") { event.preventDefault(); setActive(0); }
-        else if (open && event.key === "End") { event.preventDefault(); setActive(choices.length - 1); }
+        } else if (open && (event.key === "Home" || event.key === "End")) {
+          event.preventDefault();
+          const index = event.key === "Home" ? choices.findIndex(choice => !choice.disabled) : choices.findLastIndex(choice => !choice.disabled);
+          if (index >= 0) setActive(index);
+        }
         else if (event.key === "Tab" && open) { setOpen(false); onDismiss?.(); }
         else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
           searchRef.current += event.key.toLocaleLowerCase();
@@ -183,7 +198,7 @@ const Select = forwardRef<HTMLSelectElement, Props>(function Select({
           if (match >= 0) { event.preventDefault(); if (!open) openMenu(); setActive(match); }
         }
       }}>
-      <span className="custom-select-value">{selected?.label}</span><SolidIcon name="chevronDown" className="custom-select-chevron solid-icon" />
+      <span className="custom-select-value">{triggerLabel ?? selected?.label}</span><SolidIcon name="chevronDown" className="custom-select-chevron solid-icon" />
     </button>
     <select {...nativeProps} ref={nativeRef} value={value} defaultValue={defaultValue} disabled={disabled} required={required}
       className="custom-select-native" aria-hidden="true" tabIndex={-1} onChange={onChange}

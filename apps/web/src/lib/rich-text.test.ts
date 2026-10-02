@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { htmlToMarkdown, markdownToHtml, plainText, selectionAnchor } from "./rich-text.js";
+import { bodyImages, htmlToMarkdown, markdownToHtml, plainText, selectionAnchor } from "./rich-text.js";
+import { imageMarkdown, isSafeImageUrl } from './images.js';
 
 // Distinct failure protected: range comments bind only to an unambiguous saved-text segment.
 test("selection anchors retain quote context and reject duplicate text", () => {
@@ -219,4 +220,27 @@ test("plainText strips syntax and collapses whitespace", () => {
   );
   assert.equal(plainText("a   b\n\n\nc"), "a b c");
   assert.ok(plainText("x".repeat(1000)).length <= 500);
+});
+
+// Distinct failure protected: saved body images survive editing while untrusted
+// URLs/alt text never become active markup or fake Gallery covers.
+test('private images round-trip, Gallery follows rendered body order, and unsafe images stay inert', () => {
+  const root = '/api/v1/workspaces/11111111-1111-4111-8111-111111111111';
+  const src = `${root}/images/22222222-2222-4222-8222-222222222222/inline`;
+  const second = `${root}/items/33333333-3333-4333-8333-333333333333/attachments/44444444-4444-4444-8444-444444444444/inline`;
+  const alt = 'View [two] \\ **bold** `code` <img onerror="bad"> & friends';
+  const markdown = `Before\n\n${imageMarkdown({ src, alt })}\n\nAfter ${imageMarkdown({ src: second, alt: 'Second' })}`;
+  assert.equal(htmlToMarkdown(markdownToHtml(markdown)), markdown);
+  assert.deepEqual(bodyImages(markdown), [{ src, alt }, { src: second, alt: 'Second' }]);
+  assert.match(markdownToHtml(markdown), /alt="View/);
+  assert.doesNotMatch(markdownToHtml(markdown), /<img onerror|<strong>bold/);
+  assert.deepEqual(bodyImages(`\`![code](${src})\`\n\n\`\`\`\n![code](${src})\n\`\`\``), []);
+  for (const unsafe of ['https://example.test/picture.png', 'data:image/png;base64,AAAA', 'data:image/svg+xml,<svg>', 'javascript:alert(1)', '//evil.test/x', `${src}?download=false`, '/etc/passwd', `${root}/images/../../auth/me/inline`]) {
+    assert.equal(isSafeImageUrl(unsafe), false);
+    assert.doesNotMatch(markdownToHtml(`![label](${unsafe})`), /<img /);
+    assert.equal(htmlToMarkdown(`<img src="${unsafe}" alt="label">`), 'label');
+  }
+  assert.equal(htmlToMarkdown(`<img data-src="${src}" alt="missing real source">`), 'missing real source');
+  assert.equal(htmlToMarkdown(`<img src="${src}" alt="&#999999999999;">`), `![&#999999999999;](${src})`);
+  assert.equal(htmlToMarkdown(`<p>${'x'.repeat(50000)}<img src="${src}" alt="last"></p>`), `${'x'.repeat(50000)}![last](${src})`);
 });

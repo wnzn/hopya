@@ -2,6 +2,7 @@
 // markdownToHtml is safe by construction: all source text is HTML-escaped
 // first and only an allowlist of elements is ever generated. Raw HTML in the
 // source can therefore never pass through.
+import { decodeImageAlt, imageMarkdown, isSafeImageUrl, type BodyImage } from './images';
 
 export const RICH_TEXT_MAX = 50000;
 export const PLAIN_TEXT_MAX = 500;
@@ -45,11 +46,11 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&nbsp;/gi, " ")
     .replace(/&#(\d+);/g, (_, code: string) => {
       const point = Number(code);
-      return Number.isFinite(point) ? String.fromCodePoint(point) : _;
+      return Number.isInteger(point) && point >= 0 && point <= 0x10ffff ? String.fromCodePoint(point) : _;
     })
     .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => {
       const point = parseInt(code, 16);
-      return Number.isFinite(point) ? String.fromCodePoint(point) : _;
+      return Number.isInteger(point) && point >= 0 && point <= 0x10ffff ? String.fromCodePoint(point) : _;
     })
     .replace(/&amp;/gi, "&");
 }
@@ -110,9 +111,18 @@ function autolinkSafe(html: string): string {
 }
 
 function inlineToHtml(source: string): string {
-  const parts = source.split(/(`[^`\n]+`)/g);
+  // Image tokens are isolated before emphasis/code/link processing so alt text
+  // can never become markup or corrupt an attribute. Backslash escapes round-trip.
+  const parts = source.split(/(!\[(?:\\.|[^\]\\])*\]\([^\s)]+\)|`[^`\n]+`)/g);
   return parts
     .map((part) => {
+      const image = part.match(/^!\[((?:\\.|[^\]\\])*)\]\(([^\s)]+)\)$/);
+      if (image) {
+        const alt = decodeImageAlt(image[1]);
+        return isSafeImageUrl(image[2])
+          ? `<img src="${escapeHtml(image[2])}" alt="${escapeHtml(alt)}" loading="lazy" decoding="async">`
+          : escapeHtml(alt || 'Unsupported image');
+      }
       if (/^`[^`\n]+`$/.test(part))
         return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
       let text = escapeHtml(part);
@@ -228,6 +238,7 @@ type RichNode =
       kind: "element";
       tag: string;
       href: string | null;
+      src: string | null;
       alt: string | null;
       children: RichNode[];
     };
@@ -235,7 +246,7 @@ type RichNode =
 function parseAttr(html: string, name: string): string | null {
   const match = html.match(
     new RegExp(
-      `${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`,
+      `(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`,
       "i",
     ),
   );
@@ -261,13 +272,13 @@ function parseHtml(html: string): RichNode[] {
     stack.length > 0
       ? (stack[stack.length - 1] as { children: RichNode[] }).children
       : root;
-  const tokens = html.match(/<[^>]*>|[^<]+/g) ?? [];
+  const tokens = html.match(/<(?:"[^"]*"|'[^']*'|[^'">])*?>|[^<]+/g) ?? [];
   for (const token of tokens) {
     if (!token.startsWith("<")) {
       parent().push({ kind: "text", text: decodeHtmlEntities(token) });
       continue;
     }
-    const tagMatch = token.match(/^<\s*(\/?)\s*([a-zA-Z0-9]+)?([^>]*)>$/);
+    const tagMatch = token.match(/^<\s*(\/?)\s*([a-zA-Z0-9]+)?([\s\S]*?)>$/);
     if (!tagMatch) continue;
     const closing = tagMatch[1] === "/";
     const tag = (tagMatch[2] ?? "").toLowerCase();
@@ -287,6 +298,7 @@ function parseHtml(html: string): RichNode[] {
       kind: "element",
       tag,
       href: tag === "a" ? parseAttr(token, "href") : null,
+      src: tag === "img" ? parseAttr(token, "src") : null,
       alt: tag === "img" ? parseAttr(token, "alt") : null,
       children: [],
     };
@@ -345,7 +357,7 @@ function inlineMarkdown(nodes: RichNode[]): string {
         break;
       }
       case "img":
-        out += node.alt ?? "";
+        out += node.src && isSafeImageUrl(node.src) ? imageMarkdown({ src: node.src, alt: node.alt ?? '' }) : node.alt ?? '';
         break;
       case "script":
       case "style":
@@ -550,7 +562,24 @@ export function htmlToMarkdown(html: string): string {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return markdown.slice(0, RICH_TEXT_MAX);
+  // The editor rejects an over-limit transaction as a whole. Slicing here can
+  // silently sever an image URL or discard the tail of a pasted draft.
+  return markdown;
+}
+
+/** Gallery uses exactly the images the safe body renderer would display,
+ * preserving source order and excluding code fences, inline code and raw HTML. */
+export function bodyImages(markdown: string): BodyImage[] {
+  const result: BodyImage[] = [];
+  const visit = (nodes: RichNode[]) => {
+    for (const node of nodes) {
+      if (node.kind !== 'element') continue;
+      if (node.tag === 'img' && node.src && isSafeImageUrl(node.src)) result.push({ src: node.src, alt: node.alt ?? '' });
+      else visit(node.children);
+    }
+  };
+  visit(parseHtml(markdownToHtml(markdown)));
+  return result;
 }
 
 // --- plainText: compact preview ------------------------------------------
@@ -562,7 +591,7 @@ export function plainText(markdown: string): string {
   text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code: string) => ` ${code} `);
   text = text.replace(/```/g, " ");
   // Images keep alt text; links keep text.
-  text = text.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+  text = text.replace(/!\[((?:\\.|[^\]\\])*)\]\([^)]+\)/g, (_match, alt: string) => decodeImageAlt(alt));
   text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   // Inline code keeps content.
   text = text.replace(/``\s?([^`]+?)\s?``/g, "$1");

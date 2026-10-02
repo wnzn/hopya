@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode, type SubmitEvent } from "react";
-import { api, ApiError, message, workspacePath, type Detail, type DocumentRecord, type DocumentSummary, type Item } from "../lib/api";
+import { api, ApiError, message, workspacePath, type Detail, type DocumentRecord, type DocumentSummary, type Item, type NodeIcon } from "../lib/api";
 import RichTextEditor, { type TextAnnotation, type TextSelection } from "./RichTextEditor";
 import CommentsPanel from "./CommentsPanel";
 import { ErrorNotice, Loading } from "./Shared";
 import SolidIcon from "./SolidIcon";
+import NodeIconPicker from "./NodeIconPicker";
+import NodeGlyph from "./NodeGlyph";
 
 const noDocumentAnnotations: TextAnnotation[] = [];
 const documentTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -18,7 +20,7 @@ function documentPageSubtree(pageId: string, pages: DocumentSummary[]) {
 
 export default function DocumentEditor({ detail, summary, items, currentUserId, onOpenDocument, onDocumentDeleted, onChanged }: {
   detail: Detail; summary: DocumentSummary; items: Item[]; currentUserId?: string;
-  onOpenDocument: (document: DocumentSummary) => void; onDocumentDeleted: (fallbackId: string) => void; onChanged: () => void;
+  onOpenDocument: (document: DocumentSummary) => void; onDocumentDeleted: (fallbackId: string) => void; onChanged: (document?: DocumentRecord) => void;
 }) {
   const [document, setDocument] = useState<DocumentRecord | null>(null);
   const [pages, setPages] = useState<DocumentSummary[]>([]);
@@ -155,9 +157,20 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
     setBusy(true); setError("");
     try {
       const updated = await api<DocumentRecord>(base, "PATCH", { title, expectedUpdatedAt: document.updatedAt });
-      setDocument(updated); setTitleDraft(updated.title); setEditingTitle(false); onChanged();
+      setDocument(updated); setTitleDraft(updated.title); setEditingTitle(false); onChanged(updated);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
+  }
+
+  async function saveIcon(icon: NodeIcon | null) {
+    if (!document || !canWrite || busy || icon === (document.icon ?? null)) return;
+    setBusy(true);
+    try {
+      const updated = await api<DocumentRecord>(base, "PATCH", { icon, expectedUpdatedAt: document.updatedAt });
+      setDocument(updated);
+      setPages(current => current.map(page => page.id === updated.id ? { ...page, icon: updated.icon, color: updated.color, updatedAt: updated.updatedAt } : page));
+      onChanged(updated);
+    } finally { setBusy(false); }
   }
 
   async function createPage(event: SubmitEvent<HTMLFormElement>) {
@@ -182,7 +195,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
       const updated = await api<DocumentRecord>(`${workspacePath(detail.workspace.id)}/documents/${page.id}`, "PATCH", { title, expectedUpdatedAt: page.updatedAt });
       setPages(current => current.map(candidate => candidate.id === page.id ? { ...candidate, title: updated.title, updatedAt: updated.updatedAt } : candidate));
       if (document?.id === page.id) { setDocument(updated); setTitleDraft(updated.title); }
-      setRenamingPageId(null); onChanged();
+      setRenamingPageId(null); onChanged(updated);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
   }
@@ -209,7 +222,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
 
   if (loading) return <Loading />;
   if (!document) return <ErrorNotice error={error || "Document could not be loaded."} />;
-  const root = document.id === rootId ? { ...summary, title: document.title, updatedAt: document.updatedAt }
+  const root = document.id === rootId ? { ...summary, title: document.title, icon: document.icon, color: document.color, updatedAt: document.updatedAt }
     : (detail.documents ?? []).find(candidate => candidate.id === rootId) ?? (summary.id === rootId ? summary : undefined);
   const navigationPages = root ? [root, ...pages] : pages;
   const pageRoots = root ? [root, ...pages.filter(page => page.pagePlacement === "page" && page.parentDocumentId === rootId)] : pages;
@@ -240,7 +253,7 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
           <button type="button" className="document-page-rename-action" aria-label={`Save ${page.title} name`} disabled={busy || !pageTitleDraft.trim()} onClick={() => void savePageTitle(page)}><SolidIcon name="check" /></button>
           <button type="button" className="document-page-rename-action" aria-label={`Cancel renaming ${page.title}`} disabled={busy} onClick={() => setRenamingPageId(null)}><SolidIcon name="x" /></button>
         </> : <>
-          <button type="button" className={`document-page-select${page.id === summary.id ? " selected" : ""}`} title={page.title} onClick={() => onOpenDocument(page)}><span>{page.title}</span></button>
+          <button type="button" className={`document-page-select${page.id === summary.id ? " selected" : ""}`} title={page.title} onClick={() => onOpenDocument(page)}><NodeGlyph node={{ ...page, kind: "document" }} /><span>{page.title}</span></button>
           {canWrite && <button type="button" className="document-page-add" aria-label={pageParentId === page.id && pagePlacement === "subpage" ? `Close subpage form for ${page.title}` : `Add subpage to ${page.title}`} aria-expanded={pageParentId === page.id && pagePlacement === "subpage"}
             onClick={() => { const closing = pageParentId === page.id && pagePlacement === "subpage"; setPageName(""); setPageParentId(closing ? null : page.id); setPagePlacement(closing ? null : "subpage"); }}><SolidIcon name={pageParentId === page.id && pagePlacement === "subpage" ? "x" : "plus"} /></button>}
           {(canWrite || canDelete) && <button type="button" className="document-page-options" aria-label={`Options for ${page.title}`} aria-expanded={pageMenuId === page.id}
@@ -270,6 +283,10 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
         </> : <><button key="comments" type="button" aria-expanded={commentsOpen} aria-controls="document-comments" onClick={() => setCommentsOpen(value => !value)}>Comments</button>{canWrite && <button key="edit" type="button" className="primary" onClick={event => { event.preventDefault(); setEditing(true); }}>Edit</button>}</>}</div>
         <article className={`document-paper${editing ? " document-paper-editing" : ""}`}>
           <div className="document-paper-title">
+            <div className="resource-title-row">
+              {canWrite ? <NodeIconPicker key={document.id} kind="document" value={document.icon ?? null} color={document.color ?? null}
+                compact label="Change document icon" disabled={busy || editingTitle} onChange={saveIcon} />
+                : <NodeGlyph node={{ ...document, kind: "document" }} />}
             {editingTitle ? <div className="document-paper-title-editor inline-title-editor">
               <input aria-label="Document title" autoFocus value={titleDraft} maxLength={300} disabled={busy}
                 onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => {
@@ -278,7 +295,8 @@ export default function DocumentEditor({ detail, summary, items, currentUserId, 
                 }} />
               <button type="button" className="inline-title-action inline-save" aria-label="Save document title" disabled={busy || !titleDraft.trim()} onClick={() => void saveTitle()}><SolidIcon name="check" /></button>
               <button type="button" className="inline-title-action" aria-label="Cancel renaming document" disabled={busy} onClick={() => { setEditingTitle(false); setTitleDraft(document.title); }}><SolidIcon name="x" /></button>
-            </div> : <h1>{canWrite ? <button type="button" aria-label="Rename document" onClick={() => setEditingTitle(true)}>{document.title}</button> : document.title}</h1>}
+            </div> : <h1>{canWrite ? <button type="button" aria-label="Rename document" disabled={busy} onClick={() => setEditingTitle(true)}>{document.title}</button> : document.title}</h1>}
+            </div>
             <p className="document-paper-meta">Created {documentTimestamp.format(new Date(document.createdAt))} · Updated {documentTimestamp.format(new Date(document.updatedAt))}{document.updatedByName ? ` by ${document.updatedByName}` : ""}</p>
           </div>
           <RichTextEditor aria-label="Document body" value={editing ? body : document.body} onChange={editing ? setBody : () => {}} readOnly={!editing}

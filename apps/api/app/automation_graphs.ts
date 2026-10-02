@@ -6,10 +6,12 @@ import { audit, db } from './core.js'
 import { authenticate } from './security.js'
 import { requirePermission, service } from './service.js'
 import { HttpError } from './types.js'
-import { applyCredential, assertSafeDestination, redactCredentialOutput } from './automation_credentials.js'
+import { applyCredentialEffect, assertSafeDestination, redactCredentialOutput } from './automation_credentials.js'
 import { automationContext, type AutomationCausation } from './automation_context.js'
 import { nodePathPattern, nodeReferencePattern, remediateLegacyConfig, upstreamReferenceErrors } from './automation_graph_validation.js'
-import { outboundHttpError, pinnedRequestEffect, resolvePinnedDestination } from './pinned_http.js'
+import { outboundHttpError, pinnedRequestEffect, resolvePinnedDestinationEffect } from './pinned_http.js'
+import { automationData, automationIO, AutomationLeaseLost, heartbeat } from './automation_effects.js'
+import { sendMailEffect } from './mail.js'
 
 const nodeId = z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/)
 const position = z.object({ x: z.number().finite().min(-100000).max(100000), y: z.number().finite().min(-100000).max(100000) }).strict()
@@ -160,18 +162,12 @@ function boundedOutput(output: unknown): string {
   const encoded = sanitize(JSON.stringify(output ?? null), 8192)
   try { JSON.parse(encoded); return encoded } catch { return JSON.stringify({ truncated: true, previewBase64: Buffer.from(sanitize(JSON.stringify(output ?? null), 6000)).toString('base64') }) }
 }
-class LeaseLost extends Error {}
-async function heartbeat(run: GraphRun): Promise<void> {
-  if (!run.leaseId) throw new LeaseLost('Automation lease is unavailable')
-  const result = await db.run("UPDATE automation_runs SET heartbeatAt=? WHERE workspaceId=? AND id=? AND status='running' AND leaseId=?", new Date().toISOString(), run.workspaceId, run.id, run.leaseId)
-  if (!result.changes) throw new LeaseLost('Automation lease was lost')
-}
 async function markNode(run: GraphRun, nodeId: string, status: string, output: unknown = null, log = '') {
   const timestamp = new Date().toISOString()
   const result = await db.run(`UPDATE automation_node_runs SET status=?,output=?,log=?,startedAt=COALESCE(startedAt,?),completedAt=?
     WHERE workspaceId=? AND runId=? AND nodeId=? AND EXISTS (SELECT 1 FROM automation_runs WHERE id=? AND workspaceId=? AND status='running' AND leaseId=?)`,
   status, boundedOutput(output), sanitize(log, 2000), timestamp, timestamp, run.workspaceId, run.id, nodeId, run.id, run.workspaceId, run.leaseId)
-  if (!result.changes) throw new LeaseLost('Automation lease was lost')
+  if (!result.changes) throw new AutomationLeaseLost()
   await heartbeat(run)
 }
 async function startNode(run: GraphRun, nodeId: string): Promise<void> {
@@ -179,94 +175,90 @@ async function startNode(run: GraphRun, nodeId: string): Promise<void> {
   const result = await db.run(`UPDATE automation_node_runs SET status='running',attempt=attempt+1,startedAt=?,completedAt=NULL
     WHERE workspaceId=? AND runId=? AND nodeId=? AND EXISTS (SELECT 1 FROM automation_runs WHERE id=? AND workspaceId=? AND status='running' AND leaseId=?)`,
   timestamp, run.workspaceId, run.id, nodeId, run.id, run.workspaceId, run.leaseId)
-  if (!result.changes) throw new LeaseLost('Automation lease was lost')
+  if (!result.changes) throw new AutomationLeaseLost()
   await heartbeat(run)
 }
-async function action(node: AutomationGraph['nodes'][number], run: GraphRun, payload: Record<string, unknown>, outputs: Map<string, unknown>, publisherId: string | null): Promise<{ output: unknown; log: string }> {
-  const config = resolveTemplates(configs[node.type].parse(node.config), payload, outputs) as Record<string, unknown>
+const actionEffect = Effect.fnUntraced(function* (node: AutomationGraph['nodes'][number], run: GraphRun, payload: Record<string, unknown>, outputs: Map<string, unknown>, publisherId: string | null) {
+  const config = yield* automationData(() => resolveTemplates(configs[node.type].parse(node.config), payload, outputs) as Record<string, unknown>)
   if (node.type === 'log') return { output: { message: String(config.message) }, log: String(config.message) }
   if (node.type === 'update_item') {
-    if (!publisherId) throw new HttpError(403, 'Automation publisher is unavailable')
-    const itemId = typeof payload.itemId === 'string' ? payload.itemId : undefined; if (!itemId) throw new HttpError(400, 'Trigger has no task to update')
-    const causation = JSON.parse(run.causation || '{}') as AutomationCausation
-    if ((causation.depth ?? 0) >= 5 || (causation.automationIds ?? []).includes(run.automationId!)) throw new HttpError(409, 'Automation re-entry limit reached')
-    await requirePermission(publisherId, run.workspaceId, 'items:read'); await requirePermission(publisherId, run.workspaceId, 'items:write')
-    const item = await automationContext.run({ depth: (causation.depth ?? 0) + 1, automationIds: [...causation.automationIds ?? [], run.automationId!] }, () => service.updateItem(publisherId, run.workspaceId, itemId, config.patch))
+    if (!publisherId) return yield* Effect.fail(new HttpError(403, 'Automation publisher is unavailable'))
+    const itemId = typeof payload.itemId === 'string' ? payload.itemId : undefined; if (!itemId) return yield* Effect.fail(new HttpError(400, 'Trigger has no task to update'))
+    const causation = yield* automationData(() => JSON.parse(run.causation || '{}') as AutomationCausation)
+    if ((causation.depth ?? 0) >= 5 || (causation.automationIds ?? []).includes(run.automationId!)) return yield* Effect.fail(new HttpError(409, 'Automation re-entry limit reached'))
+    const item = yield* automationIO(() => db.transaction(async () => {
+      await heartbeat(run)
+      await requirePermission(publisherId, run.workspaceId, 'items:read'); await requirePermission(publisherId, run.workspaceId, 'items:write')
+      return automationContext.run({ depth: (causation.depth ?? 0) + 1, automationIds: [...causation.automationIds ?? [], run.automationId!] }, () => service.updateItem(publisherId, run.workspaceId, itemId, config.patch))
+    }))
     const { id, title, status, priority, nodeId, assigneeId, startDate, dueDate, tags, updatedAt } = item
     return { output: { item: { id, title, status, priority, nodeId, assigneeId, startDate, dueDate, tags, updatedAt } }, log: 'Triggering task updated' }
   }
   if (node.type === 'email') {
-    if (!process.env.SMTP_URL) throw new HttpError(503, 'SMTP is not configured')
-    const nodemailer = (await import('nodemailer' as string)).default as { createTransport: (url: string) => { sendMail: (mail: Record<string, unknown>) => Promise<{ messageId: string }>; close: () => void } }
-    const transport = nodemailer.createTransport(process.env.SMTP_URL)
-    try {
-      const sent = Effect.tryPromise({ try: () => transport.sendMail({ to: (config.to as string[]).join(', '), subject: config.subject, text: JSON.stringify(payload) }), catch: () => new HttpError(502, 'Email delivery failed') })
-        .pipe(Effect.timeoutFail({ duration: '15 seconds', onTimeout: () => new HttpError(502, 'Email delivery timed out') }), Effect.either)
-      const result = await Effect.runPromise(sent); if (result._tag === 'Left') throw result.left
-      return { output: { messageId: result.right.messageId }, log: 'Email delivered' }
-    } finally { transport.close() }
+    const sent = yield* sendMailEffect({ to: (config.to as string[]).join(', '), subject: String(config.subject), text: JSON.stringify(payload) })
+      .pipe(Effect.mapError((error) => new HttpError(502, error.message)))
+    return { output: { messageId: sent.messageId }, log: 'Email delivered' }
   }
   if (node.type === 'http' || node.type === 'webhook') {
-    const destination = await resolvePinnedDestination(String(config.url), Boolean(config.credentialId)), headers = { ...(config.headers as Record<string, string>) }
+    const destination = yield* resolvePinnedDestinationEffect(String(config.url), Boolean(config.credentialId))
+    const headers = { ...(config.headers as Record<string, string>) }
     let redactions: string[] = []
     if (config.credentialId) {
-      const ref = await db.get<{ credentialVersion: number }>('SELECT credentialVersion FROM automation_version_credentials WHERE workspaceId=? AND automationId=? AND automationVersion=? AND nodeId=?', run.workspaceId, run.automationId, run.automationVersion, node.id)
-      if (!ref) throw new HttpError(400, 'Published credential reference is unavailable')
-      const applied = await applyCredential(run.workspaceId, String(config.credentialId), destination.url, headers); redactions = applied.redactions
+      const ref = yield* automationIO(() => db.get<{ credentialVersion: number }>('SELECT credentialVersion FROM automation_version_credentials WHERE workspaceId=? AND automationId=? AND automationVersion=? AND nodeId=?', run.workspaceId, run.automationId, run.automationVersion, node.id))
+      if (!ref) return yield* Effect.fail(new HttpError(400, 'Published credential reference is unavailable'))
+      const applied = yield* applyCredentialEffect(run.workspaceId, String(config.credentialId), destination.url, headers); redactions = applied.redactions
     }
     const method = String(config.method), body = ['GET'].includes(method) ? undefined : String(config.body ?? JSON.stringify(payload))
     if (body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === 'content-type')) headers['content-type'] = 'application/json'
-    const outcome = await Effect.runPromise(Effect.either(pinnedRequestEffect(destination, { method, headers, body, timeoutMs: 15_000, maxResponseBytes: 7600 })))
-    if (outcome._tag === 'Left') throw outboundHttpError(outcome.left)
-    if (outcome.right.status < 200 || outcome.right.status >= 300) throw new HttpError(502, `Request responded ${outcome.right.status}`)
-    const bodyOutput = redactCredentialOutput(outcome.right.body.toString('utf8'), redactions)
-    return { output: { status: outcome.right.status, body: bodyOutput }, log: `Request delivered with status ${outcome.right.status}` }
+    // DNS and OAuth can take time: recheck lease and publisher immediately before
+    // sending task data, in addition to the per-node gate.
+    yield* automationIO(async () => { await heartbeat(run); if (!publisherId) throw new HttpError(403, 'Automation publisher is unavailable'); await requirePermission(publisherId, run.workspaceId, 'items:read') })
+    const response = yield* pinnedRequestEffect(destination, { method, headers, body, timeoutMs: 15_000, maxResponseBytes: 7600 }).pipe(Effect.mapError(outboundHttpError))
+    if (response.status < 200 || response.status >= 300) return yield* Effect.fail(new HttpError(502, `Request responded ${response.status}`))
+    const bodyOutput = redactCredentialOutput(response.body.toString('utf8'), redactions)
+    return { output: { status: response.status, body: bodyOutput }, log: `Request delivered with status ${response.status}` }
   }
   return { output: '', log: '' }
-}
+})
 
-export async function processGraphRun(run: GraphRun): Promise<boolean> {
+export const processGraphRunEffect = Effect.fnUntraced(function* (run: GraphRun) {
   if (!run.automationId || run.automationVersion === null) return false
-  const version = await db.get<VersionRow>("SELECT * FROM automation_versions WHERE workspaceId=? AND automationId=? AND version=? AND format='graph'", run.workspaceId, run.automationId, run.automationVersion)
+  const version = yield* automationIO(() => db.get<VersionRow>("SELECT * FROM automation_versions WHERE workspaceId=? AND automationId=? AND version=? AND format='graph'", run.workspaceId, run.automationId, run.automationVersion))
   if (!version) return false
-  const graph = graphSchema.parse(JSON.parse(version.graph)), payload = JSON.parse(run.event) as Record<string, unknown>, byId = new Map(graph.nodes.map((node) => [node.id, node])), outgoing = new Map<string, typeof graph.edges>()
+  const graph = yield* automationData(() => graphSchema.parse(JSON.parse(version.graph)))
+  const payload = yield* automationData(() => JSON.parse(run.event) as Record<string, unknown>)
+  const byId = new Map(graph.nodes.map((node) => [node.id, node])), outgoing = new Map<string, typeof graph.edges>()
   for (const edge of graph.edges) outgoing.set(edge.source, [...outgoing.get(edge.source) ?? [], edge])
   let current = graph.nodes.find((node) => node.type === 'trigger'), count = 0; const outputs = new Map<string, unknown>(), visited = new Set<string>()
-  try {
-    if (!version.publisherId) throw new HttpError(403, 'Automation publisher is unavailable')
-    await requirePermission(version.publisherId, run.workspaceId, 'items:read')
-    while (current) {
-      await requirePermission(version.publisherId, run.workspaceId, 'items:read')
-      if (++count > 50 || visited.has(current.id)) throw new HttpError(400, 'Automation execution bound exceeded'); visited.add(current.id)
-      await startNode(run, current.id)
-      let branch: string | undefined, output: unknown = null
-      if (current.type === 'trigger') output = { event: payload }
-      else if (current.type === 'condition') {
-        const config = conditionConfig.parse(current.config), value = resolvePath(config.path, payload, outputs)
-        const matched = config.operator === 'exists' ? value !== undefined && value !== null : config.operator === 'equals' ? value === config.value : config.operator === 'not_equals' ? value !== config.value : typeof value === 'string' && value.includes(String(config.value ?? ''))
-        branch = String(matched); output = { matched, branch }
-      } else if (current.type === 'switch') {
-        const config = switchConfig.parse(current.config), value = resolvePath(config.path, payload, outputs); branch = config.cases.find((entry) => entry.value === value)?.branch ?? config.defaultBranch; output = { branch }
-      } else { const result = await action(current, run, payload, outputs, version.publisherId); output = result.output; await markNode(run, current.id, 'delivered', output, result.log) }
-      if (['trigger', 'condition', 'switch'].includes(current.type)) await markNode(run, current.id, 'delivered', output, branch ? `Selected ${branch}` : 'Trigger received')
-      outputs.set(current.id, output); const edges = outgoing.get(current.id) ?? [], next = branch === undefined ? edges[0] : edges.find((edge) => edge.branch === branch); current = next ? byId.get(next.target) : undefined
-    }
+  const publisherId = version.publisherId
+  if (!publisherId) return yield* Effect.fail(new HttpError(403, 'Automation publisher is unavailable'))
+  yield* automationIO(() => requirePermission(publisherId, run.workspaceId, 'items:read'))
+  while (current) {
+    yield* automationIO(() => requirePermission(publisherId, run.workspaceId, 'items:read'))
+    if (++count > 50 || visited.has(current.id)) return yield* Effect.fail(new HttpError(400, 'Automation execution bound exceeded'))
+    visited.add(current.id)
+    const node = current
+    yield* automationIO(() => startNode(run, node.id))
+    let branch: string | undefined, output: unknown = null
+    if (current.type === 'trigger') output = { event: payload }
+    else if (current.type === 'condition') {
+      const config = yield* automationData(() => conditionConfig.parse(node.config)), value = resolvePath(config.path, payload, outputs)
+      const matched = config.operator === 'exists' ? value !== undefined && value !== null : config.operator === 'equals' ? value === config.value : config.operator === 'not_equals' ? value !== config.value : typeof value === 'string' && value.includes(String(config.value ?? ''))
+      branch = String(matched); output = { matched, branch }
+    } else if (current.type === 'switch') {
+      const config = yield* automationData(() => switchConfig.parse(node.config)), value = resolvePath(config.path, payload, outputs); branch = config.cases.find((entry) => entry.value === value)?.branch ?? config.defaultBranch; output = { branch }
+    } else { const result = yield* actionEffect(current, run, payload, outputs, publisherId); output = result.output; yield* automationIO(() => markNode(run, node.id, 'delivered', output, result.log)) }
+    if (['trigger', 'condition', 'switch'].includes(current.type)) yield* automationIO(() => markNode(run, node.id, 'delivered', output, branch ? `Selected ${branch}` : 'Trigger received'))
+    outputs.set(current.id, output); const edges = outgoing.get(current.id) ?? [], next = branch === undefined ? edges[0] : edges.find((edge) => edge.branch === branch); current = next ? byId.get(next.target) : undefined
+  }
+  yield* automationIO(() => db.transaction(async () => {
     const timestamp = new Date().toISOString(); await db.run(`UPDATE automation_node_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND status='pending'
       AND EXISTS (SELECT 1 FROM automation_runs WHERE id=? AND workspaceId=? AND status='running' AND leaseId=?)`, timestamp, run.workspaceId, run.id, run.id, run.workspaceId, run.leaseId)
     const finished = await db.run("UPDATE automation_runs SET status='delivered',detail=?,completedAt=?,heartbeatAt=?,leaseId=NULL WHERE workspaceId=? AND id=? AND status='running' AND leaseId=?", `${count} graph nodes delivered`, timestamp, timestamp, run.workspaceId, run.id, run.leaseId)
-    if (!finished.changes) throw new LeaseLost('Automation lease was lost')
-  } catch (error) {
-    if (error instanceof LeaseLost) return true
-    const message = sanitize(error instanceof Error ? error.message : 'Graph execution failed', 2000), timestamp = new Date().toISOString()
-    try {
-      if (current) await markNode(run, current.id, 'failed', '', message)
-      await db.run(`UPDATE automation_node_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND status='pending'
-        AND EXISTS (SELECT 1 FROM automation_runs WHERE id=? AND workspaceId=? AND status='running' AND leaseId=?)`, timestamp, run.workspaceId, run.id, run.id, run.workspaceId, run.leaseId)
-      await db.run("UPDATE automation_runs SET status='failed',detail=?,completedAt=?,heartbeatAt=?,leaseId=NULL WHERE workspaceId=? AND id=? AND status='running' AND leaseId=?", message, timestamp, timestamp, run.workspaceId, run.id, run.leaseId)
-    } catch (failure) { if (!(failure instanceof LeaseLost)) throw failure }
-  }
+    if (!finished.changes) throw new AutomationLeaseLost()
+  }))
   return true
-}
+})
 
 async function automation(wid: string, id: string) {
   const row = await db.get<{ id: string; event: string; version: number }>('SELECT id,event,version FROM automations WHERE workspaceId=? AND id=?', wid, id)

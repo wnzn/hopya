@@ -1,10 +1,9 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type SubmitEvent } from "react";
+import { useState, type CSSProperties, type SubmitEvent } from "react";
 import {
   api,
   ApiError,
   message,
   workspacePath,
-  nodeIconOptions,
   type NodeIcon,
   type Detail,
   type TreeNode,
@@ -13,75 +12,7 @@ import { ErrorNotice, Modal } from "./Shared";
 import NodeGlyph, { resolveNodeColor } from "./NodeGlyph";
 import SolidIcon from "./SolidIcon";
 import Select from "./Select";
-
-function NodeIconPicker({ kind, value, color, onChange }: {
-  kind: TreeNode["kind"];
-  value: NodeIcon | null;
-  color: string | null;
-  onChange: (value: NodeIcon | null) => void;
-}) {
-  const id = useId();
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const selectedLabel = value ? nodeIconOptions.find(option => option.id === value)?.label ?? value : "Default for type";
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const showDefault = !normalizedQuery || "default for type".includes(normalizedQuery);
-  const options = nodeIconOptions.filter(option => !normalizedQuery || `${option.label} ${option.id} ${option.searchTerms}`.toLocaleLowerCase().includes(normalizedQuery));
-
-  useEffect(() => {
-    if (!open) return;
-    searchRef.current?.focus();
-    const dismiss = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
-  }, [open]);
-
-  function choose(next: NodeIcon | null) {
-    onChange(next);
-    setOpen(false);
-    setQuery("");
-    requestAnimationFrame(() => triggerRef.current?.focus());
-  }
-
-  return <div ref={rootRef} className="node-icon-picker" onKeyDown={event => {
-    if (event.key !== "Escape" || !open) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setOpen(false);
-    setQuery("");
-    triggerRef.current?.focus();
-  }}>
-    <span id={`${id}-label`} className="appearance-control-label">Icon</span>
-    <button ref={triggerRef} type="button" className="node-icon-trigger" aria-labelledby={`${id}-label ${id}-value`}
-      aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? `${id}-picker` : undefined}
-      onClick={() => setOpen(current => !current)}>
-      <NodeGlyph node={{ kind, icon: value, color }} />
-      <span id={`${id}-value`}>{selectedLabel}</span>
-      <SolidIcon name="chevronDown" />
-    </button>
-    {open && <div id={`${id}-picker`} className="node-icon-panel" role="dialog" aria-label="Choose icon">
-      <label className="sr-only" htmlFor={`${id}-search`}>Search icons</label>
-      <input ref={searchRef} id={`${id}-search`} type="search" aria-label="Search icons" value={query} autoComplete="off" placeholder="Search icons"
-        onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} />
-      <div className="node-icon-grid" role="group" aria-label="Node icons">
-        {showDefault && <button type="button" aria-pressed={!value} className={!value ? "selected" : ""}
-          title="Default for type" aria-label="Default for type" onClick={() => choose(null)}>
-          <NodeGlyph node={{ kind, icon: null, color: null }} /><span>Default</span>
-        </button>}
-        {options.map(option => <button key={option.id} type="button" aria-pressed={value === option.id}
-          className={value === option.id ? "selected" : ""} title={option.label} aria-label={option.label} onClick={() => choose(option.id)}>
-          <NodeGlyph node={{ kind, icon: option.id, color: null }} /><span>{option.label}</span>
-        </button>)}
-      </div>
-      {normalizedQuery && !showDefault && options.length === 0 && <p className="node-icon-empty">No matching icons.</p>}
-    </div>}
-  </div>;
-}
+import NodeIconPicker from "./NodeIconPicker";
 
 const validHexColor = (value: string) => value === "" || /^#[0-9a-f]{6}$/i.test(value);
 
@@ -148,6 +79,7 @@ export default function StructureEditor({
   const creationKinds = [
     ...(detail.permissions.includes("structure:write") ? ["project", "folder", "list"] as const : []),
     ...(detail.permissions.includes("documents:write") ? ["document"] as const : []),
+    ...(detail.permissions.includes("tables:write") ? ["table"] as const : []),
   ] satisfies readonly TreeNode["kind"][];
   const defaultKind = creationKinds.includes(initialKind) ? initialKind : creationKinds[0] ?? initialKind;
   const [name, setName] = useState(node?.name || "");
@@ -163,14 +95,18 @@ export default function StructureEditor({
   const nodeKind = node?.kind || kind;
   const isProject = nodeKind === "project";
   const isDocument = nodeKind === "document";
+  const isTable = nodeKind === "table";
   const canHaveParent = !isProject;
   const requiresParent = nodeKind === "folder";
+  const canDelete = node ? node.kind === "document" ? detail.permissions.includes("documents:delete")
+    : node.kind === "table" ? detail.permissions.includes("tables:delete") : detail.permissions.includes("structure:write") : false;
   const colorValid = validHexColor(color);
+  const appearanceValid = colorValid;
   const submittedColor = color ? color.toLocaleLowerCase() : null;
   const originalColor = resolveNodeColor(node?.color)?.toLocaleLowerCase() ?? null;
   const nodesById = new Map(detail.nodes.map((n) => [n.id, n]));
   const parents = detail.nodes.flatMap((candidate) => {
-    if (candidate.kind === "list" || candidate.kind === "document") return [];
+    if (candidate.kind !== "project" && candidate.kind !== "folder") return [];
     const path: string[] = [];
     const seen = new Set<string>();
     let ancestor: TreeNode | undefined = candidate;
@@ -196,7 +132,7 @@ export default function StructureEditor({
     labelCounts.set(parent.label, (labelCounts.get(parent.label) || 0) + 1);
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || !colorValid) return;
+    if (busy || !appearanceValid) return;
     if (
       !name.trim() ||
       (requiresParent && !parents.some((p) => p.id === parentId)) ||
@@ -231,8 +167,31 @@ export default function StructureEditor({
           `${workspacePath(detail.workspace.id)}/documents${node ? `/${node.id}` : ""}`,
           node ? "PATCH" : "POST",
           node
-            ? { title: name.trim(), parentId: parentId || null, expectedUpdatedAt: node.updatedAt }
-            : { title: name.trim(), body: "", parentId: parentId || null },
+            ? {
+                ...(name.trim() !== node.name ? { title: name.trim() } : {}),
+                ...((parentId || null) !== node.parentId ? { parentId: parentId || null } : {}),
+                ...(icon !== (node.icon || null) ? { icon } : {}),
+                ...(submittedColor !== originalColor ? { color: submittedColor } : {}),
+                expectedUpdatedAt: node.updatedAt,
+              }
+            : { title: name.trim(), body: "", parentId: parentId || null, icon, color: submittedColor },
+        );
+        onSaved();
+        return;
+      }
+      if (isTable) {
+        await api(
+          `${workspacePath(detail.workspace.id)}/tables${node ? `/${node.id}` : ""}`,
+          node ? "PATCH" : "POST",
+          node
+            ? {
+                ...(name.trim() !== node.name ? { name: name.trim() } : {}),
+                ...((parentId || null) !== node.parentId ? { parentId: parentId || null } : {}),
+                ...(icon !== (node.icon || null) ? { icon } : {}),
+                ...(submittedColor !== originalColor ? { color: submittedColor } : {}),
+                expectedUpdatedAt: node.updatedAt,
+              }
+            : { name: name.trim(), parentId: parentId || null, icon, color: submittedColor },
         );
         onSaved();
         return;
@@ -258,6 +217,8 @@ export default function StructureEditor({
   async function remove() {
     const warning = node!.kind === "document"
       ? `Delete "${node!.name}" and all of its nested document pages? This cannot be undone.`
+      : node!.kind === "table"
+        ? `Delete "${node!.name}" and all of its columns and records? This cannot be undone.`
       : `Delete "${node!.name}"? Only empty nodes can be deleted.`;
     if (
       !window.confirm(warning)
@@ -266,10 +227,9 @@ export default function StructureEditor({
     setBusy(true);
     setError("");
     try {
-      await api(
-        `${workspacePath(detail.workspace.id)}/${node!.kind === "document" ? "documents" : "nodes"}/${node!.id}`,
-        "DELETE",
-      );
+      const path = node!.kind === "document" ? `${workspacePath(detail.workspace.id)}/documents/${node!.id}`
+        : node!.kind === "table" ? `${workspacePath(detail.workspace.id)}/tables/${node!.id}` : `${workspacePath(detail.workspace.id)}/nodes/${node!.id}`;
+      await api(path, "DELETE");
       onSaved();
     } catch (e) {
       setError(message(e));
@@ -285,7 +245,7 @@ export default function StructureEditor({
     >
       <ErrorNotice error={error} />
       {mode === "details" && <p className="muted">
-        Projects may hold folders, lists, and documents. Lists and documents may also live at the workspace root.
+        Projects may hold folders, lists, documents, and tables. Lists, documents, and tables may also live at the workspace root.
       </p>}
       <form className={mode === "rename" ? "inline-title-editor structure-title-editor" : "stack"} onSubmit={submit}>
         {mode === "rename" ? <>
@@ -320,7 +280,7 @@ export default function StructureEditor({
             </Select>
           </label>
         )}
-        {mode === "details" && !isDocument && <fieldset className="appearance-fields">
+        {mode === "details" && <fieldset className="appearance-fields" disabled={busy}>
           <legend>Appearance</legend>
           <div className="appearance-preview" aria-label="Appearance preview">
             <NodeGlyph node={{ kind: node?.kind || kind, icon, color: colorValid ? submittedColor : null }} className="node-glyph node-glyph-preview" />
@@ -362,7 +322,7 @@ export default function StructureEditor({
               value={parentId}
               onChange={(e) => setParentId(e.target.value)}
             >
-              <option value="">{nodeKind === "list" ? "Workspace root (standalone list)" : nodeKind === "document" ? "Workspace root" : "Choose a parent"}</option>
+              <option value="">{nodeKind === "list" ? "Workspace root (standalone list)" : nodeKind === "document" || nodeKind === "table" ? "Workspace root" : "Choose a parent"}</option>
               {parents.map((n) => (
                 <option key={n.id} value={n.id}>
                   {n.label}
@@ -374,29 +334,29 @@ export default function StructureEditor({
               {node
                   ? nodeKind === "list"
                   ? "A standalone list keeps its contents, permissions, and list-specific statuses."
-                  : nodeKind === "document" ? "Moving preserves the document body, comments, and pages." : "Moving keeps all contents and the same workspace permissions."
+                  : nodeKind === "document" ? "Moving preserves the document body, comments, and pages." : nodeKind === "table" ? "Moving preserves every column and record." : "Moving keeps all contents and the same workspace permissions."
                 : detail.nodes.length === 0
-                  ? nodeKind === "list" ? "Create this list at the workspace root." : "Create a project before adding a folder."
-                   : nodeKind === "list" ? "Choose a project or folder, or keep the list at workspace root." : nodeKind === "document" ? "Choose a project or folder, or keep the document at workspace root." : "Folders may nest inside projects or other folders."}
+                  ? nodeKind === "list" ? "Create this list at the workspace root." : nodeKind === "document" || nodeKind === "table" ? `Create this ${nodeKind} at the workspace root.` : "Create a project before adding a folder."
+                  : nodeKind === "list" ? "Choose a project or folder, or keep the list at workspace root." : nodeKind === "document" ? "Choose a project or folder, or keep the document at workspace root." : nodeKind === "table" ? "Choose a project or folder, or keep the table at workspace root." : "Folders may nest inside projects or other folders."}
             </small>
           </label>
         )}
         {mode !== "rename" && <div className="modal-actions">
-          {mode === "details" && node && (
+          {mode === "details" && node && canDelete && (
             <button
               type="button"
               className="danger"
               disabled={busy}
               onClick={remove}
             >
-              {node.kind === "document" ? "Delete document and nested pages" : `Delete empty ${node.kind}`}
+              {node.kind === "document" ? "Delete document and nested pages" : node.kind === "table" ? "Delete table, columns, and records" : `Delete empty ${node.kind}`}
             </button>
           )}
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={busy || !colorValid}>
+          <button className="primary" disabled={busy || !appearanceValid}>
             {busy
               ? "Saving..."
               : node

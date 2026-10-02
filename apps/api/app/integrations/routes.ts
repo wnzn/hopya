@@ -15,7 +15,7 @@ export default function registerIntegrations(router: Router): void {
   let collecting = false
   // The tick is an Effect that can only resolve: collection failures are
   // swallowed as values so the hourly schedule survives backend outages.
-  const gcTick = Effect.catchAll(
+  const gcTick = Effect.catch(
     Effect.tryPromise({
       try: () => collectStorageGarbage(),
       catch: (error) => error as unknown,

@@ -68,6 +68,12 @@ Authorization is rechecked after storage waits. Filenames never become filesyste
 
 Changing the storage driver/bucket/endpoint is **not a migration**. Objects record a backend fingerprint and do not silently fall back to another location. Preserve old settings and transfer/verify objects before changing metadata. S3 versions require their own lifecycle/backup policy; deleting a current object does not necessarily erase old versions. Workspace export includes attachment metadata but not bytes or storage keys. See [backup/restore](deployment.md#backup-and-restore).
 
+### Body And Comment Images
+
+`POST /workspaces/:wid/images` accepts the same base64 file fields plus `kind: "task-body" | "task-comment" | "document-comment"` and an existing `resourceId` (optional for a new task body only). Successful uploads return private `url`, `downloadUrl` and `expiresAt`. A body/comment mutation validates and claims its image references transactionally; the uploader alone can preview pending images, which expire after 24 hours. Task-body images become task attachments. Committed image access always requires the owning resource's current read permission, and comment tombstones revoke their images. `DELETE /workspaces/:wid/images/:imageId` discards only the caller's uncommitted draft.
+
+Inline endpoints (`GET /workspaces/:wid/images/:imageId/inline` and the equivalent task attachment `/inline`) accept validated PNG/JPEG/GIF/WebP raster bytes with 10 MiB/40-megapixel limits, derive MIME from the bytes, and return `nosniff`, sandbox and private/no-store headers. Ordinary downloads retain forced attachment disposition. Browser rendering allows only these private image paths; remote tracking images, arbitrary same-origin URLs, data URLs and SVG stay inert. Version-8 workspace exports include committed `images` metadata with ownership and attachment links, never bytes, pending drafts or storage keys. See [complete image/draft behavior](images.md).
+
 ## Verification Boundaries
 
 | Integration | Application boundary | Operator verification |

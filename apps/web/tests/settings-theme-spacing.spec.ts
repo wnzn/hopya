@@ -3,10 +3,10 @@ import { expect, test } from "@playwright/test";
 import { fixture, task } from "./fixture";
 
 for (const path of ["/app", "/login", "/admin"]) {
-test(`Settings owns appearance; stored choices apply before React on ${path}`, async ({ page }) => {
+test(`Account settings owns appearance; stored choices apply before React on ${path}`, async ({ page }) => {
   const { errors, mutations } = await fixture(page);
   await page.emulateMedia({ colorScheme: "light" });
-  await page.goto("/settings");
+  await page.goto("/account");
   await expect(page.getByLabel("Display name")).toHaveValue("Test Owner");
   await expect(page.locator(".sidebar .theme-toggle")).toHaveCount(0);
   await page.getByRole("button", { name: "Toggle dark mode" }).click();
@@ -39,7 +39,7 @@ test(`Settings owns appearance; stored choices apply before React on ${path}`, a
 test("system changes update appearance and control state only without an explicit preference", async ({ page }) => {
   const { errors } = await fixture(page);
   await page.emulateMedia({ colorScheme: "light" });
-  await page.goto("/settings");
+  await page.goto("/account");
   await expect(page.getByLabel("Display name")).toBeVisible();
   const toggle = page.getByRole("button", { name: "Toggle dark mode" });
   const system = page.getByRole("button", { name: "Use system theme" });
@@ -67,7 +67,7 @@ test("system changes update appearance and control state only without an explici
 });
 
 for (const storage of ["invalid", "blocked"] as const) {
-  test(`${storage} storage falls back to the OS without breaking Settings`, async ({ page }) => {
+  test(`${storage} storage falls back to the OS without breaking Account settings`, async ({ page }) => {
     const { errors } = await fixture(page);
     page.on("pageerror", (error) => { void test.info().attach("storage-error", { body: error.stack || error.message, contentType: "text/plain" }); });
     await page.addInitScript((mode) => {
@@ -75,7 +75,7 @@ for (const storage of ["invalid", "blocked"] as const) {
       else Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Blocked", "SecurityError"); } });
     }, storage);
     await page.emulateMedia({ colorScheme: "dark" });
-    await page.goto("/settings");
+    await page.goto("/account");
     await expect(page.getByLabel("Display name")).toHaveValue("Test Owner");
     await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
     expect(await page.getAttribute("html", "data-theme")).toBeNull();
@@ -93,13 +93,13 @@ for (const storage of ["invalid", "blocked"] as const) {
 }
 
 for (const width of [320, 390, 1280]) {
-  for (const path of ["/settings", "/app"]) {
+  for (const path of ["/account", "/app"]) {
   test(`dark surfaces, spacing, keyboard focus and axe on ${path} at ${width}px`, async ({ page }) => {
     const { errors } = await fixture(page);
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: "dark" });
       await page.goto(path);
-      if (path === "/settings") await expect(page.getByLabel("Display name")).toHaveValue("Test Owner");
+      if (path === "/account") await expect(page.getByLabel("Display name")).toHaveValue("Test Owner");
       else await expect(page.getByRole("button", { name: task.title, exact: true })).toBeVisible();
       await expect(page.locator(".sidebar .theme-toggle")).toHaveCount(0);
       if (width < 760) await page.getByRole("button", { name: "Menu", exact: true }).click();
@@ -112,7 +112,7 @@ for (const width of [320, 390, 1280]) {
         const nav = (await page.locator(".main-nav").boundingBox())!;
         expect(nav.y - logo.y - logo.height).toBeGreaterThanOrEqual(24);
       } else await page.getByRole("button", { name: "Menu", exact: true }).click();
-      if (path === "/settings") {
+      if (path === "/account") {
         const toggle = page.getByRole("button", { name: "Toggle dark mode" });
         await toggle.focus();
         await page.keyboard.press("Tab");

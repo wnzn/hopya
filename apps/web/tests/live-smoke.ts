@@ -389,10 +389,11 @@ try {
     path: join(directory!, "live-board.png"),
     fullPage: true,
   });
-  await page.goto(`${origin}/settings`);
+  await page.goto(`${origin}/account`);
   await expect(page.getByLabel("Display name")).toHaveValue(
     "Browser verification",
   );
+  await page.goto(`${origin}/settings`);
   await expect(
     page.getByRole("heading", { name: "Roles & permissions" }),
   ).toBeVisible();
