@@ -8,6 +8,7 @@ import { AuthFailure, authenticate, authenticateEffect, createSession, destroySe
 import { emailSchema, passwordSchema, nextItemUpdatedAt } from './service.js'
 import { HttpError, type User, type UserRow } from './types.js'
 import { passwordResetEnabled, sendPasswordReset } from './mail.js'
+import { profilePhotoMetadata, profilePhotoUrl } from './profile_photo_metadata.js'
 
 // These preserve the pre-existing public messages at each handler boundary.
 class SetupDenied { readonly _tag = 'SetupDenied'; readonly message = 'Setup not authorized' }
@@ -134,7 +135,7 @@ export const accounts = {
         await createSession(ctx, user.id)
       }
       await audit(user.id, null, 'user.profile', user.id, { passwordChanged: data.password !== undefined, emailChanged })
-      return publicUser({ ...current, name: data.name, email })
+      return { ...publicUser({ ...current, name: data.name, email }), ...await profilePhotoMetadata(user.id) }
     })
   },
   async forgotPassword(ctx: HttpContext) {
@@ -211,8 +212,9 @@ export const accounts = {
   },
   async listUsers(ctx: HttpContext) {
     await requireAdmin(ctx)
-    return (await db.all<DbUserRow>('SELECT id,name,email,isAdmin,disabled,createdAt FROM users ORDER BY createdAt,id'))
-      .map((user) => ({ ...publicUser(user), disabled: Boolean(user.disabled), createdAt: user.createdAt }))
+    return (await db.all<DbUserRow & { photoRevision: string | null }>(`SELECT u.id,u.name,u.email,u.isAdmin,u.disabled,u.createdAt,p.revision AS photoRevision
+      FROM users u LEFT JOIN profile_photos p ON p.userId=u.id AND u.disabled=0 ORDER BY u.createdAt,u.id`))
+      .map((user) => ({ ...publicUser(user), photoUrl: profilePhotoUrl(user.id, user.photoRevision), disabled: Boolean(user.disabled), createdAt: user.createdAt }))
   },
   async createUser(ctx: HttpContext) {
     const admin = await requireAdmin(ctx)
@@ -272,7 +274,8 @@ export const accounts = {
       items: (await db.get<{ count: number }>('SELECT count(*) AS count FROM items'))!.count,
       migrations: await db.all('SELECT name,migration_time AS appliedAt FROM adonis_schema ORDER BY name'),
       storageDriver: process.env.STORAGE_DRIVER || 'filesystem',
-      pendingStorageCleanup: (await db.get<{ count: number }>('SELECT count(*) AS count FROM storage_objects o WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey)'))!.count,
+      pendingStorageCleanup: (await db.get<{ count: number }>(`SELECT count(*) AS count FROM storage_objects o WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.objectKey=o.objectKey)
+        AND NOT EXISTS (SELECT 1 FROM rich_text_images i WHERE i.objectKey=o.objectKey AND (i.committedAt IS NOT NULL OR i.expiresAt>?))`, new Date().toISOString()))!.count,
       aiEnabled: Boolean(process.env.AI_PROVIDER), ssoEnabled: Boolean(process.env.OIDC_ISSUER),
     }
   },

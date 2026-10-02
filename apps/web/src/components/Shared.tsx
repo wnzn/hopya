@@ -12,7 +12,8 @@ import {
   type Workspace,
 } from "../lib/api";
 import "../styles/shared-navigation.css";
-import { safeAncestorPath } from "../lib/shared-navigation";
+import { documentHierarchyNode, hierarchyEntries, safeAncestorPath } from "../lib/shared-navigation";
+import Avatar from "./Avatar";
 import NodeGlyph from "./NodeGlyph";
 import Select from "./Select";
 import SolidIcon from "./SolidIcon";
@@ -82,7 +83,7 @@ function DocumentPageTree({ state, documents, parentDocumentId, depth = 0 }: {
       href={appHref(state.workspaceId, document.id)} onClick={state.onNodeSelect ? event => {
         event.preventDefault(); state.onNodeSelect?.(document.id);
       } : undefined}>
-      <SolidIcon name="fileText" className="node-glyph solid-icon" /><span>{document.title}</span></a></div>
+       <NodeGlyph node={documentHierarchyNode(document)} /><span>{document.title}</span></a></div>
     <DocumentPageTree state={state} documents={documents} parentDocumentId={document.id} depth={depth + 1} />
   </li>)}</ul>;
 }
@@ -104,11 +105,7 @@ function NavigationTree({ state, collapsed, onToggle, menuNodeId, onMenu, parent
   ancestors?: Set<string>;
 }) {
   if (depth >= 32 || !state.detail) return null;
-  const entries: TreeNode[] = [
-    ...state.detail.nodes,
-    ...(state.detail.documents ?? []).filter(document => !document.parentDocumentId)
-      .map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt })),
-  ];
+  const entries = hierarchyEntries(state.detail);
   const children = entries.filter((node) => node.parentId === parentId && !ancestors.has(node.id));
   if (!children.length) return null;
   return (
@@ -148,7 +145,9 @@ function NavigationTree({ state, collapsed, onToggle, menuNodeId, onMenu, parent
                 {state.onRenameNode && (!state.canEditNode || state.canEditNode(node)) && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onRenameNode?.(node); }}>Rename</button>}
                 {state.onEditNode && (!state.canEditNode || state.canEditNode(node)) && <button type="button" role="menuitem" onClick={() => { onMenu(null); state.onEditNode?.(node); }}>Details</button>}
                 {state.onDeleteNode && (!state.canDeleteNode || state.canDeleteNode(node)) && <button type="button" role="menuitem" className="danger" onClick={() => {
-                  const warning = node.kind === "document" ? `Delete "${node.name}" and its nested document pages? This cannot be undone.` : `Delete "${node.name}"? Only empty nodes can be deleted.`;
+                  const warning = node.kind === "document" ? `Delete "${node.name}" and its nested document pages? This cannot be undone.`
+                    : node.kind === "table" ? `Delete "${node.name}" and all of its columns and records? This cannot be undone.`
+                    : `Delete "${node.name}"? Only empty nodes can be deleted.`;
                   if (window.confirm(warning)) { onMenu(null); void state.onDeleteNode?.(node); }
                 }}>Delete</button>}
               </div>}
@@ -205,7 +204,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
       return next;
     });
   }
-  const canSeeTree = state.detail && state.detail.permissions.some(permission => permission === "items:read" || permission === "documents:read" || permission === "documents:write" || permission === "structure:write");
+  const canSeeTree = state.detail && state.detail.permissions.some(permission => permission === "items:read" || permission === "documents:read" || permission === "documents:write" || permission === "tables:read" || permission === "tables:write" || permission === "tables:delete" || permission === "structure:write");
   return (
     <div className="shared-navigation">
       <div className="workspace-picker">
@@ -232,7 +231,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
         <nav className="sidebar-structure" aria-label="Workspace hierarchy">
           <div className="sidebar-section-title">
             STRUCTURE
-             {state.onCreateNode && <button type="button" aria-label="Add project, folder, list, or document" onClick={state.onCreateNode}><SolidIcon name="plus" /></button>}
+             {state.onCreateNode && <button type="button" aria-label="Add project, folder, list, document, or table" onClick={state.onCreateNode}><SolidIcon name="plus" /></button>}
           </div>
           <a
             className={`all-tasks ${state.onNodeSelect && !state.selectedNodeId ? "selected" : ""}`}
@@ -245,7 +244,7 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
             All tasks {state.itemCount !== undefined && <span>{state.loading ? "..." : state.itemCount}</span>}
           </a>
           <NavigationTree state={state} collapsed={collapsed} onToggle={toggleNode} menuNodeId={menuNodeId} onMenu={setMenuNodeId} />
-          {state.detail && !state.detail.nodes.length && state.onCreateNode && <p className="sidebar-hint">Start with a project.</p>}
+          {state.detail && !hierarchyEntries(state.detail).length && state.onCreateNode && <p className="sidebar-hint">Add your first workspace resource.</p>}
         </nav>
       )}
     </div>
@@ -253,7 +252,9 @@ function WorkspaceNavigation({ state, inboxActive = false }: { state: Navigation
 }
 
 export function Breadcrumbs({ detail, nodeId, currentPage }: { detail: Detail | null; nodeId?: string; currentPage?: string }) {
-  const entries: TreeNode[] = detail ? [...detail.nodes, ...(detail.documents ?? []).map(document => ({ id: document.id, name: document.title, kind: "document" as const, parentId: document.parentId, updatedAt: document.updatedAt }))] : [];
+  const entries = detail ? hierarchyEntries(detail) : [];
+  const selectedPage = detail?.documents?.find(document => document.id === nodeId && document.parentDocumentId);
+  if (selectedPage) entries.push(documentHierarchyNode(selectedPage));
   const path = detail && nodeId ? safeAncestorPath(entries, nodeId) : [];
   const workspace = detail?.workspace;
   const crumbs: { label: string; href?: string }[] = workspace
@@ -542,6 +543,26 @@ export function Shell({
   const [fallbackWorkspaceId, setFallbackWorkspaceId] = useState("");
   const [fallbackDetail, setFallbackDetail] = useState<Detail | null>(null);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [showSidebarAttribution, setShowSidebarAttribution] = useState(true);
+  useEffect(() => {
+    let controller: AbortController | undefined;
+    const refresh = () => {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      api<{ showSidebarAttribution: boolean }>("/config", "GET", undefined, request.signal)
+        .then(config => { if (!request.signal.aborted) setShowSidebarAttribution(config.showSidebarAttribution !== false); })
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener("hopya:site-settings-changed", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      controller?.abort();
+      window.removeEventListener("hopya:site-settings-changed", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
   useEffect(() => {
     if (!user || navigation) return;
     const controller = new AbortController();
@@ -587,7 +608,11 @@ export function Shell({
   const sharedNavigation = navigation ?? fallbackNavigation;
   const structureWritable = Boolean(sharedNavigation.detail?.permissions.includes("structure:write"));
   const documentWritable = Boolean(sharedNavigation.detail?.permissions.includes("documents:write"));
+  const documentEditable = Boolean(sharedNavigation.detail?.permissions.includes("documents:read")) && documentWritable;
   const documentDeletable = Boolean(sharedNavigation.detail?.permissions.includes("documents:delete"));
+  const tableWritable = Boolean(sharedNavigation.detail?.permissions.includes("tables:write"));
+  const tableEditable = Boolean(sharedNavigation.detail?.permissions.includes("tables:read")) && tableWritable;
+  const tableDeletable = Boolean(sharedNavigation.detail?.permissions.includes("tables:delete"));
   const openStructureAction = (action: "create" | "rename" | "details", node?: TreeNode) => {
     const query = new URLSearchParams({ workspace: sharedNavigation.workspaceId, structure: action });
     if (node) query.set("node", node.id);
@@ -599,20 +624,22 @@ export function Shell({
       setCreatingWorkspace(true);
     }),
     onNodeSelect: sharedNavigation.onNodeSelect ?? (id => window.location.assign(appHref(sharedNavigation.workspaceId, id))),
-    onCreateNode: sharedNavigation.onCreateNode ?? (structureWritable || documentWritable
+    onCreateNode: sharedNavigation.onCreateNode ?? (structureWritable || documentWritable || tableWritable
       ? () => openStructureAction("create") : undefined),
-    onRenameNode: sharedNavigation.onRenameNode ?? (structureWritable || documentWritable
+    onRenameNode: sharedNavigation.onRenameNode ?? (structureWritable || documentWritable || tableWritable
       ? node => openStructureAction("rename", node) : undefined),
-    onEditNode: sharedNavigation.onEditNode ?? (structureWritable || documentWritable
+    onEditNode: sharedNavigation.onEditNode ?? (structureWritable || documentWritable || tableWritable
       ? node => openStructureAction("details", node) : undefined),
-    onDeleteNode: sharedNavigation.onDeleteNode ?? (structureWritable || documentDeletable ? async node => {
+    onDeleteNode: sharedNavigation.onDeleteNode ?? (structureWritable || documentDeletable || tableDeletable ? async node => {
       try {
-        await api(`${workspacePath(sharedNavigation.workspaceId)}/${node.kind === "document" ? "documents" : "nodes"}/${node.id}`, "DELETE");
+        const path = node.kind === "document" ? `${workspacePath(sharedNavigation.workspaceId)}/documents/${node.id}`
+          : node.kind === "table" ? `${workspacePath(sharedNavigation.workspaceId)}/tables/${node.id}` : `${workspacePath(sharedNavigation.workspaceId)}/nodes/${node.id}`;
+        await api(path, "DELETE");
         window.location.reload();
       } catch (cause) { setError(message(cause)); }
     } : undefined),
-    canEditNode: sharedNavigation.canEditNode ?? (node => node.kind === "document" ? documentWritable : structureWritable),
-    canDeleteNode: sharedNavigation.canDeleteNode ?? (node => node.kind === "document" ? documentDeletable : structureWritable),
+    canEditNode: sharedNavigation.canEditNode ?? (node => node.kind === "document" ? documentEditable : node.kind === "table" ? tableEditable : structureWritable),
+    canDeleteNode: sharedNavigation.canDeleteNode ?? (node => node.kind === "document" ? documentDeletable : node.kind === "table" ? tableDeletable : structureWritable),
   };
   const pageLabel = currentPage ?? (active === "admin" ? "Administration" : undefined);
   useEffect(() => {
@@ -675,9 +702,7 @@ export function Shell({
             }
           }}>
           <summary className="identity" aria-label="Account menu">
-            <span className="avatar">
-              {user?.name.slice(0, 1).toUpperCase() || "?"}
-            </span>
+            <Avatar name={user?.name} photoUrl={user?.photoUrl} />
             <span className="identity-text">
               <strong>{user?.name || "Your account"}</strong>
               <small>{user?.email}</small>
@@ -690,7 +715,7 @@ export function Shell({
             <a href="/integrations" aria-current={currentPage === "Integrations" ? "page" : undefined}>Webhooks &amp; automations</a>
             <a href="/docs" aria-current={currentPage === "API docs" ? "page" : undefined}>API docs</a>
             <a href="/help" aria-current={currentPage === "Help" ? "page" : undefined}>Help</a>
-            <a href="/settings" aria-current={active === "settings" ? "page" : undefined}>Settings</a>
+            <a href="/settings" aria-current={active === "settings" ? "page" : undefined}>Workspace settings</a>
             {user?.isAdmin && <a href="/admin" aria-current={active === "admin" ? "page" : undefined}>Administration</a>}
           <button
             className="sidebar-signout"
@@ -702,7 +727,7 @@ export function Shell({
           </nav>
           </details>
           <ErrorNotice error={error} />
-          <p className="sidebar-attribution">
+          {showSidebarAttribution && <p className="sidebar-attribution">
             <a href="https://wnzn.dev" rel="noopener noreferrer" aria-label="By WNZN">
               <span className="sidebar-attribution-label">BY</span>
               <svg viewBox="0 0 272 64" aria-hidden="true">
@@ -714,7 +739,7 @@ export function Shell({
               </svg>
               <span className="sidebar-attribution-arrow" aria-hidden="true"><SolidIcon name="externalLink" /></span>
             </a>
-          </p>
+          </p>}
         </div>
       </aside>
       <main id="main" className="main-content" tabIndex={-1}>

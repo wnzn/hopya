@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { get, type IncomingMessage } from 'node:http'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import { openTestDatabase } from './helpers/database.js'
 import { runMigrations } from './helpers/migrate.js'
 
@@ -66,6 +67,15 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   const wid = workspace.id
   const project = await (await api(`/workspaces/${wid}/nodes`, 'POST', { name: 'Project', kind: 'project' })).json() as { id: string; createdAt: string }
   const list = await (await api(`/workspaces/${wid}/nodes`, 'POST', { name: 'List', kind: 'list', icon: 'sparkles', color: '#AbC123' })).json() as { id: string; createdAt: string }
+  const tableResponse = await api(`/workspaces/${wid}/tables`, 'POST', { name: 'Assets', parentId: project.id })
+  assert.equal(tableResponse.status, 201)
+  const table = await tableResponse.json() as { id: string }
+  const tableColumnResponse = await api(`/workspaces/${wid}/tables/${table.id}/columns`, 'POST', { name: 'Condition', type: 'select', options: ['New', 'Used'] })
+  assert.equal(tableColumnResponse.status, 201)
+  const tableColumn = await tableColumnResponse.json() as { id: string }
+  const tableRecordResponse = await api(`/workspaces/${wid}/tables/${table.id}/records`, 'POST', { values: { [tableColumn.id]: 'Used' } })
+  assert.equal(tableRecordResponse.status, 201)
+  const tableRecord = await tableRecordResponse.json() as { id: string }
   const detail = await (await api(`/workspaces/${wid}`)).json() as any
   const users: { id: string; token: string; tokenId: string; roleId: string }[] = []
   const timestamp = '2026-01-01T00:00:00.000Z'
@@ -101,9 +111,10 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     })
   }
   async function text(response: IncomingMessage) {
+    const decoder = new StringDecoder('utf8')
     let value = ''
-    for await (const chunk of response) value += chunk.toString()
-    return value
+    for await (const chunk of response) value += decoder.write(chunk)
+    return value + decoder.end()
   }
   async function truncated(response: IncomingMessage) {
     await assert.rejects(async () => { for await (const _chunk of response) {} })
@@ -111,7 +122,7 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
   }
 
   await t.test('paused snapshot export permits HTTP writes and preserves complete old workspace/nodes/items/fields/attachment metadata', async () => {
-    const response = await paused(`/workspaces/${wid}/export`)
+    const response = await paused(`/workspaces/${wid}/export`, users[0].token, true)
     assert.equal(response.statusCode, 200)
     const start = Date.now()
     assert.equal((await api(`${path}/${ids.at(-1)}`, 'PATCH', { title: 'Changed after snapshot' })).status, 200)
@@ -123,8 +134,8 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     const body = await text(response)
     for (const secret of ['passwordHash', 'tokenHash', 'private-password-hash-marker', 'private-storage-key-marker', 'private-location-marker', ...users.map((user) => user.token)]) assert.equal(body.includes(secret), false)
     const data = JSON.parse(body)
-    assert.deepEqual(Object.keys(data).sort(), ['attachments', 'commentReactions', 'comments', 'documentCommentReactions', 'documentComments', 'documentPages', 'documentSubpages', 'documents', 'exportedAt', 'fields', 'items', 'listStatusConfigs', 'listTagColorConfigs', 'nodes', 'projectFields', 'version', 'workspace'])
-    assert.equal(data.version, 5); assert.equal(data.workspace.name, 'Snapshot')
+    assert.deepEqual(Object.keys(data).sort(), ['attachments', 'commentReactions', 'comments', 'documentCommentReactions', 'documentComments', 'documentPages', 'documentSubpages', 'documents', 'exportedAt', 'fields', 'images', 'items', 'listStatusConfigs', 'listTagColorConfigs', 'nodes', 'projectFields', 'tableColumns', 'tableRecords', 'tableSources', 'tables', 'version', 'workspace'])
+    assert.equal(data.version, 8); assert.equal(data.workspace.name, 'Snapshot')
     const exportedList = data.nodes.find((node: any) => node.id === list.id)
     assert.equal(exportedList.name, 'List')
     assert.equal(exportedList.icon, 'sparkles'); assert.equal(exportedList.color, '#abc123')
@@ -133,6 +144,10 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     assert.deepEqual(data.items.map((item: any) => item.id), ids)
     assert.ok(data.items.every((item: any) => item.description === description))
     assert.deepEqual(data.fields[0].options, ['Red', 'Blue'])
+    assert.equal(data.tables[0].id, table.id)
+    assert.deepEqual(data.tableColumns[0].options, ['New', 'Used'])
+    assert.equal(data.tableRecords[0].id, tableRecord.id)
+    assert.deepEqual(data.tableRecords[0].values, { [tableColumn.id]: 'Used' })
     assert.deepEqual(data.listStatusConfigs, detail.listStatusConfigs)
     assert.deepEqual(data.listTagColorConfigs, [{ listId: list.id, colors: {}, updatedAt: list.createdAt }])
     assert.equal(data.attachments.length, 1)
@@ -160,6 +175,50 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
     assert.equal(checkpoint?.busy, 0)
   })
 
+  await t.test('table permission revocation terminates an in-flight export while task read remains', async () => {
+    await database!.run('UPDATE roles SET permissions=? WHERE id=?', '["items:read","tables:read"]', users[0].roleId)
+    const response = await paused(`/workspaces/${wid}/export`, users[0].token)
+    assert.equal(response.statusCode, 200)
+    assert.equal((await api(`/workspaces/${wid}/roles/${users[0].roleId}`, 'PATCH', { permissions: ['items:read'] })).status, 200)
+    await truncated(response)
+  })
+
+  let tableExportPath = ''
+  await t.test('standalone Table exports preserve a snapshot and release denied, revoked and disconnected streams', async () => {
+    const created = await (await api(`/workspaces/${wid}/tables`, 'POST', { name: 'Large export' })).json() as { id: string }
+    const column = await (await api(`/workspaces/${wid}/tables/${created.id}/columns`, 'POST', { name: 'Payload', type: 'text' })).json() as { id: string }
+    const body = '界'.repeat(9000)
+    // Keep the response above loopback TCP send/receive buffers: the old 8 MB
+    // fixture could finish server-side before the stalled-reader deadline.
+    const recordCount = 1600
+    const recordIds: string[] = []
+    await database!.transaction(async connection => {
+      for (let index = 0; index < recordCount; index++) {
+        const id = randomUUID(); recordIds.push(id)
+        await connection.run('INSERT INTO table_records(id,workspaceId,tableId,data,createdAt,updatedAt) VALUES (?,?,?,?,?,?)', id, wid, created.id, JSON.stringify({ [column.id]: body }), new Date(Date.parse(timestamp) + index).toISOString(), timestamp)
+      }
+    })
+    tableExportPath = `/workspaces/${wid}/tables/${created.id}/export`
+    await database!.run('UPDATE roles SET permissions=? WHERE id=?', '["items:read","tables:read"]', users[0].roleId)
+    const held = await paused(tableExportPath)
+    assert.equal(held.statusCode, 200)
+    const start = Date.now()
+    assert.equal((await api(`/workspaces/${wid}/tables/${created.id}/records/${recordIds.at(-1)}`, 'PATCH', { values: { [column.id]: 'after snapshot' }, expectedUpdatedAt: timestamp })).status, 200)
+    assert.ok(Date.now() - start < 2500)
+    const snapshot = JSON.parse(await text(held))
+    assert.equal(snapshot.records.length, recordCount)
+    assert.ok(snapshot.records.every((row: Record<string, unknown>) => row[column.id] === body))
+    const first = await paused(tableExportPath), second = await paused(tableExportPath)
+    assert.equal((await api(tableExportPath, 'GET', undefined, users[0].token)).status, 429)
+    assert.equal((await api(tableExportPath, 'HEAD', undefined, users[0].token)).status, 200)
+    await database!.run('UPDATE roles SET permissions=? WHERE id=?', '["items:read"]', users[0].roleId)
+    await Promise.all([truncated(first), truncated(second)])
+    const disconnected = await paused(tableExportPath, users[0].token, true)
+    disconnected.destroy()
+    await sleep(100)
+    assert.equal((await database!.get<{ busy: number }>('PRAGMA wal_checkpoint(TRUNCATE)'))?.busy, 0)
+  })
+
   await t.test('role, token, disabled user, removed membership and logout terminate in-flight JSON rather than completing it', async () => {
     for (const kind of ['role', 'token', 'disabled', 'membership', 'logout']) {
       const response = await paused(path, users[0].token, kind === 'logout')
@@ -183,10 +242,13 @@ test('real HTTP bounded bulk streams, snapshots and live authorization', { timeo
 
   await t.test('30-second deadline releases a stalled snapshot even with no client reads', { timeout: 40000 }, async () => {
     const response = await paused()
+    const tableResponse = await paused(tableExportPath, users[0].token, true)
     assert.equal(response.statusCode, 200)
+    assert.equal(tableResponse.statusCode, 200)
     await sleep(31_000)
     assert.equal((await database!.get<{ busy: number }>('PRAGMA wal_checkpoint(TRUNCATE)'))?.busy, 0)
     await truncated(response)
+    await truncated(tableResponse)
     const replacement = await paused(); assert.equal(replacement.statusCode, 200); replacement.destroy()
     await sleep(100)
   })

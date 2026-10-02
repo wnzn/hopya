@@ -3,13 +3,16 @@ import { Effect } from 'effect'
 import { z } from 'zod'
 import { db, audit } from './database.js'
 import { HttpError, permissions, type Permission, type Membership, type Item, type Comment, type Notification } from './types.js'
+import { claimBodyImages } from './rich_text_images.js'
 import { decodeItem, type ItemRow, itemQuery, itemColumns, pageFilters, decodeCursor, encodeCursor, encodeRecord, PAGE_BYTES, statusId, type ChecklistEntry, type ItemWithSubtasks } from './task_reads.js'
 import { emitEvent } from './automations.js'
 import { anchorColumns, commentAnchorSchema, decodeAnchor, relocateAnchors, validateAnchor } from './comment_anchors.js'
+import { nodeIcon, nodeColor } from './appearance.js'
+import { profilePhotoMetadata, profilePhotoUrl } from './profile_photo_metadata.js'
 
 // --- Effect-based validation -------------------------------------------------
 // Fallible internal checks compose as Effects with a single typed failure.
-// Pure validation wrappers run their Effect via Effect.either + Effect.runSync and map the
+// Pure validation wrappers run their Effect via Effect.result + Effect.runSync and map the
 // typed failure back to the pre-existing HttpError status/message at the
 // boundary, so routes and tests observe identical throws. Expected defects
 // (SQLite errors) stay defects: only ServiceFailure values are mapped.
@@ -20,19 +23,19 @@ class ServiceFailure {
 const fail = (status: number, message: string): Effect.Effect<never, ServiceFailure> =>
   Effect.fail(new ServiceFailure(status, message))
 function runChecked<A>(effect: Effect.Effect<A, ServiceFailure>): A {
-  const result = Effect.runSync(Effect.either(effect))
-  if (result._tag === 'Left') throw new HttpError(result.left.status, result.left.message)
-  return result.right
+  const result = Effect.runSync(Effect.result(effect))
+  if (result._tag === 'Failure') throw new HttpError(result.failure.status, result.failure.message)
+  return result.success
 }
 const findNodeRow = async (wid: string, nodeId: string): Promise<NodeRow> => {
   const row = await db.get<NodeRow>(`SELECT ${nodeColumns} FROM nodes WHERE workspaceId=? AND id=?`, wid, nodeId)
   if (!row) throw new HttpError(404, 'Node not found')
   return row
 }
-// Hierarchy metadata is visible to task/document readers and structure managers.
+// Hierarchy metadata is visible to task/document/table accessors and structure managers.
 async function requireStructureRead(userId: string, wid: string): Promise<Membership> {
   const member = await requireMembership(userId, wid)
-  if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'documents:read' || permission === 'documents:write' || permission === 'structure:write')) throw new HttpError(403, 'Structure access denied')
+  if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'documents:read' || permission === 'documents:write' || permission === 'tables:read' || permission === 'tables:write' || permission === 'tables:delete' || permission === 'structure:write')) throw new HttpError(403, 'Structure access denied')
   return member
 }
 async function requireTaskStructureRead(userId: string, wid: string): Promise<Membership> {
@@ -45,15 +48,6 @@ export async function lockWorkspaceHierarchy(wid: string) {
 }
 const id = z.string().uuid()
 const name = z.string().trim().min(1).max(120)
-const nodeIcon = z.enum(['diamond', 'briefcase', 'target', 'home', 'star', 'heart', 'globe', 'clock', 'mapPin', 'settings', 'lock', 'users', 'user', 'folder', 'archive', 'bookmark', 'list', 'checklist', 'calendar', 'flag', 'package', 'shoppingBag', 'fileText', 'inbox', 'trash', 'pencil', 'eye', 'eyeOff', 'sparkles', 'code', 'link', 'comment', 'save'])
-const legacyNodeColors = {
-  slate: '#64748b', orange: '#c45d0a', amber: '#9a7411', green: '#4d7a47',
-  teal: '#17776f', blue: '#2563a6', violet: '#7652a8', rose: '#a5415b',
-} as const
-const nodeColor = z.union([
-  z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase()),
-  z.enum(['slate', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'rose']).transform((value) => legacyNodeColors[value]),
-])
 export const emailSchema = z.string().trim().email().max(254).transform((value) => value.toLowerCase())
 export const passwordSchema = z.string().min(12).max(256)
 export const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -477,8 +471,8 @@ export const service = {
       await db.run('INSERT INTO workspaces (id,name,createdAt) VALUES (@id,@name,@createdAt)', workspace)
       const ownerId = randomUUID()
       await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', ownerId, workspace.id, 'Owner', JSON.stringify(permissions), 1)
-      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Member', JSON.stringify(['items:read', 'items:write', 'items:delete', 'documents:read', 'documents:write', 'documents:delete', 'comments:create', 'structure:write', 'agent:use']), 0)
-      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Viewer', JSON.stringify(['items:read', 'documents:read']), 0)
+      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Member', JSON.stringify(['items:read', 'items:write', 'items:delete', 'documents:read', 'documents:write', 'documents:delete', 'tables:read', 'tables:write', 'tables:delete', 'comments:create', 'structure:write', 'agent:use']), 0)
+      await db.run('INSERT INTO roles (id,workspaceId,name,permissions,isOwner) VALUES (?,?,?,?,?)', randomUUID(), workspace.id, 'Viewer', JSON.stringify(['items:read', 'documents:read', 'tables:read']), 0)
       await db.run('INSERT INTO memberships (workspaceId,userId,roleId) VALUES (?,?,?)', workspace.id, userId, ownerId)
       await audit(userId, workspace.id, 'workspace.create', workspace.id)
       return workspace
@@ -489,7 +483,8 @@ export const service = {
     const canRead = membership.permissions.includes('items:read')
     const canTaskStructure = canRead || membership.permissions.includes('structure:write')
     const canDocuments = membership.permissions.some((permission) => permission === 'documents:read' || permission === 'documents:write' || permission === 'structure:write')
-    const canStructure = canTaskStructure || canDocuments
+    const canTables = membership.permissions.some((permission) => permission === 'tables:read' || permission === 'tables:write' || permission === 'tables:delete' || permission === 'structure:write')
+    const canStructure = canTaskStructure || canDocuments || canTables
     const role = decodeRole(await roleInWorkspace(wid, membership.roleId))
     return {
       workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid),
@@ -498,6 +493,7 @@ export const service = {
       roles: canRead || membership.permissions.some((permission) => permission === 'roles:manage' || permission === 'members:manage') ? await service.listRoles(userId, wid) : [role],
       nodes: canStructure ? await service.listNodes(userId, wid) : [], fields: canTaskStructure ? await service.listFields(userId, wid) : [],
       documents: canDocuments ? await (await import('./documents.js')).documentService.listDocuments(userId, wid) : [],
+      tables: canTables ? await (await import('./tables.js')).tableService.listTables(userId, wid) : [],
       documentPages: canRead && membership.permissions.includes('documents:read')
         ? await db.all('SELECT documentId,itemId,position FROM document_pages WHERE workspaceId=? ORDER BY position,createdAt,itemId', wid) : [],
       projectFields: canTaskStructure ? await service.listProjectFields(userId, wid) : [],
@@ -518,12 +514,13 @@ export const service = {
     return db.transaction(async () => {
       const member = await requireMembership(userId, wid)
       if (!member.isOwner) throw new HttpError(403, 'Workspace owner required')
-      const counts = await db.get<{ members: number; nodes: number; documents: number; items: number; attachments: number }>(`SELECT
+      const counts = await db.get<{ members: number; nodes: number; documents: number; tables: number; items: number; attachments: number }>(`SELECT
         (SELECT count(*) FROM memberships WHERE workspaceId=?) AS members,
         (SELECT count(*) FROM nodes WHERE workspaceId=?) AS nodes,
         (SELECT count(*) FROM documents WHERE workspaceId=?) AS documents,
+        (SELECT count(*) FROM tables WHERE workspaceId=?) AS tables,
         (SELECT count(*) FROM items WHERE workspaceId=?) AS items,
-        (SELECT count(*) FROM attachments WHERE workspaceId=?) AS attachments`, wid, wid, wid, wid, wid)
+        (SELECT count(*) FROM attachments WHERE workspaceId=?) AS attachments`, wid, wid, wid, wid, wid, wid)
       await audit(userId, wid, 'workspace.delete', wid, counts!)
       await db.run('DELETE FROM workspaces WHERE id=?', wid)
       return { success: true }
@@ -544,7 +541,7 @@ export const service = {
       if (data.parentId) {
         const parent = await nodeInWorkspace(wid, data.parentId)
         if (parent.kind === 'list') throw new HttpError(400, 'Lists cannot contain other nodes')
-        let depth = 0
+        let depth = 1
         let ancestor: NodeRow = parent
         while (ancestor.parentId) {
           if (++depth >= 32) throw new HttpError(400, 'Maximum hierarchy depth exceeded')
@@ -600,8 +597,9 @@ export const service = {
           ) SELECT max(depth) AS height FROM (
             SELECT depth FROM descendants
             UNION ALL SELECT d.depth+1 FROM documents doc JOIN descendants d ON doc.parentId=d.id WHERE doc.workspaceId=?
-          ) heights`, wid, nodeId, wid, wid))!
-          if (depth + subtree.height > 32) throw new HttpError(400, 'Moving this subtree would exceed the hierarchy depth limit')
+            UNION ALL SELECT d.depth+1 FROM tables t JOIN descendants d ON t.parentId=d.id WHERE t.workspaceId=?
+          ) heights`, wid, nodeId, wid, wid, wid))!
+          if (depth + 1 + subtree.height > 32) throw new HttpError(400, 'Moving this subtree would exceed the hierarchy depth limit')
           if (await nodeProject(wid, nodeId) !== ancestor.id) await assertInheritedSubtreeStatuses(wid, nodeId, (await projectConfiguration(wid, ancestor.id)).statuses)
         }
       }
@@ -628,6 +626,7 @@ export const service = {
       await nodeInWorkspace(wid, nodeId)
       if (await db.get('SELECT id FROM nodes WHERE workspaceId=? AND parentId=? LIMIT 1', wid, nodeId)
         || await db.get('SELECT id FROM documents WHERE workspaceId=? AND parentId=? LIMIT 1', wid, nodeId)
+        || await db.get('SELECT id FROM tables WHERE workspaceId=? AND parentId=? LIMIT 1', wid, nodeId)
         || await db.get('SELECT id FROM items WHERE workspaceId=? AND nodeId=? LIMIT 1', wid, nodeId)) throw new HttpError(409, 'Node must be empty before deletion')
       await db.run('DELETE FROM nodes WHERE workspaceId=? AND id=?', wid, nodeId)
       await audit(userId, wid, 'node.delete', nodeId)
@@ -691,6 +690,7 @@ export const service = {
         VALUES (@id,@workspaceId,@nodeId,@title,@description,@status,@priority,@startDate,@dueDate,@tags,@customFields,@assigneeId,@checklist,@parentId,@bodyRevision,@createdAt,@updatedAt)`,
         { ...item, tags: JSON.stringify(item.tags), customFields: JSON.stringify(item.customFields), checklist: JSON.stringify(item.checklist) })
       await syncItemMentions(userId, wid, item.id, item.description, timestamp)
+      await claimBodyImages(userId, wid, item.id, 'task-body', item.description)
       if (item.assigneeId) await notify(item.assigneeId, userId, wid, 'assignment', item.id, null, timestamp)
       await audit(userId, wid, 'item.create', item.id)
       await emitEvent({ event: 'item.created', workspaceId: wid, itemId: item.id, actorId: userId, item })
@@ -720,6 +720,7 @@ export const service = {
         expectedUpdatedAt === undefined ? itemBindings : { ...itemBindings, expectedUpdatedAt })
       if (!updated.changes) throw new HttpError(409, 'Item changed; reload before saving')
       if (data.description !== undefined) await syncItemMentions(userId, wid, item.id, item.description, item.updatedAt)
+      if (data.description !== undefined) await claimBodyImages(userId, wid, item.id, 'task-body', item.description)
       if (bodyChanged) await relocateAnchors('comments', 'itemId', wid, item.id, item.description, item.bodyRevision)
       if (data.assigneeId !== undefined && item.assigneeId && item.assigneeId !== previous.assigneeId) {
         await notify(item.assigneeId, userId, wid, 'assignment', item.id, null, item.updatedAt)
@@ -748,11 +749,13 @@ export const service = {
   async listComments(userId: string, wid: string, itemId: string): Promise<Comment[]> {
     await requirePermission(userId, wid, 'items:read')
     await itemInWorkspace(wid, itemId)
-    const comments = await db.all<Comment & Record<string, unknown>>(`SELECT c.id,c.workspaceId,c.itemId,c.authorId,
+    const comments = await db.all<Comment & { photoRevision: string | null } & Record<string, unknown>>(`SELECT c.id,c.workspaceId,c.itemId,c.authorId,p.revision AS photoRevision,
       CASE WHEN c.authorId IS NULL THEN 'Former member' ELSE COALESCE(u.name,'Former member') END AS authorName,
       CASE WHEN c.deletedAt IS NULL THEN c.body ELSE '' END AS body,c.parentId,c.createdAt,c.deletedAt,
       c.anchorRevision,c.anchorStart,c.anchorEnd,c.anchorExact,c.anchorPrefix,c.anchorSuffix,c.anchorState
       FROM comments c LEFT JOIN users u ON u.id=c.authorId
+      LEFT JOIN profile_photos p ON p.userId=u.id AND u.disabled=0
+        AND EXISTS (SELECT 1 FROM memberships m WHERE m.userId=u.id AND m.workspaceId=c.workspaceId)
       WHERE c.workspaceId=? AND c.itemId=? ORDER BY c.createdAt,c.id`, wid, itemId)
     const reactions = await db.all<{ commentId: string; emoji: string; count: number; reactedByMe: number }>(`SELECT commentId,emoji,count(*) AS count,max(CASE WHEN userId=? THEN 1 ELSE 0 END) AS reactedByMe
       FROM comment_reactions WHERE workspaceId=? AND itemId=? GROUP BY commentId,emoji ORDER BY emoji`, userId, wid, itemId)
@@ -764,6 +767,7 @@ export const service = {
     }
     return comments.map(comment => ({
       id: comment.id, workspaceId: comment.workspaceId, itemId: comment.itemId, authorId: comment.authorId, authorName: comment.authorName,
+      authorPhotoUrl: profilePhotoUrl(comment.authorId, comment.photoRevision),
       body: comment.body, parentId: comment.parentId, anchor: decodeAnchor(comment), reactions: byComment.get(comment.id) ?? [],
       createdAt: comment.createdAt, deletedAt: comment.deletedAt,
     }))
@@ -791,6 +795,7 @@ export const service = {
       const comment = { id: randomUUID(), workspaceId: wid, itemId, authorId: userId, body: data.body, parentId, anchor, reactions: [], createdAt: now(), deletedAt: null, ...anchorColumns(anchor) }
       await db.run(`INSERT INTO comments(id,workspaceId,itemId,authorId,body,parentId,createdAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState)
         VALUES (@id,@workspaceId,@itemId,@authorId,@body,@parentId,@createdAt,@anchorRevision,@anchorStart,@anchorEnd,@anchorExact,@anchorPrefix,@anchorSuffix,@anchorState)`, comment)
+      await claimBodyImages(userId, wid, itemId, 'task-comment', comment.body, comment.id)
       for (const target of mentioned) {
         await db.run('INSERT INTO comment_mentions(workspaceId,itemId,commentId,userId) VALUES (?,?,?,?)', wid, itemId, comment.id, target)
         await notify(target, userId, wid, 'mention', itemId, comment.id, comment.createdAt)
@@ -799,6 +804,7 @@ export const service = {
       const author = (await db.get<{ name: string }>('SELECT name FROM users WHERE id=?', userId))!
       return {
         id: comment.id, workspaceId: comment.workspaceId, itemId: comment.itemId, authorId: comment.authorId, authorName: author.name,
+        authorPhotoUrl: (await profilePhotoMetadata(userId)).photoUrl,
         body: comment.body, parentId: comment.parentId, anchor, reactions: [], createdAt: comment.createdAt, deletedAt: comment.deletedAt,
       }
     })
@@ -819,6 +825,7 @@ export const service = {
       }
       if (comment.authorId !== userId && !member.permissions.includes('comments:manage')) throw new HttpError(403, 'Comment author or comments manager required')
       await db.run('UPDATE comments SET body=?,deletedAt=? WHERE workspaceId=? AND itemId=? AND id=?', '[deleted]', now(), wid, itemId, commentId)
+      await db.run('DELETE FROM rich_text_images WHERE workspaceId=? AND itemId=? AND commentId=?', wid, itemId, commentId)
       await audit(userId, wid, 'comment.delete', commentId, { itemId, own: comment.authorId === userId })
       return { success: true }
     })
@@ -1180,9 +1187,10 @@ export const service = {
   async listMembers(userId: string, wid: string) {
     const member = await requireMembership(userId, wid)
     if (!member.permissions.some((permission) => permission === 'items:read' || permission === 'members:manage')) throw new HttpError(403, 'Membership directory access denied')
-    return (await db.all<Record<string, unknown>>(`SELECT u.id,u.id AS userId,u.name,u.email,u.disabled,m.roleId,r.name AS roleName,r.isOwner FROM memberships m
-      JOIN users u ON u.id=m.userId JOIN roles r ON r.id=m.roleId WHERE m.workspaceId=? ORDER BY u.name,u.id`, wid))
-      .map((row) => ({ ...row, disabled: Boolean(row.disabled), isOwner: Boolean(row.isOwner) }))
+    return (await db.all<Record<string, unknown> & { userId: string; photoRevision: string | null }>(`SELECT u.id,u.id AS userId,u.name,u.email,u.disabled,m.roleId,r.name AS roleName,r.isOwner,p.revision AS photoRevision FROM memberships m
+      JOIN users u ON u.id=m.userId JOIN roles r ON r.id=m.roleId LEFT JOIN profile_photos p ON p.userId=u.id AND u.disabled=0
+      WHERE m.workspaceId=? ORDER BY u.name,u.id`, wid))
+      .map(({ photoRevision, ...row }) => ({ ...row, photoUrl: profilePhotoUrl(row.userId, photoRevision), disabled: Boolean(row.disabled), isOwner: Boolean(row.isOwner) }))
   },
   async addMember(userId: string, wid: string, input: unknown) {
     const data = z.object({ email: emailSchema, roleId: id }).strict().parse(input)
@@ -1268,10 +1276,17 @@ export const service = {
     return db.transaction(async () => {
       const member = await requirePermission(userId, wid, 'items:read')
       const canReadDocuments = member.permissions.includes('documents:read')
-      return { version: 5, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid),
+      const canReadTables = member.permissions.includes('tables:read')
+      const tableColumns = canReadTables ? await db.all<Record<string, unknown> & { id: string; options: string }>('SELECT id,workspaceId,tableId,name,type,options,position,createdAt,updatedAt FROM table_columns WHERE workspaceId=? ORDER BY tableId,position,id', wid) : []
+      const tableRecords = canReadTables ? await db.all<Record<string, unknown> & { id: string; data: string }>('SELECT id,workspaceId,tableId,data,createdAt,updatedAt FROM table_records WHERE workspaceId=? ORDER BY tableId,createdAt,id', wid) : []
+      return { version: 8, exportedAt: now(), workspace: await db.get('SELECT * FROM workspaces WHERE id=?', wid), nodes: await service.listNodes(userId, wid),
         documents: canReadDocuments ? await db.all('SELECT * FROM documents WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
         documentPages: canReadDocuments ? await db.all('SELECT documentId,itemId,position,createdAt FROM document_pages WHERE workspaceId=? ORDER BY documentId,position,createdAt,itemId', wid) : [],
         documentSubpages: canReadDocuments ? await db.all('SELECT documentId,pageDocumentId,position,placement,createdAt FROM document_subpages WHERE workspaceId=? ORDER BY documentId,position,createdAt,pageDocumentId', wid) : [],
+        tables: canReadTables ? await db.all('SELECT id,workspaceId,parentId,name,icon,color,createdAt,updatedAt FROM tables WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
+        tableColumns: tableColumns.map(({ options, ...column }) => ({ ...column, options: JSON.parse(options) })),
+        tableRecords: tableRecords.map(({ data, ...record }) => ({ ...record, values: JSON.parse(data) })),
+        tableSources: canReadTables ? await db.all('SELECT l.tableId,c.dialect,l.sourceSchema,l.sourceTable FROM table_links l JOIN table_connections c ON c.workspaceId=l.workspaceId AND c.id=l.connectionId WHERE l.workspaceId=? ORDER BY l.tableId', wid) : [],
         items: await service.listItems(userId, wid, { archived: 'include' }), fields: await service.listFields(userId, wid),
         projectFields: await service.listProjectFields(userId, wid),
         listStatusConfigs: await service.listListStatusConfigs(userId, wid),
@@ -1280,7 +1295,9 @@ export const service = {
         commentReactions: await db.all('SELECT itemId,commentId,userId,emoji,createdAt FROM comment_reactions WHERE workspaceId=? ORDER BY createdAt,commentId,userId,emoji', wid),
         documentComments: canReadDocuments ? await db.all('SELECT id,documentId,authorId,body,parentId,createdAt,deletedAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState FROM document_comments WHERE workspaceId=? ORDER BY createdAt,id', wid) : [],
         documentCommentReactions: canReadDocuments ? await db.all('SELECT documentId,commentId,userId,emoji,createdAt FROM document_comment_reactions WHERE workspaceId=? ORDER BY createdAt,commentId,userId,emoji', wid) : [],
-        attachments: await db.all('SELECT id,itemId,name,size,contentType,createdAt FROM attachments WHERE workspaceId=? ORDER BY createdAt,id', wid) }
+        attachments: await db.all('SELECT id,itemId,name,size,contentType,createdAt FROM attachments WHERE workspaceId=? ORDER BY createdAt,id', wid),
+        images: await db.all(`SELECT id,kind,itemId,documentId,commentId,documentCommentId,attachmentId,name,size,contentType,createdAt,committedAt
+          FROM rich_text_images WHERE workspaceId=? AND committedAt IS NOT NULL ${canReadDocuments ? '' : "AND kind!='document-comment'"} ORDER BY createdAt,id`, wid) }
     })
   },
 }

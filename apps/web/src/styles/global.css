@@ -375,6 +375,9 @@ button.custom-select-trigger {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
+@media (max-width: 760px), (pointer: coarse) {
+  .select-menu button { min-height: 44px; }
+}
 input:hover:not([readonly]):not(:disabled):not(:focus),
 select:hover:not(:disabled):not(:focus),
 textarea:hover:not([readonly]):not(:disabled):not(:focus) {
@@ -744,7 +747,7 @@ small {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 14px;
+  min-height: 32px;
   margin-bottom: 9px;
   padding: 0 7px;
   color: var(--sidebar-soft);
@@ -754,12 +757,10 @@ small {
   letter-spacing: 1.3px;
 }
 .sidebar-section-title button {
-  position: absolute;
-  top: 50%;
-  right: 0;
+  position: static;
+  flex: 0 0 32px;
   width: 32px;
   min-height: 32px;
-  transform: translateY(-50%);
   border: 0;
   background: transparent;
   color: var(--sidebar-ink);
@@ -1263,6 +1264,7 @@ small {
   line-height: inherit;
   text-align: left;
 }
+.hierarchy-title-button, .hierarchy-title-label { display: inline-flex; align-items: center; gap: 8px; }
 .hierarchy-title-editor {
   width: 100%;
 }

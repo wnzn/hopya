@@ -1,15 +1,18 @@
 import type { Router, HttpContext } from '@adonisjs/core/http'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit } from 'effect'
 import { z } from 'zod'
 import { db, audit } from './core.js'
 import { authenticate } from './security.js'
 import { HttpError, type Item } from './types.js'
 import { requirePermission } from './service.js'
 import { automationContext, type AutomationCausation } from './automation_context.js'
-import { initializeGraphRun, linearGraph, processGraphRun, registerAutomationGraphs } from './automation_graphs.js'
+import { initializeGraphRun, linearGraph, processGraphRunEffect, registerAutomationGraphs } from './automation_graphs.js'
 import { registerAutomationCredentials } from './automation_credentials.js'
-import { pinnedRequestEffect, resolvePinnedDestination } from './pinned_http.js'
+import { pinnedRequestEffect, resolvePinnedDestinationEffect } from './pinned_http.js'
+import { automationData, automationIO, AutomationLeaseLost, heartbeat } from './automation_effects.js'
+import { runPromiseThrow } from './database.js'
+import { sendMailEffect } from './mail.js'
 
 // Events emitted by workspace mutations. Keep names stable: they are part of
 // the webhook contract and automation triggers.
@@ -99,10 +102,7 @@ interface ActionAdapter<C extends SomeConfig> {
 const hmac = (secret: string, body: string) => `sha256=${createHash('sha256').update(`${secret}.${body}`).digest('hex')}`
 
 const request = (url: string, init: { method?: string; body?: string; headers?: Record<string, string>; timeoutMs?: number }) =>
-  Effect.tryPromise({
-    try: async () => resolvePinnedDestination(url),
-    catch: (error) => new DeliveryError(error instanceof Error ? error.message : 'Request failed'),
-  }).pipe(Effect.flatMap((destination) => pinnedRequestEffect(destination, { ...init, timeoutMs: init.timeoutMs ?? 10_000, totalTimeoutMs: init.timeoutMs ?? 10_000, maxResponseBytes: STEP_OUTPUT_BYTES, truncateResponse: true }).pipe(
+  resolvePinnedDestinationEffect(url).pipe(Effect.mapError((error) => new DeliveryError(error.message)), Effect.flatMap((destination) => pinnedRequestEffect(destination, { ...init, timeoutMs: init.timeoutMs ?? 10_000, totalTimeoutMs: init.timeoutMs ?? 10_000, maxResponseBytes: STEP_OUTPUT_BYTES, truncateResponse: true }).pipe(
     Effect.mapError((error) => new DeliveryError(error.message)),
     Effect.flatMap((response) => response.status >= 200 && response.status < 300
       ? Effect.succeed({ status: response.status, output: response.body.toString('utf8') })
@@ -133,27 +133,9 @@ const adapters: {
     config: providers.email,
     // SMTP is operator-configured; without it the provider is unavailable.
     run: (config, event) => Effect.gen(function* () {
-      const relay = process.env.SMTP_URL
-      if (!relay) return yield* Effect.fail(new ProviderUnavailable('SMTP is not configured on this instance'))
-      // nodemailer is loaded lazily so instances without SMTP never need it.
-      const nodemailer = yield* Effect.tryPromise({
-        try: async () => (await import('nodemailer' as string)).default as {
-          createTransport: (url: string) => { sendMail: (mail: { to: string; subject: string; text: string }) => Promise<{ messageId: string }>; close: () => void }
-        },
-        catch: () => new ProviderUnavailable('Email delivery is not available on this instance'),
-      })
-      const info = yield* Effect.tryPromise({
-        try: async () => {
-          const transport = nodemailer.createTransport(relay)
-          try {
-            return await transport.sendMail({
-              to: config.to.join(', '), subject: config.subject,
-              text: `${event.event} in workspace ${event.workspaceId} at ${event.at}`,
-            })
-          } finally { await transport.close() }
-        },
-        catch: (error) => new DeliveryError(error instanceof Error ? error.message : 'Email delivery failed'),
-      })
+      if (!process.env.SMTP_URL) return yield* Effect.fail(new ProviderUnavailable('SMTP is not configured on this instance'))
+      const info = yield* sendMailEffect({ to: config.to.join(', '), subject: config.subject, text: `${event.event} in workspace ${event.workspaceId} at ${event.at}` })
+        .pipe(Effect.mapError((error) => new DeliveryError(error.message)))
       return { output: String(info.messageId), log: 'Email delivered' }
     }),
   },
@@ -213,11 +195,10 @@ function validateSteps(steps: { type: ProviderType; config: Record<string, unkno
   })
 }
 
-const deliverySlots = Effect.runSync(Effect.makeSemaphore(4))
 const deliveryTimeout = <A>(effect: Effect.Effect<A, DeliveryFail>): Effect.Effect<A, DeliveryFail> =>
-  Effect.timeoutFail(effect, {
+  Effect.timeoutOrElse(effect, {
     duration: '15 seconds',
-    onTimeout: () => new DeliveryError('Delivery timed out'),
+    orElse: () => Effect.fail(new DeliveryError('Delivery timed out')),
   })
 
 interface WebhookRow extends Record<string, unknown> { id: string; workspaceId: string; name: string; url: string; events: string; enabled: number; secret: string; signingVersion: number; createdAt: string; updatedAt: string }
@@ -298,78 +279,108 @@ function resolveReferences(value: unknown, outputs: Map<number, string>): unknow
 }
 
 async function finishRun(run: RunRow, status: 'delivered' | 'failed', detail: string): Promise<void> {
-  await db.run('UPDATE automation_runs SET status=?,detail=?,completedAt=? WHERE workspaceId=? AND id=?',
-    status, sanitize(detail, STEP_LOG_BYTES), new Date().toISOString(), run.workspaceId, run.id)
+  await db.transaction(async () => {
+    await heartbeat(run)
+    const timestamp = new Date().toISOString(), message = sanitize(detail, STEP_LOG_BYTES)
+    if (status === 'failed') {
+      await db.run("UPDATE automation_step_runs SET status='failed',log=?,completedAt=? WHERE workspaceId=? AND runId=? AND status='running'", message, timestamp, run.workspaceId, run.id)
+      await db.run("UPDATE automation_node_runs SET status='failed',output=?,log=?,completedAt=? WHERE workspaceId=? AND runId=? AND status='running'", JSON.stringify(''), message, timestamp, run.workspaceId, run.id)
+      await db.run("UPDATE automation_step_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND status='pending'", timestamp, run.workspaceId, run.id)
+      await db.run("UPDATE automation_node_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND status='pending'", timestamp, run.workspaceId, run.id)
+    }
+    const changed = await db.run("UPDATE automation_runs SET status=?,detail=?,completedAt=?,heartbeatAt=?,leaseId=NULL WHERE workspaceId=? AND id=? AND status='running' AND leaseId=?",
+      status, message, timestamp, timestamp, run.workspaceId, run.id, run.leaseId)
+    if (!changed.changes) throw new AutomationLeaseLost()
+  })
   await trimRuns(run.workspaceId)
 }
 
-const processRun = (run: RunRow) => deliverySlots.withPermits(1)(Effect.gen(function* () {
-  const payload = JSON.parse(run.event) as EventPayload
+const processRun = Effect.fnUntraced(function* (run: RunRow) {
+  const payload = yield* automationData(() => JSON.parse(run.event) as EventPayload)
+  yield* automationIO(() => heartbeat(run))
   if (run.targetType === 'webhook') {
-    const hook = yield* Effect.promise(() => db.get<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? AND id=? AND enabled=1', run.workspaceId, run.targetId))
-    if (!hook) { yield* Effect.promise(() => finishRun(run, 'failed', 'Webhook is unavailable')); return }
+    const hook = yield* automationIO(() => db.get<WebhookRow>('SELECT * FROM webhooks WHERE workspaceId=? AND id=? AND enabled=1', run.workspaceId, run.targetId))
+    if (!hook) { yield* automationIO(() => finishRun(run, 'failed', 'Webhook is unavailable')); return }
     const body = JSON.stringify(payload)
     const signature = hook.signingVersion >= 2 ? `sha256=${createHmac('sha256', hook.secret).update(body).digest('hex')}` : hmac(hook.secret, body)
-    const result = yield* Effect.either(deliveryTimeout(request(hook.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-hopya-signature': signature } })))
-    if (result._tag === 'Left') yield* Effect.promise(() => finishRun(run, 'failed', `webhook: ${result.left.message}`))
-    else yield* Effect.promise(() => finishRun(run, 'delivered', `webhook ${result.right.status}`))
+    const result = yield* Effect.result(deliveryTimeout(request(hook.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-hopya-signature': signature } })))
+    if (result._tag === 'Failure') yield* automationIO(() => finishRun(run, 'failed', `webhook: ${result.failure.message}`))
+    else yield* automationIO(() => finishRun(run, 'delivered', `webhook ${result.success.status}`))
     return
   }
-  const automation = yield* Effect.promise(() => db.get('SELECT id FROM automations WHERE workspaceId=? AND id=?', run.workspaceId, run.targetId))
-  if (!automation || run.automationVersion === null) { yield* Effect.promise(() => finishRun(run, 'failed', 'Automation is unavailable')); return }
-  if (yield* Effect.promise(() => processGraphRun(run))) return
-  const steps = yield* Effect.promise(() => db.all<StepRow>('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', run.workspaceId, run.targetId, run.automationVersion))
-  const priorRuns = yield* Effect.promise(() => db.all<StepRunRow>('SELECT * FROM automation_step_runs WHERE workspaceId=? AND runId=?', run.workspaceId, run.id))
+  const automation = yield* automationIO(() => db.get('SELECT id FROM automations WHERE workspaceId=? AND id=?', run.workspaceId, run.targetId))
+  if (!automation || run.automationVersion === null) { yield* automationIO(() => finishRun(run, 'failed', 'Automation is unavailable')); return }
+  if (yield* processGraphRunEffect(run)) { yield* automationIO(() => trimRuns(run.workspaceId)); return }
+  const steps = yield* automationIO(() => db.all<StepRow>('SELECT * FROM automation_steps WHERE workspaceId=? AND automationId=? AND version=? ORDER BY position', run.workspaceId, run.targetId, run.automationVersion))
+  const priorRuns = yield* automationIO(() => db.all<StepRunRow>('SELECT * FROM automation_step_runs WHERE workspaceId=? AND runId=?', run.workspaceId, run.id))
   const existing = new Map(priorRuns.map((step) => [step.position, step]))
   const outputs = new Map<number, string>()
   for (const step of steps) {
     const prior = existing.get(step.position)
     if (prior?.status === 'delivered') { outputs.set(step.position, prior.output); continue }
     const startedAt = new Date().toISOString()
-    yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='running',startedAt=? WHERE workspaceId=? AND runId=? AND position=?", startedAt, run.workspaceId, run.id, step.position))
+    yield* automationIO(() => db.transaction(async () => {
+      await heartbeat(run)
+      const changed = await db.run("UPDATE automation_step_runs SET status='running',startedAt=? WHERE workspaceId=? AND runId=? AND position=? AND status='pending'", startedAt, run.workspaceId, run.id, step.position)
+      if (!changed.changes) throw new AutomationLeaseLost()
+    }))
     const adapter = adapters[step.type] as ActionAdapter<SomeConfig>
-    const resolved = resolveReferences(JSON.parse(step.config), outputs)
+    const resolved = yield* automationData(() => resolveReferences(JSON.parse(step.config), outputs))
     const parsed = adapter.config.safeParse(resolved)
     const result = parsed.success
-      ? yield* Effect.either(deliveryTimeout(adapter.run(parsed.data as SomeConfig, payload, () => undefined)))
-      : { _tag: 'Left' as const, left: new DeliveryError(`Invalid ${step.type} action config`) }
+      ? yield* Effect.result(deliveryTimeout(adapter.run(parsed.data as SomeConfig, payload, () => undefined)))
+      : { _tag: 'Failure' as const, failure: new DeliveryError(`Invalid ${step.type} action config`) }
     const completedAt = new Date().toISOString()
-    if (result._tag === 'Left') {
-      const log = sanitize(result.left.message, STEP_LOG_BYTES)
-      yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='failed',log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?", log, completedAt, run.workspaceId, run.id, step.position))
-      yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='skipped',completedAt=? WHERE workspaceId=? AND runId=? AND position>?", completedAt, run.workspaceId, run.id, step.position))
-      yield* Effect.promise(() => finishRun(run, 'failed', `Step ${step.position} failed: ${log}`))
+    if (result._tag === 'Failure') {
+      const log = sanitize(result.failure.message, STEP_LOG_BYTES)
+      yield* automationIO(() => finishRun(run, 'failed', `Step ${step.position} failed: ${log}`))
       return
     }
-    const output = sanitize(result.right.output, STEP_OUTPUT_BYTES)
+    const output = sanitize(result.success.output, STEP_OUTPUT_BYTES)
     outputs.set(step.position, output)
-    yield* Effect.promise(() => db.run("UPDATE automation_step_runs SET status='delivered',output=?,log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?",
-      output, sanitize(result.right.log, STEP_LOG_BYTES), completedAt, run.workspaceId, run.id, step.position))
+    yield* automationIO(() => db.transaction(async () => {
+      await heartbeat(run)
+      await db.run("UPDATE automation_step_runs SET status='delivered',output=?,log=?,completedAt=? WHERE workspaceId=? AND runId=? AND position=?",
+        output, sanitize(result.success.log, STEP_LOG_BYTES), completedAt, run.workspaceId, run.id, step.position)
+    }))
   }
-  yield* Effect.promise(() => finishRun(run, 'delivered', `${steps.length} step${steps.length === 1 ? '' : 's'} delivered`))
-}))
+  yield* automationIO(() => finishRun(run, 'delivered', `${steps.length} step${steps.length === 1 ? '' : 's'} delivered`))
+})
+
+const isolatedRun = (run: RunRow) => processRun(run).pipe(
+  Effect.catchCause((cause) => {
+    const failure = Cause.findErrorOption(cause)
+    if (failure._tag === 'Some' && failure.value instanceof AutomationLeaseLost) return Effect.void
+    const detail = failure._tag === 'Some' && failure.value instanceof HttpError ? failure.value.message : 'Automation execution failed'
+    return automationIO(() => finishRun(run, 'failed', detail)).pipe(Effect.catch((error) => error instanceof AutomationLeaseLost ? Effect.void : Effect.fail(error)))
+  }),
+  // Persist an interrupted attempt where possible; retain its running lease if
+  // storage is unavailable. Lease expiry will fail it closed, never replay it.
+  Effect.onInterrupt(() => automationIO(() => finishRun(run, 'failed', 'Automation execution interrupted; delivery outcome may be unknown')).pipe(Effect.ignore)),
+  Effect.exit,
+)
 
 let flushing = false
 export async function flushEvents(): Promise<void> {
   if (flushing) return
   flushing = true
   try {
-    // A 50-node graph can spend up to 12.5 minutes in bounded HTTP actions.
-    // Heartbeats advance between nodes. If a graph still loses its 20-minute
-    // lease, fail it closed instead of replaying already delivered side effects.
+    // Heartbeats advance between bounded nodes. Any expired claimed run can
+    // have delivered an external write before its local acknowledgment failed.
+    // Fail all formats closed; never retry an uncertain webhook/linear write.
     const stale = new Date(Date.now() - 20 * 60_000).toISOString()
     await db.transaction(async () => {
       const completedAt = new Date().toISOString()
-      await db.run(`UPDATE automation_node_runs SET status='failed',log='Worker lease expired; graph was not replayed',completedAt=?
+      await db.run(`UPDATE automation_node_runs SET status='failed',log='Worker lease expired; delivery was not replayed',completedAt=?
         WHERE status='running' AND runId IN (SELECT id FROM automation_runs WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<?)`, completedAt, stale)
       await db.run(`UPDATE automation_node_runs SET status='skipped',completedAt=? WHERE status='pending' AND runId IN (
-        SELECT id FROM automation_runs WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<? AND EXISTS (
-          SELECT 1 FROM automation_node_runs WHERE automation_node_runs.runId=automation_runs.id))`, completedAt, stale)
-      await db.run(`UPDATE automation_runs SET status='failed',detail='Worker lease expired; graph was not replayed',completedAt=?,leaseId=NULL
-        WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<? AND EXISTS (
-          SELECT 1 FROM automation_node_runs WHERE automation_node_runs.runId=automation_runs.id)`, completedAt, stale)
-      await db.run("UPDATE automation_step_runs SET status='pending',startedAt=NULL WHERE status='running' AND runId IN (SELECT id FROM automation_runs WHERE status='running' AND startedAt<?)", stale)
-      await db.run("UPDATE automation_runs SET status='pending',startedAt=NULL,leaseId=NULL,heartbeatAt=NULL WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<? AND NOT EXISTS (SELECT 1 FROM automation_node_runs WHERE automation_node_runs.runId=automation_runs.id)", stale)
+        SELECT id FROM automation_runs WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<?)`, completedAt, stale)
+      await db.run(`UPDATE automation_step_runs SET status='failed',log='Worker lease expired; delivery was not replayed',completedAt=?
+        WHERE status='running' AND runId IN (SELECT id FROM automation_runs WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<?)`, completedAt, stale)
+      await db.run(`UPDATE automation_step_runs SET status='skipped',completedAt=? WHERE status='pending' AND runId IN (
+        SELECT id FROM automation_runs WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<?)`, completedAt, stale)
+      await db.run(`UPDATE automation_runs SET status='failed',detail='Worker lease expired; delivery was not replayed',completedAt=?,leaseId=NULL
+        WHERE status='running' AND COALESCE(heartbeatAt,startedAt)<?`, completedAt, stale)
     })
     while (true) {
       const batch = await db.transaction(async () => {
@@ -377,20 +388,23 @@ export async function flushEvents(): Promise<void> {
         const claimSql = db.sql({
           pg: `WITH claimable AS (
             SELECT id FROM automation_runs WHERE status='pending' AND event IS NOT NULL
-            ORDER BY createdAt,id LIMIT 20 FOR UPDATE SKIP LOCKED
+             ORDER BY createdAt,id LIMIT 4 FOR UPDATE SKIP LOCKED
           )
           UPDATE automation_runs SET status='running',startedAt=?,heartbeatAt=?,leaseId=?,attempt=attempt+1
           WHERE id IN (SELECT id FROM claimable) AND status='pending' RETURNING *`,
           sqlite: `UPDATE automation_runs SET status='running',startedAt=?,heartbeatAt=?,leaseId=?,attempt=attempt+1
           WHERE id IN (
-            SELECT id FROM automation_runs WHERE status='pending' AND event IS NOT NULL ORDER BY createdAt,id LIMIT 20
+             SELECT id FROM automation_runs WHERE status='pending' AND event IS NOT NULL ORDER BY createdAt,id LIMIT 4
           ) AND status='pending' RETURNING *`,
         })
         const rows = await db.all<RunRow>(claimSql, now, now, leaseId)
         return rows.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
       })
       if (!batch.length) break
-      await Effect.runPromise(Effect.all(batch.map(processRun), { concurrency: 'unbounded', discard: true }).pipe(Effect.catchAll(() => Effect.void)))
+      // Exit is captured per run, so a database failure/defect cannot interrupt
+      // sibling deliveries. Do not claim more work than can execute immediately.
+      const outcomes = await runPromiseThrow(Effect.forEach(batch, isolatedRun, { concurrency: 4 }))
+      if (outcomes.some(Exit.isFailure)) throw new HttpError(503, 'Automation run outcome could not be recorded')
     }
   } finally { flushing = false }
 }
@@ -603,7 +617,7 @@ export function registerAutomations(router: Router): void {
   registerAutomationGraphs(router)
   registerAutomationCredentials(router)
   // Flush queued events after the response settles, off the transaction path.
-  const timer = setInterval(() => { void flushEvents() }, 2000)
+  const timer = setInterval(scheduleFlush, 2000)
   timer.unref()
 }
 

@@ -17,10 +17,13 @@ import {
   type ImportFormat,
   type ImportResult,
   type TreeNode,
+  type TableSummary,
 } from "../lib/api";
 import { parseCsv, toCsv } from "../lib/csv";
 import { ErrorNotice, Loading, Shell, useSession } from "./Shared";
 import Select from "./Select";
+import TableTransfer from "./TableTransfer";
+import TableConnections from "./TableConnections";
 
 function listOptions(nodes: TreeNode[]) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -88,6 +91,7 @@ function sampleText(value: unknown): string | null {
 }
 
 export default function ImportExport() {
+  const [resource, setResource] = useState("tasks");
   const { user, error: authError } = useSession();
   const [workspaces, setWorkspaces] = useState<
     { id: string; name: string }[]
@@ -186,6 +190,7 @@ export default function ImportExport() {
     : "all";
 
   function chooseWorkspace(next: string) {
+    if (next === wid || !workspaces.some(workspace => workspace.id === next)) return;
     setWid(next);
     setNodeId("");
     setScope("all");
@@ -412,6 +417,10 @@ export default function ImportExport() {
   }
 
   const pageError = authError || loadError;
+  function includeTable(table: TableSummary) {
+    setDetail(current => current && current.workspace.id === table.workspaceId
+      ? { ...current, tables: [...(current.tables ?? []).filter(existing => existing.id !== table.id), table] } : current);
+  }
   const loading =
     !user || !workspacesLoaded || (!!wid && !detail && !pageError);
   return (
@@ -424,8 +433,7 @@ export default function ImportExport() {
       <div className="settings-body">
         <h1>Import &amp; export</h1>
         <p className="muted">
-          Move tasks in and out of {detail?.workspace.name || "your workspace"}{" "}
-          with CSV or JSON files.
+          Move tasks and Tables in and out of {detail?.workspace.name || "your workspace"}, or connect a live SQL database.
         </p>
         <ErrorNotice error={pageError} />
         {pageError && (
@@ -442,6 +450,12 @@ export default function ImportExport() {
           </section>
         ) : (
           <>
+            <label>Resource<Select value={resource} onChange={event => setResource(event.target.value)}>
+              <option value="tasks">Tasks</option><option value="tables">Tables</option><option value="sql">Live SQL databases</option>
+            </Select></label>
+            {resource === "tables" && <section className="settings-section"><div className="section-intro"><h2>Tables</h2><p>Import and export standalone tabular data.</p></div><TableTransfer key={detail.workspace.id} detail={detail} onImported={includeTable} /></section>}
+            {resource === "sql" && <section className="settings-section"><div className="section-intro"><h2>Live SQL databases</h2><p>Workspace connections and linked Tables.</p></div><TableConnections key={detail.workspace.id} detail={detail} onConnected={includeTable} /></section>}
+            {resource === "tasks" && <>
             <section
               className="settings-section"
               aria-labelledby="templates-heading"
@@ -699,6 +713,7 @@ export default function ImportExport() {
                 </div>
               </div>
             </section>
+            </>}
           </>
         )}
       </div>

@@ -1,6 +1,6 @@
 import { test } from './japa.js'
 import assert from 'node:assert/strict'
-import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { Effect } from 'effect'
@@ -117,8 +117,8 @@ test('pinned outbound requests enforce an absolute deadline despite active respo
   })
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.close() })
   const port = (server.address() as { port: number }).port
-  const result = await Effect.runPromise(Effect.either(pinnedRequestEffect({ url: new URL(`http://127.0.0.1:${port}`), address: '127.0.0.1', family: 4 }, { timeoutMs: 1000, totalTimeoutMs: 60, maxResponseBytes: 8192 })))
-  assert.equal(result._tag, 'Left'); if (result._tag === 'Left') assert.equal(result.left.message, 'Outbound request timed out')
+  const result = await Effect.runPromise(Effect.result(pinnedRequestEffect({ url: new URL(`http://127.0.0.1:${port}`), address: '127.0.0.1', family: 4 }, { timeoutMs: 1000, totalTimeoutMs: 60, maxResponseBytes: 8192 })))
+  assert.equal(result._tag, 'Failure'); if (result._tag === 'Failure') assert.equal(result.failure.message, 'Outbound request timed out')
 })
 
 test('automations enforce permissions, deliver ordered steps, redact output and record failures', { timeout: 30000 }, async (t) => {
@@ -597,6 +597,79 @@ test('graph publishing executes one branch and credentials remain write-only and
   const updateRuns = await (await api.request(`${base}/automations/runs?automationId=${updateAutomation.id}`, { token: owner.token })).json() as { status: string }[]
   assert.equal(updateRuns.length, 1, 'same automation re-entry must be suppressed')
   assert.equal(updateRuns[0]?.status, 'delivered')
+})
+
+test('worker isolates delivery and persistence failures, bounds claims, and never replays expired writes', { timeout: 20000 }, async (t) => {
+  const received: string[] = [], held: (() => void)[] = []
+  let release = false, active = 0, peak = 0
+  const provider = createServer((request, response) => {
+    received.push(request.url!); active++; peak = Math.max(peak, active)
+    response.once('close', () => { active-- })
+    const finish = () => response.end('accepted')
+    if (release) finish(); else held.push(finish)
+  })
+  provider.listen(0, '127.0.0.1'); await once(provider, 'listening')
+  t.after(() => { provider.closeAllConnections(); provider.close() })
+  const origin = `http://127.0.0.1:${(provider.address() as { port: number }).port}`
+  const api = await integrationServer(t, { AUTOMATION_NETWORK_EXCEPTIONS: origin }), owner = await api.user(true)
+  const post = async (path: string, body: unknown) => {
+    const response = await api.request(path, { method: 'POST', token: owner.token, body })
+    assert.ok(response.ok, await response.clone().text())
+    return response.json() as Promise<{ id: string }>
+  }
+  const workspace = await post('/workspaces', { name: 'Worker isolation' }), base = `/workspaces/${workspace.id}`
+  const automation = await post(`${base}/automations`, { name: 'Durable attempt', event: 'field.changed', enabled: false, steps: [
+    { type: 'http', config: { url: `${origin}/delivered`, method: 'POST' } },
+    { type: 'log', config: { message: 'after delivery' } },
+  ] })
+  const invalid = await post(`${base}/automations`, { name: 'Invalid transport', event: 'field.changed', enabled: false, action: { type: 'http', config: { url: `${origin}/invalid`, headers: { 'secret-header\n': 'private-fixture-value' } } } })
+  const hook = await post(`${base}/webhooks`, { name: 'Expired webhook', url: `${origin}/expired`, events: ['field.changed'] })
+  const runIds = Array.from({ length: 6 }, () => randomUUID()), staleLinear = randomUUID(), staleHook = randomUUID()
+  const steps = await api.db.all<{ id: string; position: number; type: string }>('SELECT id,position,type FROM automation_steps WHERE automationId=? ORDER BY position', automation.id)
+  const invalidStep = (await api.db.get<{ id: string }>('SELECT id FROM automation_steps WHERE automationId=?', invalid.id))!
+  const event = JSON.stringify({ event: 'field.changed', workspaceId: workspace.id, actorId: owner.id, at: new Date().toISOString() })
+  await api.db.transaction(async (transaction) => {
+    for (const [index, id] of runIds.entries()) {
+      const target = index === 1 ? invalid.id : automation.id
+      await transaction.run(`INSERT INTO automation_runs (id,workspaceId,automationId,targetType,targetId,automationVersion,status,event,detail,createdAt)
+        VALUES (?,?,?,'automation',?,1,'pending',?,'',?)`, id, workspace.id, target, target, event, new Date(Date.UTC(2001, 0, 1, 0, 0, index)).toISOString())
+      for (const step of index === 1 ? [{ id: invalidStep.id, position: 1, type: 'http' }] : steps) await transaction.run(`INSERT INTO automation_step_runs (id,workspaceId,runId,stepId,position,type,status) VALUES (?,?,?,?,?,?,'pending')`, randomUUID(), workspace.id, id, step.id, step.position, step.type)
+    }
+    for (const [id, target, type] of [[staleLinear, automation.id, 'automation'], [staleHook, hook.id, 'webhook']]) {
+      await transaction.run(`INSERT INTO automation_runs (id,workspaceId,automationId,targetType,targetId,automationVersion,status,event,detail,createdAt,startedAt,heartbeatAt,leaseId,attempt)
+        VALUES (?,?,?,?,?,?,'running',?,'',?,?,?,'old-lease',1)`, id, workspace.id, type === 'automation' ? target : null, type, target, type === 'automation' ? 1 : null, event, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+    }
+    for (const step of steps) await transaction.run(`INSERT INTO automation_step_runs (id,workspaceId,runId,stepId,position,type,status) VALUES (?,?,?,?,?,?,?)`, randomUUID(), workspace.id, staleLinear, step.id, step.position, step.type, step.position === 1 ? 'running' : 'pending')
+    // Distinct failure: the endpoint accepted the write, but its durable local
+    // acknowledgment fails. That attempt must fail without cancelling siblings.
+    await transaction.run(`CREATE TRIGGER fail_delivery_ack BEFORE UPDATE ON automation_step_runs WHEN NEW.runId='${runIds[2]}' AND NEW.status='delivered' BEGIN SELECT RAISE(ABORT, 'private-driver-detail'); END`)
+  })
+  const startedDeadline = Date.now() + 7000
+  while (held.length < 3 && Date.now() < startedDeadline) await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(held.length, 3)
+  assert.deepEqual((await api.db.all<{ status: string }>('SELECT status FROM automation_runs WHERE id IN (?,?) ORDER BY id', runIds[4], runIds[5])).map((row) => row.status), ['pending', 'pending'], 'waiting deliveries must remain unclaimed')
+  release = true; for (const finish of held) finish()
+  let rows: { id: string; status: string; detail: string; attempt: number }[] = []
+  const deadline = Date.now() + 7000
+  while (Date.now() < deadline) {
+    rows = await api.db.all('SELECT id,status,detail,attempt FROM automation_runs WHERE workspaceId=?', workspace.id)
+    if (rows.every((row) => ['delivered', 'failed'].includes(row.status))) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  assert.equal(rows.length, 8)
+  for (const [index, id] of runIds.entries()) {
+    const row = rows.find((entry) => entry.id === id)!
+    assert.equal(row.status, index === 1 || index === 2 ? 'failed' : 'delivered', JSON.stringify(row))
+    assert.equal(row.attempt, 1)
+  }
+  assert.equal(received.length, 5, 'each valid claimed write is sent once; invalid and expired attempts send nothing')
+  assert.ok(peak <= 4)
+  assert.equal(JSON.stringify(rows).includes('private-'), false, 'driver/transport details must not enter run logs')
+  for (const id of [staleLinear, staleHook]) {
+    const row = rows.find((entry) => entry.id === id)!
+    assert.equal(row.status, 'failed'); assert.match(row.detail, /not replayed/); assert.equal(row.attempt, 1)
+  }
+  assert.deepEqual((await api.db.all<{ status: string }>('SELECT status FROM automation_step_runs WHERE runId=? ORDER BY position', staleLinear)).map((row) => row.status), ['failed', 'skipped'])
 })
 
 // Keep the server import referenced for type checking without side effects.

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import TaskTable from "./TaskTable";
 import Select from "./Select";
 import SolidIcon from "./SolidIcon";
+import BodyImageCarousel from './BodyImageCarousel';
 import {
   api,
   evaluateFormula,
@@ -73,14 +74,14 @@ function TaskCard({ item, onOpen, detail, variant = "board" }: { item: Item; onO
     {item.tags.map((tag) => <span className="tag-badge" title={variant === "gallery" ? tag : undefined} style={tagStyle(detail, item.nodeId, tag)} key={tag}>{tag}</span>)}
   </div>;
   if (variant === "gallery") return (
-    <button className="task-card task-card--gallery" data-task-id={item.id} onClick={() => onOpen(item)}>
-      <span className="task-card-media" aria-hidden="true" />
-      <span className="task-card-footer">
+    <article className="task-card task-card--gallery" data-task-id={item.id}>
+      <BodyImageCarousel description={item.description} title={item.title} onOpen={() => onOpen(item)} />
+      <button type="button" className="task-card-footer gallery-task-open" onClick={() => onOpen(item)} aria-label={`Open task: ${item.title}`}>
         <strong title={item.title}>{item.title}</strong>
         {meta}
         {tags}
-      </span>
-    </button>
+      </button>
+    </article>
   );
   return (
     <button className="task-card task-card--board" data-task-id={item.id} onClick={() => onOpen(item)}>

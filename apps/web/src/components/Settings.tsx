@@ -1,4 +1,4 @@
-import { useEffect, useState, type SubmitEvent } from "react";
+import { useEffect, useState } from "react";
 import {
   api,
   message,
@@ -6,24 +6,13 @@ import {
   type Detail,
   type Workspace,
 } from "../lib/api";
-import { ErrorNotice, Loading, Shell, ThemeToggle, useSession } from "./Shared";
+import { ErrorNotice, Loading, Shell, useSession } from "./Shared";
 import WorkspaceSettings from "./WorkspaceSettings";
-import ProfileForm from "./ProfileForm";
 
-type Token = {
-  id: string;
-  name: string;
-  createdAt: string;
-  lastUsedAt?: string | null;
-  expiresAt?: string | null;
-};
 export default function Settings() {
-  const { user, setUser, error: authError } = useSession();
+  const { user, error: authError } = useSession();
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [tokens, setTokens] = useState<Token[]>([]);
-  const [rawToken, setRawToken] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [wid, setWid] = useState("");
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -34,14 +23,11 @@ export default function Settings() {
   useEffect(() => {
     if (!user) return;
     const controller = new AbortController();
-    Promise.all([
-      api<Token[]>("/auth/tokens", "GET", undefined, controller.signal),
-      api<Workspace[]>("/workspaces", "GET", undefined, controller.signal),
-    ])
-      .then(([t, w]) => {
+    api<Workspace[]>("/workspaces", "GET", undefined, controller.signal)
+      .then((w) => {
+        if (controller.signal.aborted) return;
         let preferredWorkspace: string | null = null;
         try { preferredWorkspace = localStorage.getItem("hopya.workspace"); } catch {}
-        setTokens(t);
         setWorkspaces(w);
         setWid(
           (current) =>
@@ -85,47 +71,8 @@ export default function Settings() {
       });
     return () => controller.abort();
   }, [wid, revision]);
-  async function createToken(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const name = new FormData(form).get("name");
-    setBusy(true);
-    setError("");
-    setSuccess("");
-    try {
-      const result = await api<{ token: string }>("/auth/tokens", "POST", {
-        name,
-      });
-      setRawToken(result.token);
-      form.reset();
-      setTokens(await api<Token[]>("/auth/tokens"));
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function revoke(token: Token) {
-    if (
-      !window.confirm(
-        `Revoke "${token.name}"? Apps using it will lose access immediately.`,
-      )
-    )
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      await api(`/auth/tokens/${token.id}`, "DELETE");
-      setTokens((current) => current.filter((t) => t.id !== token.id));
-      setSuccess("Token revoked.");
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
   function chooseWorkspace(id: string) {
-    if (!workspaces.some((workspace) => workspace.id === id)) return;
+    if (id === wid || !workspaces.some((workspace) => workspace.id === id)) return;
     setWid(id);
     setDetail(null);
     setDetailLoading(true);
@@ -146,28 +93,21 @@ export default function Settings() {
     } catch {}
   }
   return (
-    <Shell user={user} active="settings" currentPage="Settings" navigation={{
+    <Shell user={user} active="settings" currentPage="Workspace settings" navigation={{
       workspaces,
       workspaceId: wid,
       detail,
       onWorkspaceChange: chooseWorkspace,
     }}>
       <div className="settings-body">
-        <h1>Settings</h1>
+        <h1>Workspace settings</h1>
         <p className="muted">
-          Appearance, your profile, tokens, and workspace administration tools.
+          Manage the selected workspace, its members, roles and custom fields.
         </p>
-        <section className="settings-section" aria-labelledby="appearance-heading">
-          <div className="section-intro">
-            <h2 id="appearance-heading">Appearance</h2>
-            <p>Choose light or dark mode, or follow your device settings.</p>
-          </div>
-          <ThemeToggle />
-        </section>
         <ErrorNotice error={authError || error} />
         {(authError || error) && (
           <button onClick={() => window.location.reload()}>
-            Reload settings
+            Reload workspace settings
           </button>
         )}
         {success && (
@@ -179,84 +119,6 @@ export default function Settings() {
           <Loading />
         ) : (
           <>
-            <ProfileForm user={user} setUser={setUser} onCredentialsChanged={() => {
-              setRawToken("");
-              setTokens([]);
-            }} />
-            <section className="settings-section">
-              <div className="section-intro">
-                <h2>Personal access tokens</h2>
-                <p>
-                  Connect scripts and MCP clients. Tokens act as you and respect
-                  your workspace permissions.
-                </p>
-              </div>
-              <div className="stack">
-                {rawToken && (
-                  <div className="notice token-reveal">
-                    <strong>
-                      Copy this token now. It will not be shown again.
-                    </strong>
-                    <label>
-                      New access token
-                      <input
-                        readOnly
-                        type="text"
-                        value={rawToken}
-                        onFocus={(e) => e.target.select()}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <button onClick={() => setRawToken("")}>
-                      I saved it. Hide token.
-                    </button>
-                  </div>
-                )}
-                <form className="inline-form" onSubmit={createToken}>
-                  <label>
-                    Token name
-                    <input
-                      name="name"
-                      required
-                      maxLength={120}
-                      placeholder="e.g. Local MCP client"
-                    />
-                  </label>
-                  <button disabled={busy || !!rawToken}>Create token</button>
-                </form>
-                {tokens.length === 0 ? (
-                  <p className="muted">
-                    No active tokens. Only create one when you need programmatic
-                    access.
-                  </p>
-                ) : (
-                  <ul className="record-list">
-                    {tokens.map((t) => (
-                      <li key={t.id}>
-                        <div>
-                          <strong>{t.name}</strong>
-                          <small>
-                            Created {new Date(t.createdAt).toLocaleDateString()}
-                            {t.lastUsedAt &&
-                              ` · Last used ${new Date(t.lastUsedAt).toLocaleDateString()}`}
-                            {t.expiresAt &&
-                              ` · Expires ${new Date(t.expiresAt).toLocaleDateString()}`}
-                          </small>
-                        </div>
-                        <button
-                          className="danger"
-                          disabled={busy}
-                          onClick={() => void revoke(t)}
-                        >
-                          Revoke
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </section>
             <section className="settings-section">
               <div className="section-intro">
                 <h2>Workspace</h2>

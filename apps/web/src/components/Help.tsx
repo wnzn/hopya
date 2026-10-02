@@ -38,7 +38,7 @@ export default function Help() {
                     The <strong>account menu</strong> (your avatar, bottom of
                     the sidebar) links to Account settings, Field management,
                     Import &amp; export, Webhooks &amp; automations, API docs, Help,
-                    Settings, and Administration for site admins, plus Sign out.
+                    Workspace settings, and Administration for site admins, plus Sign out.
                   </li>
                   <li>
                     The workspace <strong>Inbox</strong> sits below the workspace
@@ -58,7 +58,7 @@ export default function Help() {
             <section className="settings-section" aria-labelledby="help-hierarchy-heading">
               <div className="section-intro">
                 <h2 id="help-hierarchy-heading">Hierarchy</h2>
-                <p>Projects, folders, and lists give every task a home.</p>
+                <p>Projects, folders, lists, documents, and tables organize workspace information.</p>
               </div>
               <div className="stack">
                 <ul>
@@ -76,8 +76,26 @@ export default function Help() {
                     at the workspace root and owns its fields and statuses. A
                     list inside a project follows that project&apos;s statuses unless
                     it defines an override. Use a node&apos;s Manage action to choose
-                    its shared icon and color; list management also configures
+                    its shared icon and color; click the icon beside a page title
+                    to change it directly. Document and Table icons use their
+                    own write permissions. List management also configures
                     colors for exact tag names.
+                  </li>
+                  <li>
+                    <strong>Tables</strong> are generic structured data beside lists
+                    and documents. Add typed columns, then enter records directly in
+                    the grid. Click a column title for ordering and permitted
+                    rename/delete actions, or use Filters
+                    to apply typed Match all conditions across the entire Table.
+                    Use Calculate beneath a column for counts, numeric totals/averages,
+                    date bounds or checkbox counts across all matching records.
+                    Number headers also offer Number display for decimal places
+                    and dot/comma/space separators, remembered in this browser.
+                    These choices affect readability; stored and exported values
+                    keep their precision.
+                    The … menu contains Add column and Import / export; the refresh
+                    icon reloads records.
+                    Tables do not contain tasks or use task views.
                   </li>
                 </ul>
               </div>
@@ -94,6 +112,11 @@ export default function Help() {
                     editing, <strong>board</strong> for status columns with drag
                     and drop, <strong>calendar</strong> for due dates, <strong>gallery</strong>{" "}
                     for cards, and <strong>timeline</strong> for start-to-due ranges.
+                  </li>
+                  <li>
+                    Gallery uses the first body image as each task&apos;s cover.
+                    Previous and next controls browse additional body images;
+                    selecting the image or title opens the task.
                   </li>
                   <li>
                     Open the compact <strong>Columns</strong> disclosure to show,
@@ -195,6 +218,18 @@ export default function Help() {
                     quotes, code blocks, and links.
                   </li>
                   <li>Links are checked before they apply; unsafe targets are rejected.</li>
+                  <li>
+                    Task bodies, comments and replies support private images.
+                    Choose Image, paste an image file or drop it into the editor.
+                    PNG, JPEG, GIF and WebP files may be up to 10 MiB each.
+                    A new task can include images before its first save.
+                  </li>
+                  <li>
+                    Text drafts and uploaded image references recover in the same
+                    browser tab. Failed uploads have retry controls, but pending
+                    file bytes are lost on page reload. Unsaved uploads expire
+                    after 24 hours and must then be uploaded again.
+                  </li>
                 </ul>
               </div>
             </section>
@@ -262,9 +297,21 @@ export default function Help() {
                     Imports accept <strong>CSV and JSON formats</strong>.
                   </li>
                   <li>
+                    Choose <strong>Tables</strong> to create a local Table or append
+                    records (500 rows / 1 MB per import). Each Table also has an
+                    Import / export panel in its … menu. Table exports include every record;
+                    JSON preserves types and empty values.
+                  </li>
+                  <li>
+                    <strong>Live SQL databases</strong> connects PostgreSQL, MySQL,
+                    or server-side SQLite. A credential manager configures the
+                    connection; linked Table cells write to existing source rows.
+                    The operator must enable the database destination first.
+                  </li>
+                  <li>
                     <strong>Task exports</strong> contain filtered tasks and
                     custom fields. Use <strong>Download workspace JSON</strong>
-                    in Settings for hierarchy, workspace configuration, and
+                    in Workspace settings for hierarchy, workspace configuration, and
                     attachment metadata. Neither export bundles attachment
                     files, so keep downloads private.
                   </li>
@@ -284,18 +331,21 @@ export default function Help() {
                   </li>
                   <li>
                     <strong>Automations</strong> run when a chosen event
-                    happens. Add and reorder up to 20 sequential webhook,
-                    HTTP, email, or non-mutating log steps. Email requires the
-                    operator to provide SMTP.
+                    happens. Build a graph of HTTP, webhook, email, log and
+                    task-update nodes, with conditions and switch branches.
+                    Save the draft, preview its routing, then publish a version
+                    to make it active. Email requires the operator to provide SMTP.
                   </li>
                   <li>
                     Event templates cover task, node, and field-change events.
-                    Use {"{{event}}"} in a body template to embed the event
-                    JSON. Later steps can use {"{{steps.1.output}}"}, changing
-                    the number to reference an earlier step. GET and other
-                    bodyless requests ignore body templates. The job monitor
-                    shows each run and its sanitized step output/log; a failed
-                    step skips the remaining steps without changing tasks.
+                    Use upstream node outputs in templates; the editor lists
+                    values available on the current path. Existing linear
+                    automations retain their event and numbered-step templates.
+                    Preview performs no external actions. A real test run can
+                    contact configured services; graphs containing Update task
+                    require a real task event. The run monitor shows sanitized
+                    node results. A failed run stops later nodes; completed
+                    actions are not rolled back.
                   </li>
                   <li>
                     The <strong>API docs</strong> page documents the REST API
@@ -313,25 +363,28 @@ export default function Help() {
               <div className="stack">
                 <ul>
                   <li>
-                    <strong>Profile:</strong> update your display name, sign-in
-                    email, or local password. Credential changes require your
+                    <strong>Account settings:</strong> manage your profile picture,
+                    display name, sign-in email, local password, appearance and
+                    personal access tokens. Credential changes require your
                     current password and revoke other sessions and tokens.
                   </li>
                   <li>
-                    <strong>Tokens:</strong> personal access tokens act as you
+                    <strong>Tokens</strong> in Account settings act as you
                     and respect your workspace permissions. Copy a new token
                     immediately — it is shown only once.
                   </li>
                   <li>
-                    <strong>Members &amp; roles:</strong> add an existing
-                    account by email; this does not send an invitation. The last
+                    <strong>Workspace settings:</strong> manage the selected
+                    workspace&apos;s name, members, roles, fields and export.
+                    Add an existing account by email; this does not send an invitation. The last
                     owner cannot be removed or demoted. Administrative
                     permissions can grant broad access, so review them
                     carefully.
                   </li>
                   <li>
                     <strong>Site settings</strong> (admins) cover the instance
-                    logo, public landing page, and the disabled-by-default MCP
+                    logo, the By WNZN sidebar attribution, public landing page,
+                    and the disabled-by-default MCP
                     SSE endpoint. MCP clients connect to
                     <code> /api/v1/mcp/sse</code> with a personal token in the
                     <code> Authorization: Bearer</code> header. Disabling it
@@ -380,7 +433,7 @@ export default function Help() {
                   </li>
                   <li>
                     Layouts adapt down to small phones, and appearance follows
-                    your device unless you pick light or dark mode in Settings.
+                    your device unless you pick light or dark mode in Account settings.
                   </li>
                 </ul>
               </div>

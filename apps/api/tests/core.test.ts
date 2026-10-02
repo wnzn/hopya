@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { Effect } from 'effect'
 import { closeDatabase, migrateDatabase } from './helpers/migrate.js'
 
 const directory = mkdtempSync(join(tmpdir(), 'hopya-core-'))
@@ -11,6 +12,7 @@ process.env.DATA_DIR = directory
 await migrateDatabase()
 const { db, service, requirePermission, permissions, HttpError } = await import('../app/core.js')
 const { hashPassword, verifyPassword } = await import('../app/security.js')
+const { runPromiseThrow, runSyncThrow } = await import('../app/database.js')
 after(async () => { await closeDatabase(); rmSync(directory, { recursive: true, force: true }) })
 const createUser = async (isAdmin = false) => {
   const id = randomUUID()
@@ -34,6 +36,19 @@ test('the Lucid baseline migration is recorded and SQLite integrity is enabled',
   assert.equal((await db.get<{ value: number }>('SELECT foreign_keys AS value FROM pragma_foreign_keys'))?.value, 1)
   assert.equal((await db.get<{ value: string }>('SELECT journal_mode AS value FROM pragma_journal_mode'))?.value, 'wal')
   assert.equal((await db.get<{ value: string }>('SELECT integrity_check AS value FROM pragma_integrity_check'))?.value, 'ok')
+})
+test('Effect boundaries preserve HttpError and defect identity and release resources on cancellation', async () => {
+  const failure = new HttpError(403, 'Permission denied'), defect = new Error('Driver failure')
+  assert.throws(() => runSyncThrow(Effect.fail(failure)), (error) => error === failure)
+  assert.throws(() => runSyncThrow(Effect.die(defect)), (error) => error === defect)
+  await assert.rejects(() => runPromiseThrow(Effect.fail(failure)), (error) => error === failure)
+  await assert.rejects(() => runPromiseThrow(Effect.die(defect)), (error) => error === defect)
+  const controller = new AbortController()
+  let released = false
+  const pending = runPromiseThrow(Effect.acquireUseRelease(Effect.succeed('resource'), () => Effect.never, () => Effect.sync(() => { released = true })), { signal: controller.signal })
+  controller.abort()
+  await assert.rejects(() => pending, (error) => error instanceof DOMException && error.name === 'AbortError')
+  assert.equal(released, true)
 })
 test('scrypt salts are random, password verification is strict, and external users cannot password-login', async () => {
   const password = 'a long password for testing'
@@ -83,7 +98,7 @@ test('only owners can delete a workspace and its relational contents with an ato
   assert.ok(await db.get('SELECT objectKey FROM storage_objects WHERE objectKey=?', objectKey))
   const auditRow = await db.get<{ details: string }>("SELECT details FROM audit_logs WHERE workspaceId=? AND action='workspace.delete'", f.wid)
   assert.ok(auditRow)
-  assert.deepEqual(JSON.parse(auditRow.details), { members: 2, nodes: 2, documents: 0, items: 1, attachments: 1 })
+  assert.deepEqual(JSON.parse(auditRow.details), { members: 2, nodes: 2, documents: 0, tables: 0, items: 1, attachments: 1 })
 })
 test('task CRUD preserves omitted values, filters literal search, and validates dates and references', async () => {
   const f = await fixture(); const other = await fixture()

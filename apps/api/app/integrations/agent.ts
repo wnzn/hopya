@@ -78,9 +78,9 @@ const buildProviderRequestEffect = (config: AiProviderConfig, message: string, c
 
 const fetchProviderAnswerEffect = (config: AiProviderConfig, request: AiProviderRequest, signal?: AbortSignal): Effect.Effect<Answer, AiProviderFailed> =>
   Effect.tryPromise({
-    try: async () => {
+    try: async (interruption) => {
       const deadline = AbortSignal.timeout(45000)
-      const response = await fetch(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(request.body), redirect: 'error', signal: signal ? AbortSignal.any([signal, deadline]) : deadline })
+      const response = await fetch(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(request.body), redirect: 'error', signal: AbortSignal.any([interruption, deadline, ...(signal ? [signal] : [])]) })
       if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error('Provider request failed') }
       const reader = response.body.getReader()
       const chunks: Uint8Array[] = []; let size = 0
@@ -126,7 +126,6 @@ export function registerAgent(router: Router): void {
       ctx.response.header('Retry-After', '1')
       throw new HttpError(429, 'Assistant is busy; try again shortly')
     }
-    const context = await service.agentContext(user.id, wid)
     const controller = new AbortController()
     const request = ctx.request.request
     const response = ctx.response.response
@@ -137,6 +136,7 @@ export function registerAgent(router: Router): void {
     response.once('close', disconnected)
     activeRequests++
     try {
+      const context = await service.agentContext(user.id, wid)
       if (request.aborted || response.destroyed) disconnected()
       const result = await askProvider(input.message, { ...context, snapshotDate: new Date().toISOString() }, controller.signal)
       controller.signal.throwIfAborted()

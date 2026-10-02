@@ -44,13 +44,12 @@ const configEffect = Effect.gen(function* () {
 const loadConfig = (): { url: URL; key: string } => {
   const exit = Effect.runSyncExit(configEffect)
   if (Exit.isSuccess(exit)) return exit.value
-  // Reproduce the pre-existing plain Error messages at the module boundary
-  // (runSync would wrap the ConfigError in FiberFailure). Local unwrap: the
-  // shared helper lives in database.js, which imports this module.
-  const failure = Cause.failureOption(exit.cause)
+  // Keep plain Error messages at startup. This unwrap stays local because the
+  // database helper depends on application configuration during boot.
+  const failure = Cause.findErrorOption(exit.cause)
   if (failure._tag === 'Some' && failure.value instanceof ConfigError) throw new Error(failure.value.message)
-  const defect = Cause.dieOption(exit.cause)
-  if (defect._tag === 'Some') throw defect.value
+  const defect = exit.cause.reasons.find(Cause.isDieReason)
+  if (defect) throw defect.defect
   throw exit.cause
 }
 const { url: appUrl, key: appKey } = loadConfig()

@@ -30,30 +30,21 @@ const logoMeta = async (): Promise<{ file: string; updatedAt: string } | null> =
 export async function siteConfig() {
   const landing = process.env.LANDING_ENABLED === 'true' && await getSetting('landingDisabled') !== '1'
   const logo = await logoMeta()
-  return { landingEnabled: landing, ...(logo ? { logo: `/api/v1/site/logo?v=${encodeURIComponent(logo.updatedAt)}` } : {}) }
+  return { landingEnabled: landing, showSidebarAttribution: await getSetting('showSidebarAttribution') !== '0',
+    ...(logo ? { logo: `/api/v1/site/logo?v=${encodeURIComponent(logo.updatedAt)}` } : {}) }
 }
 
-// --- Typed branding failures (Effect values, mapped at the route boundary) ---
-// Missing logos stay 404s with the contract message. Validation bounds and
-// cache headers below are unchanged; IO defects reject as before.
-class LogoNotFound { readonly _tag = 'LogoNotFound'; constructor(readonly message = 'No custom logo') {} }
-type BrandingFailure = LogoNotFound
-
-const brandingHttpError = (failure: BrandingFailure): HttpError => new HttpError(404, failure.message)
-
 // Logo resolution as an Effect: read the allowlisted setting, then validate the
-// exact names PUT /site/logo writes; anything else is absent.
-const requireLogoFileEffect = (): Effect.Effect<{ path: string; file: string }, LogoNotFound> => Effect.gen(function* () {
-  const file = yield* Effect.promise(() => getSetting('logoFile'))
+// exact names PUT /site/logo writes. Unwrap failures without losing HttpError identity.
+const requireLogoFileEffect = (): Effect.Effect<{ path: string; file: string }, unknown> => Effect.gen(function* () {
+  const file = yield* Effect.tryPromise({ try: () => getSetting('logoFile'), catch: (error) => error })
   // Allowlist of the exact names PUT /site/logo writes; anything else is absent.
-  if (!file || !/^logo\.(png|jpg|webp|svg)$/.test(file)) return yield* Effect.fail(new LogoNotFound())
+  if (!file || !/^logo\.(png|jpg|webp|svg)$/.test(file)) return yield* Effect.fail(new HttpError(404, 'No custom logo'))
   return { path: join(brandDirectory, file), file }
 })
 
 async function requireLogoFile(): Promise<{ path: string; file: string }> {
-  const result = await Effect.runPromise(Effect.either(requireLogoFileEffect()))
-  if (result._tag === 'Left') throw brandingHttpError(result.left)
-  return result.right
+  return runPromiseThrow(requireLogoFileEffect())
 }
 
 // Branding file writes as an Effect.gen pipeline; defects reject with the same
@@ -84,26 +75,29 @@ export function registerSiteSettings(router: Router): void {
     router.get('/site/settings', async (ctx) => {
       await authenticate(ctx)
       await requireAdmin(ctx)
-      const [landingDisabled, mcpSseEnabled, logo] = await Promise.all([
-        getSetting('landingDisabled'), getSetting('mcpSseEnabled'), logoMeta(),
+      const [landingDisabled, mcpSseEnabled, showSidebarAttribution, logo] = await Promise.all([
+        getSetting('landingDisabled'), getSetting('mcpSseEnabled'), getSetting('showSidebarAttribution'), logoMeta(),
       ])
       return {
         landingDisabled: landingDisabled === '1',
         landingOperatorEnabled: process.env.LANDING_ENABLED === 'true',
         mcpSseEnabled: mcpSseEnabled === '1',
+        showSidebarAttribution: showSidebarAttribution !== '0',
         logo: logo ? { updatedAt: logo.updatedAt, url: `/api/v1/site/logo?v=${encodeURIComponent(logo.updatedAt)}` } : null,
       }
     })
     router.patch('/site/settings', async (ctx) => {
       const admin: User = await requireAdmin(ctx)
-      const data = z.object({ landingDisabled: z.boolean().optional(), mcpSseEnabled: z.boolean().optional() }).strict().refine((value) => Object.keys(value).length > 0).parse(ctx.request.body())
+      const data = z.object({ landingDisabled: z.boolean().optional(), mcpSseEnabled: z.boolean().optional(), showSidebarAttribution: z.boolean().optional() }).strict().refine((value) => Object.keys(value).length > 0).parse(ctx.request.body())
       const result = await db.transaction(async () => {
         if (data.landingDisabled !== undefined) {
           await setSetting('landingDisabled', data.landingDisabled ? '1' : null)
         }
         if (data.mcpSseEnabled !== undefined) await setSetting('mcpSseEnabled', data.mcpSseEnabled ? '1' : null)
+        if (data.showSidebarAttribution !== undefined) await setSetting('showSidebarAttribution', data.showSidebarAttribution ? null : '0')
         await audit(admin.id, null, 'site.settings.update', null, data)
-        return { landingDisabled: await getSetting('landingDisabled') === '1', mcpSseEnabled: await getSetting('mcpSseEnabled') === '1' }
+        return { landingDisabled: await getSetting('landingDisabled') === '1', mcpSseEnabled: await getSetting('mcpSseEnabled') === '1',
+          showSidebarAttribution: await getSetting('showSidebarAttribution') !== '0' }
       })
       if (data.mcpSseEnabled === false) await closeMcpSseSessions()
       return result

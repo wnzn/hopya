@@ -181,7 +181,7 @@ for (const width of [1280, 320, 390]) {
     }) => {
       const { errors } = await fixture(page, { fields });
       await page.goto("/settings");
-      await expect(page.getByLabel("Display name")).toHaveValue(user.name);
+      await expect(page.getByRole("heading", { name: "Roles & permissions" })).toBeVisible();
       await page
         .getByRole("combobox", { name: "Type", exact: true })
         .selectOption("select");

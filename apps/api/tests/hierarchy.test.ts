@@ -87,15 +87,16 @@ test('depth validation accounts for the whole moved subtree, permits depth 32 an
     parents.push(parentId)
   }
   const audits = await countAudits()
-  // Root at 31 would place the existing child and list at 32 and 33.
-  await reject(() => service.updateNode(f.owner.id, f.wid, f.folder.id, { parentId: parents[30] }), 400)
+  // The project is level 1; a level-30 parent would put the folder's list at level 33.
+  await reject(() => service.updateNode(f.owner.id, f.wid, f.folder.id, { parentId: parents[29] }), 400)
   assert.equal(await countAudits(), audits)
-  assert.equal((await service.updateNode(f.owner.id, f.wid, f.folder.id, { parentId: parents[29] })).parentId, parents[29])
+  assert.equal((await service.updateNode(f.owner.id, f.wid, f.folder.id, { parentId: parents[28] })).parentId, parents[28])
   assert.deepEqual(await service.getItem(f.owner.id, f.wid, f.task.id), f.task)
   // A leaf list can sit directly at depth 32, but a folder under that list cannot.
-  assert.equal((await service.updateNode(f.owner.id, f.wid, f.list.id, { parentId: parents[31] })).parentId, parents[31])
+  assert.equal((await service.updateNode(f.owner.id, f.wid, f.list.id, { parentId: parents[30] })).parentId, parents[30])
   await reject(() => service.updateNode(f.owner.id, f.wid, f.child.id, { parentId: f.list.id }), 400)
-  const deepest = await service.createNode(f.owner.id, f.wid, { name: 'Depth 32', kind: 'folder', parentId: parents[31] })
+  const deepest = await service.createNode(f.owner.id, f.wid, { name: 'Depth 32', kind: 'folder', parentId: parents[30] })
+  await reject(() => service.createNode(f.owner.id, f.wid, { name: 'Depth 33', kind: 'folder', parentId: deepest.id }), 400)
   await reject(() => service.updateNode(f.owner.id, f.wid, f.list.id, { parentId: deepest.id }), 400)
 })
 

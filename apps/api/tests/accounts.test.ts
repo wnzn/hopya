@@ -13,6 +13,7 @@ process.env.REGISTRATION_ENABLED = 'true'
 await migrateDatabase()
 const { db, HttpError, service, authenticate } = await import('../app/core.js')
 const { accounts } = await import('../app/accounts.js')
+const { profilePhotos } = await import('../app/profile_photos.js')
 const { verifyPassword, hashPassword, hashToken } = await import('../app/security.js')
 after(async () => { await closeDatabase(); rmSync(directory, { recursive: true, force: true }) })
 
@@ -176,6 +177,32 @@ test('email changes require the current password and revoke prior credentials', 
   assert.equal(updated.email, `new-${userId}@example.test`)
   assert.equal((await db.get<{ count: number }>('SELECT count(*) AS count FROM sessions WHERE userId=?', userId))!.count, 1)
   assert.deepEqual(JSON.parse((await db.get<{ details: string }>("SELECT details FROM audit_logs WHERE actorId=? AND action='user.profile' ORDER BY createdAt DESC LIMIT 1", userId))!.details), { passwordChanged: false, emailChanged: true })
+})
+
+test('profile photo replacement and removal roll back with audits and recheck withdrawn credentials', async (t) => {
+  const userId = randomUUID()
+  await db.run('INSERT INTO users(id,name,email,createdAt) VALUES (?,?,?,?)', userId, 'Photo owner', `${userId}@example.test`, new Date().toISOString())
+  const payload = { contentType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1foAAAAASUVORK5CYII=' }
+  const ctx = await accountContext(userId, payload)
+  await profilePhotos.put(ctx)
+  const original = await db.get('SELECT * FROM profile_photos WHERE userId=?', userId)
+  await db.run("CREATE TRIGGER fail_photo_audit BEFORE INSERT ON audit_logs WHEN NEW.action LIKE 'user.photo.%' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
+  try {
+    await assert.rejects(() => profilePhotos.put(ctx), /audit unavailable/)
+    assert.deepEqual(await db.get('SELECT * FROM profile_photos WHERE userId=?', userId), original)
+    await assert.rejects(() => profilePhotos.remove(ctx), /audit unavailable/)
+    assert.deepEqual(await db.get('SELECT * FROM profile_photos WHERE userId=?', userId), original)
+  } finally { await db.run('DROP TRIGGER fail_photo_audit') }
+  const beforeAudits = await db.all("SELECT * FROM audit_logs WHERE actorId=? AND action LIKE 'user.photo.%'", userId)
+  const transaction = db.transaction.bind(db)
+  // Withdraw the authenticated credential after parsing and before the mutation transaction.
+  t.mock.method(db, 'transaction', async <T>(callback: (database: typeof db) => Promise<T>) => {
+    await db.run('DELETE FROM sessions WHERE userId=?', userId)
+    return transaction(callback)
+  })
+  await assert.rejects(() => profilePhotos.put(ctx), (error: unknown) => error instanceof HttpError && error.status === 401)
+  assert.deepEqual(await db.get('SELECT * FROM profile_photos WHERE userId=?', userId), original)
+  assert.deepEqual(await db.all("SELECT * FROM audit_logs WHERE actorId=? AND action LIKE 'user.photo.%'", userId), beforeAudits)
 })
 
 test('password reset tokens are hashed, single-use, and revoke all credentials', async () => {

@@ -5,6 +5,9 @@ import { commentAnchorSchema, anchorColumns, decodeAnchor, relocateAnchors, vali
 import { commentReactionEmojis, lockWorkspaceHierarchy, nextItemUpdatedAt, requireMembership, requirePermission } from './service.js'
 import { decodeItem, itemColumns, type ItemRow, type ItemWithSubtasks } from './task_reads.js'
 import { HttpError, type Comment, type CommentReaction, type DocumentRecord } from './types.js'
+import { claimBodyImages } from './rich_text_images.js'
+import { nodeIcon, nodeColor } from './appearance.js'
+import { profilePhotoMetadata, profilePhotoUrl } from './profile_photo_metadata.js'
 
 const id = z.string().uuid()
 const timestamp = z.string().max(64).datetime({ offset: true })
@@ -15,12 +18,13 @@ const reactionEmoji = z.enum(commentReactionEmojis)
 const now = () => new Date().toISOString()
 
 type DocumentCommentRow = Record<string, unknown> & {
+  photoRevision: string | null
   id: string; workspaceId: string; documentId: string; authorId: string | null; authorName: string
   body: string; parentId: string | null; createdAt: string; deletedAt: string | null
 }
 
 async function documentInWorkspace(wid: string, documentId: string): Promise<DocumentRecord> {
-  const document = await db.get<DocumentRecord & Record<string, unknown>>(`SELECT d.id,d.workspaceId,d.parentId,d.title,d.body,d.bodyRevision,d.createdAt,d.updatedAt,
+  const document = await db.get<DocumentRecord & Record<string, unknown>>(`SELECT d.id,d.workspaceId,d.parentId,d.title,d.icon,d.color,d.body,d.bodyRevision,d.createdAt,d.updatedAt,
     creator.name AS createdByName,COALESCE(updater.name,CASE WHEN d.updatedById IS NOT NULL THEN 'Former member' END) AS updatedByName
     FROM documents d LEFT JOIN users creator ON creator.id=d.createdById LEFT JOIN users updater ON updater.id=d.updatedById
     WHERE d.workspaceId=? AND d.id=?`, wid, id.parse(documentId))
@@ -78,8 +82,8 @@ async function listReactions(userId: string, wid: string, documentId: string) {
 export const documentService = {
   async listDocuments(userId: string, wid: string) {
     await requireDocumentMetadata(userId, wid)
-    return db.all<Pick<DocumentRecord, 'id' | 'workspaceId' | 'parentId' | 'title' | 'createdAt' | 'updatedAt'> & { parentDocumentId: string | null; pagePlacement: string | null }>(
-      `SELECT d.id,d.workspaceId,d.parentId,d.title,d.createdAt,d.updatedAt,p.documentId AS parentDocumentId,p.placement AS pagePlacement
+    return db.all<Pick<DocumentRecord, 'id' | 'workspaceId' | 'parentId' | 'title' | 'icon' | 'color' | 'createdAt' | 'updatedAt'> & { parentDocumentId: string | null; pagePlacement: string | null }>(
+      `SELECT d.id,d.workspaceId,d.parentId,d.title,d.icon,d.color,d.createdAt,d.updatedAt,p.documentId AS parentDocumentId,p.placement AS pagePlacement
        FROM documents d LEFT JOIN document_subpages p ON p.workspaceId=d.workspaceId AND p.pageDocumentId=d.id
        WHERE d.workspaceId=? ORDER BY d.createdAt,d.id`, wid)
   },
@@ -90,23 +94,23 @@ export const documentService = {
   },
 
   async createDocument(userId: string, wid: string, input: unknown) {
-    const data = z.object({ title, body: body.default(''), parentId: id.nullable().default(null) }).strict().parse(input)
+    const data = z.object({ title, body: body.default(''), parentId: id.nullable().default(null), icon: nodeIcon.nullable().default(null), color: nodeColor.nullable().default(null) }).strict().parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'documents:write')
       await lockWorkspaceHierarchy(wid)
       await validateParent(wid, data.parentId)
       const createdAt = now()
       const document = { id: randomUUID(), workspaceId: wid, ...data, bodyRevision: 1, createdAt, updatedAt: createdAt, createdById: userId, updatedById: userId }
-      await db.run(`INSERT INTO documents(id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt,createdById,updatedById)
-        VALUES (@id,@workspaceId,@parentId,@title,@body,@bodyRevision,@createdAt,@updatedAt,@createdById,@updatedById)`, document)
+      await db.run(`INSERT INTO documents(id,workspaceId,parentId,title,icon,color,body,bodyRevision,createdAt,updatedAt,createdById,updatedById)
+        VALUES (@id,@workspaceId,@parentId,@title,@icon,@color,@body,@bodyRevision,@createdAt,@updatedAt,@createdById,@updatedById)`, document)
       await audit(userId, wid, 'document.create', document.id, { parentId: document.parentId })
       return documentInWorkspace(wid, document.id)
     })
   },
 
   async updateDocument(userId: string, wid: string, documentId: string, input: unknown) {
-    const data = z.object({ title: title.optional(), body: body.optional(), parentId: id.nullable().optional(), expectedUpdatedAt: timestamp }).strict()
-      .refine((value) => value.title !== undefined || value.body !== undefined || value.parentId !== undefined, 'Provide a field to update').parse(input)
+    const data = z.object({ title: title.optional(), body: body.optional(), parentId: id.nullable().optional(), icon: nodeIcon.nullable().optional(), color: nodeColor.nullable().optional(), expectedUpdatedAt: timestamp }).strict()
+      .refine((value) => value.title !== undefined || value.body !== undefined || value.parentId !== undefined || value.icon !== undefined || value.color !== undefined, 'Provide a field to update').parse(input)
     return db.transaction(async () => {
       await requirePermission(userId, wid, 'documents:read')
       await requirePermission(userId, wid, 'documents:write')
@@ -123,9 +127,10 @@ export const documentService = {
       const bodyChanged = data.body !== undefined && data.body !== previous.body
       const bodyRevision = previous.bodyRevision + Number(bodyChanged)
       const updatedAt = nextItemUpdatedAt(previous.updatedAt)
-      const updated = await db.run(`UPDATE documents SET title=?,body=?,parentId=?,bodyRevision=?,updatedAt=?,updatedById=?
+      const updated = await db.run(`UPDATE documents SET title=?,body=?,parentId=?,bodyRevision=?,updatedAt=?,updatedById=?,icon=?,color=?
         WHERE workspaceId=? AND id=? AND updatedAt=?`, data.title ?? previous.title, data.body ?? previous.body, parentId,
-        bodyRevision, updatedAt, userId, wid, documentId, data.expectedUpdatedAt)
+        bodyRevision, updatedAt, userId, data.icon === undefined ? previous.icon : data.icon,
+        data.color === undefined ? previous.color : data.color, wid, documentId, data.expectedUpdatedAt)
       if (!updated.changes) throw new HttpError(409, 'Document changed; reload before saving')
       if (data.parentId !== undefined) {
         await db.run(`WITH RECURSIVE descendants(id,depth) AS (
@@ -187,11 +192,11 @@ export const documentService = {
       UNION ALL SELECT p.pageDocumentId,d.depth+1 FROM document_subpages p JOIN page_documents d ON p.documentId=d.id
       WHERE p.workspaceId=? AND d.depth<32
     ) SELECT count(*) AS count FROM page_documents`, wid, rootId, wid))!.count)
-    const documents = await db.all<Pick<DocumentRecord, 'id' | 'workspaceId' | 'parentId' | 'title' | 'createdAt' | 'updatedAt'> & { parentDocumentId: string; pagePlacement: string }>(`WITH RECURSIVE page_documents(id,depth) AS (
+    const documents = await db.all<Pick<DocumentRecord, 'id' | 'workspaceId' | 'parentId' | 'title' | 'icon' | 'color' | 'createdAt' | 'updatedAt'> & { parentDocumentId: string; pagePlacement: string }>(`WITH RECURSIVE page_documents(id,depth) AS (
       SELECT pageDocumentId,1 FROM document_subpages WHERE workspaceId=? AND documentId=?
       UNION ALL SELECT p.pageDocumentId,d.depth+1 FROM document_subpages p JOIN page_documents d ON p.documentId=d.id
       WHERE p.workspaceId=? AND d.depth<32
-    ) SELECT d.id,d.workspaceId,d.parentId,d.title,d.createdAt,d.updatedAt,p.documentId AS parentDocumentId,p.placement AS pagePlacement
+    ) SELECT d.id,d.workspaceId,d.parentId,d.title,d.icon,d.color,d.createdAt,d.updatedAt,p.documentId AS parentDocumentId,p.placement AS pagePlacement
       FROM documents d JOIN page_documents tree ON tree.id=d.id JOIN document_subpages p ON p.workspaceId=d.workspaceId AND p.pageDocumentId=d.id
       WHERE d.workspaceId=? ORDER BY tree.depth,p.position,p.createdAt,p.pageDocumentId LIMIT 500`, wid, rootId, wid, wid)
     return { rootId, documents, total, truncated: total > documents.length }
@@ -248,11 +253,14 @@ export const documentService = {
   async listComments(userId: string, wid: string, documentId: string): Promise<(Omit<Comment, 'itemId'> & { documentId: string })[]> {
     await requirePermission(userId, wid, 'documents:read')
     await documentInWorkspace(wid, documentId)
-    const comments = await db.all<DocumentCommentRow>(`SELECT c.*,CASE WHEN c.authorId IS NULL THEN 'Former member' ELSE COALESCE(u.name,'Former member') END AS authorName
-      FROM document_comments c LEFT JOIN users u ON u.id=c.authorId WHERE c.workspaceId=? AND c.documentId=? ORDER BY c.createdAt,c.id`, wid, documentId)
+    const comments = await db.all<DocumentCommentRow>(`SELECT c.*,p.revision AS photoRevision,CASE WHEN c.authorId IS NULL THEN 'Former member' ELSE COALESCE(u.name,'Former member') END AS authorName
+      FROM document_comments c LEFT JOIN users u ON u.id=c.authorId LEFT JOIN profile_photos p ON p.userId=u.id AND u.disabled=0
+        AND EXISTS (SELECT 1 FROM memberships m WHERE m.userId=u.id AND m.workspaceId=c.workspaceId)
+      WHERE c.workspaceId=? AND c.documentId=? ORDER BY c.createdAt,c.id`, wid, documentId)
     const reactions = await listReactions(userId, wid, documentId)
     return comments.map((row) => ({
       id: row.id, workspaceId: row.workspaceId, documentId: row.documentId, authorId: row.authorId, authorName: row.authorName,
+      authorPhotoUrl: profilePhotoUrl(row.authorId, row.photoRevision),
       body: row.deletedAt ? '' : row.body, parentId: row.parentId, anchor: decodeAnchor(row), reactions: reactions.get(row.id) ?? [],
       createdAt: row.createdAt, deletedAt: row.deletedAt,
     }))
@@ -279,10 +287,12 @@ export const documentService = {
       const comment = { id: randomUUID(), workspaceId: wid, documentId, authorId: userId, body: data.body, parentId, createdAt: now(), deletedAt: null, ...anchorColumns(anchor) }
       await db.run(`INSERT INTO document_comments(id,workspaceId,documentId,authorId,body,parentId,createdAt,anchorRevision,anchorStart,anchorEnd,anchorExact,anchorPrefix,anchorSuffix,anchorState)
         VALUES (@id,@workspaceId,@documentId,@authorId,@body,@parentId,@createdAt,@anchorRevision,@anchorStart,@anchorEnd,@anchorExact,@anchorPrefix,@anchorSuffix,@anchorState)`, comment)
+      await claimBodyImages(userId, wid, documentId, 'document-comment', comment.body, comment.id)
       await audit(userId, wid, 'document.comment.create', comment.id, { documentId, parentId, anchored: anchor !== null })
       const author = (await db.get<{ name: string }>('SELECT name FROM users WHERE id=?', userId))!
       return {
         id: comment.id, workspaceId: comment.workspaceId, documentId: comment.documentId, authorId: comment.authorId, authorName: author.name,
+        authorPhotoUrl: (await profilePhotoMetadata(userId)).photoUrl,
         body: comment.body, parentId: comment.parentId, anchor, reactions: [], createdAt: comment.createdAt, deletedAt: comment.deletedAt,
       }
     })
@@ -302,6 +312,7 @@ export const documentService = {
       } else {
         if (comment.authorId !== userId && !member.permissions.includes('comments:manage')) throw new HttpError(403, 'Comment author or comments manager required')
         await db.run("UPDATE document_comments SET body='[deleted]',deletedAt=? WHERE workspaceId=? AND documentId=? AND id=?", now(), wid, documentId, commentId)
+        await db.run('DELETE FROM rich_text_images WHERE workspaceId=? AND documentId=? AND documentCommentId=?', wid, documentId, commentId)
         await audit(userId, wid, 'document.comment.delete', commentId, { documentId, own: comment.authorId === userId })
       }
       return { success: true }

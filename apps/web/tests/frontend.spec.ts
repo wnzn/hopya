@@ -170,13 +170,14 @@ test("task edits submit only changed fields with a version and retain the draft 
   expect(errors).toEqual([]);
 });
 
-test("settings and separate admin use direct objects and remain usable on mobile", async ({
+test("account, workspace settings and admin use direct objects and remain usable on mobile", async ({
   page,
 }) => {
   const { errors } = await fixture(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/settings");
+  await page.goto("/account");
   await expect(page.getByLabel("Display name")).toHaveValue(user.name);
+  await page.goto("/settings");
   await expect(
     page.getByRole("heading", { name: "Roles & permissions" }),
   ).toBeVisible();

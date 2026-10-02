@@ -1,12 +1,19 @@
 import { test } from './japa.js'
 import assert from 'node:assert/strict'
 import { integrationServer } from './storage-sso-fixture.js'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import knex from 'knex'
 
 // Covers the distinct import/export failure modes: permission boundaries,
 // row validation with row numbers, the 500-row cap, all-or-nothing inserts,
 // export filters, CSV round-tripping and oversized payloads.
 test('task import/export endpoints', async (t) => {
-  const api = await integrationServer(t)
+  const sourceDirectory = mkdtempSync(join(tmpdir(), 'hopya-sql-http-'))
+  const source = knex({ client: 'better-sqlite3', connection: { filename: join(sourceDirectory, 'live.sqlite') }, useNullAsDefault: true })
+  t.after(async () => { await source.destroy(); rmSync(sourceDirectory, { recursive: true, force: true }) })
+  const api = await integrationServer(t, { SQL_SQLITE_ROOT: sourceDirectory })
   const owner = await api.user(true)
   const outsider = await api.user(true)
   const post = async (path: string, body: unknown, token = owner.token) => {
@@ -136,6 +143,77 @@ test('task import/export endpoints', async (t) => {
   await t.test('oversized payloads are rejected', async () => {
     const response = await importAs({ nodeId: list.id, format: 'json', data: `{"x":"${'y'.repeat(1_000_001)}"}` })
     assert.ok(response.status === 400 || response.status === 413, `status ${response.status}`)
+  })
+
+  await t.test('Table imports are atomic and typed JSON/CSV exports include records beyond the displayed page', async () => {
+    const tableImport = await api.request(`${base}/tables/import`, { method: 'POST', token: owner.token, body: { format: 'json', name: 'Typed table', data: JSON.stringify(Array.from({ length: 130 }, (_, index) => ({ Name: `Row ${index}, quoted\nvalue`, Count: index, Active: index === 0 ? null : false }))) } })
+    assert.equal(tableImport.status, 201, await tableImport.clone().text())
+    const { table, imported } = await tableImport.json() as { table: { id: string }; imported: number }
+    assert.equal(imported, 130)
+    const path = `${base}/tables/${table.id}`
+    assert.equal((await api.request(`${path}/export`, { token: viewer.token })).status, 403, 'Task-only read does not grant Table export')
+    assert.equal((await api.request(`${path}/export`, { token: outsider.token })).status, 403)
+    const response = await api.request(`${path}/export?format=json`, { token: owner.token })
+    assert.equal(response.status, 200)
+    const exported = await response.json() as { columns: { key: string; name: string; type: string }[]; records: Record<string, unknown>[] }
+    assert.equal(exported.records.length, 130)
+    const count = exported.columns.find(column => column.name === 'Count')!, active = exported.columns.find(column => column.name === 'Active')!
+    assert.equal(count.type, 'number'); assert.equal(active.type, 'checkbox')
+    const summaryResponse = await api.request(`${path}/summary`, { token: owner.token })
+    assert.equal(summaryResponse.status, 200)
+    const summary = await summaryResponse.json() as { recordCount: number; columns: Record<string, { sum: number }> }
+    assert.equal(summary.recordCount, 130)
+    assert.equal(summary.columns[count.key]!.sum, 8385, 'HTTP calculation is not truncated to the first 100 displayed rows')
+    assert.equal((await api.request(`${path}/summary`, { method: 'HEAD', token: owner.token })).status, 200)
+    assert.equal((await api.request(`${path}/summary`, { token: viewer.token })).status, 403)
+    const queryBody = { filters: [{ columnId: count.key, operator: 'gte', value: 100 }], sort: { columnId: count.key, direction: 'desc' }, limit: 5, summary: true }
+    const queryResponse = await api.request(`${path}/query`, { method: 'POST', token: owner.token, body: queryBody })
+    assert.equal(queryResponse.status, 200, await queryResponse.clone().text())
+    const queried = await queryResponse.json() as { records: { values: Record<string, number> }[]; total: number; summary: { columns: Record<string, { sum: number }> } }
+    assert.equal(queried.total, 30)
+    assert.deepEqual(queried.records.map(record => record.values[count.key]), [129, 128, 127, 126, 125])
+    assert.equal(queried.summary.columns[count.key]!.sum, 3435, 'Filtered HTTP totals include unloaded matches')
+    assert.equal((await api.request(`${path}/query`, { method: 'POST', token: viewer.token, body: queryBody })).status, 403)
+    assert.deepEqual(exported.records.map(record => record[count.key]), Array.from({ length: 130 }, (_, index) => index), 'Import preserves spreadsheet row order')
+    assert.ok(exported.records.some(record => record[active.key] === null))
+    assert.ok(exported.records.some(record => record[active.key] === false))
+    const copy = await api.request(`${base}/tables/import`, { method: 'POST', token: owner.token, body: { format: 'json', data: JSON.stringify(exported) } })
+    assert.equal(copy.status, 201, await copy.clone().text())
+    assert.equal((await copy.json() as { imported: number }).imported, 130)
+    const invalid = await api.request(`${path}/import`, { method: 'POST', token: owner.token, body: { format: 'csv', data: 'Name,Count,Active\ngood,1,true\nbad,invalid,false' } })
+    assert.equal(invalid.status, 400)
+    const duplicateTarget = await api.request(`${path}/import`, { method: 'POST', token: owner.token, body: { format: 'csv', data: 'left,right\nfirst,lost', columns: [{ key: 'left', name: 'Name', type: 'text' }, { key: 'right', name: 'Name', type: 'text' }] } })
+    assert.equal(duplicateTarget.status, 400, 'An import cannot silently overwrite two source values in one destination column')
+    assert.equal((await (await api.request(`${path}/export`, { token: owner.token })).json() as { records: unknown[] }).records.length, 130)
+    await post(`${path}/columns`, { name: 'Stage', type: 'select', options: ['Ready'] })
+    const csv = await (await api.request(`${path}/export?format=csv`, { token: owner.token })).text()
+    assert.ok(csv.startsWith('Name,Count,Active,Stage\r\n')); assert.ok(csv.includes('quoted\nvalue"'))
+    const typedCsvCopy = await api.request(`${path}/import`, { method: 'POST', token: owner.token, body: { format: 'csv', data: csv } })
+    assert.equal(typedCsvCopy.status, 201, 'Empty select cells round-trip through CSV into a typed Table')
+    const csvCopy = await api.request(`${base}/tables/import`, { method: 'POST', token: owner.token, body: { format: 'csv', data: csv } })
+    assert.equal(csvCopy.status, 201)
+    const { table: copyTable } = await csvCopy.json() as { table: { id: string } }
+    assert.equal((await (await api.request(`${base}/tables/${copyTable.id}/export`, { token: owner.token })).json() as { records: unknown[] }).records.length, 130)
+  })
+
+  await t.test('live connection HTTP wiring exports source rows and writes only to the linked source', async () => {
+    await source.schema.createTable('inventory', table => { table.integer('id').primary(); table.text('description') })
+    await source('inventory').insert({ id: 1, description: 'Source row' })
+    const connection = await post(`${base}/table-connections`, { name: 'Private source', dialect: 'sqlite', filename: 'live.sqlite' })
+    assert.deepEqual(Object.keys(connection).sort(), ['createdAt', 'dialect', 'id', 'name', 'workspaceId'])
+    const table = await post(`${base}/tables/connect`, { connectionId: connection.id, name: 'Live inventory', schema: 'main', table: 'inventory' })
+    const path = `${base}/tables/${table.id}`
+    const exported = await (await api.request(`${path}/export?format=json`, { token: owner.token })).json() as { columns: { key: string; name: string }[]; records: Record<string, unknown>[] }
+    const description = exported.columns.find(column => column.name === 'description')!.key
+    assert.equal(exported.records[0]![description], 'Source row')
+    const { records: [record] } = await (await api.request(`${path}/records`, { token: owner.token })).json() as { records: { id: string; values: Record<string, unknown>; updatedAt: string }[] }
+    const patched = await api.request(`${path}/records/${record!.id}`, { token: owner.token, method: 'PATCH', body: { values: { ...record!.values, [description]: 'HTTP write-back' }, expectedUpdatedAt: record!.updatedAt } })
+    assert.equal(patched.status, 200, await patched.clone().text())
+    assert.equal((await source('inventory').first()).description, 'HTTP write-back')
+    assert.equal((await api.request(`${path}/import`, { token: owner.token, method: 'POST', body: { format: 'csv', data: 'description\nnot a source insert' } })).status, 400)
+    const workspaceExport = await (await api.request(`${base}/export`, { token: owner.token })).json() as { tableSources: { tableId: string }[]; tableRecords: { tableId: string }[] }
+    assert.ok(workspaceExport.tableSources.some(entry => entry.tableId === table.id))
+    assert.equal(workspaceExport.tableRecords.some(entry => entry.tableId === table.id), false)
   })
 
 })

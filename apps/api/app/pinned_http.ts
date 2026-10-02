@@ -1,6 +1,6 @@
 import http from 'node:http'
 import https from 'node:https'
-import { resolve4, resolve6 } from 'node:dns/promises'
+import { Resolver } from 'node:dns/promises'
 import { isIP, type LookupFunction } from 'node:net'
 import { checkServerIdentity } from 'node:tls'
 import { Effect } from 'effect'
@@ -40,31 +40,45 @@ function exception(url: URL): boolean {
   return (process.env.AUTOMATION_NETWORK_EXCEPTIONS ?? '').split(',').map((value) => value.trim()).filter(Boolean).includes(url.origin)
 }
 
-export async function resolvePinnedDestination(input: string, credential = false): Promise<PinnedDestination> {
-  let url: URL
-  try { url = new URL(input) } catch { throw new HttpError(400, 'Destination URL is invalid') }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw new HttpError(400, 'Destination must be an HTTP(S) URL without embedded credentials or fragments')
+export const resolvePinnedDestinationEffect = Effect.fnUntraced(function* (input: string, credential = false): Effect.fn.Return<PinnedDestination, HttpError> {
+  const url = yield* Effect.try({ try: () => new URL(input), catch: () => new HttpError(400, 'Destination URL is invalid') })
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) return yield* Effect.fail(new HttpError(400, 'Destination must be an HTTP(S) URL without embedded credentials or fragments'))
   const hostname = url.hostname.replace(/^\[|\]$/g, ''), literalFamily = isIP(hostname)
-  const resolved = literalFamily ? [{ address: hostname, family: literalFamily as 4 | 6 }] : [
-    ...await resolve4(hostname).catch(() => []).then((values) => values.map((address) => ({ address, family: 4 as const }))),
-    ...await resolve6(hostname).catch(() => []).then((values) => values.map((address) => ({ address, family: 6 as const }))),
-  ]
-  if (!resolved.length) throw new HttpError(400, 'Destination host cannot be resolved')
+  // A resolver belongs to this lookup only: cancellation must not cancel other
+  // deliveries, and both address families must be checked before pinning one.
+  const resolved = literalFamily ? [{ address: hostname, family: literalFamily as 4 | 6 }] : yield* Effect.acquireUseRelease(
+    Effect.sync(() => new Resolver({ timeout: 5000, tries: 1 })),
+    (resolver) => Effect.forEach([4, 6] as const, (family) => Effect.tryPromise({
+      try: () => family === 4 ? resolver.resolve4(hostname) : resolver.resolve6(hostname),
+      catch: () => new HttpError(400, 'Destination host cannot be resolved'),
+    }).pipe(Effect.orElseSucceed(() => [] as string[]), Effect.map((addresses) => addresses.map((address) => ({ address, family })))), { concurrency: 2 }).pipe(
+      Effect.map((families) => families.flat()),
+      Effect.timeoutOrElse({ duration: '5 seconds', orElse: () => Effect.fail(new HttpError(502, 'Destination lookup timed out')) }),
+    ),
+    (resolver) => Effect.sync(() => resolver.cancel()),
+  )
+  if (!resolved.length) return yield* Effect.fail(new HttpError(400, 'Destination host cannot be resolved'))
   const excepted = exception(url)
-  if (!excepted && resolved.some(({ address }) => forbidden(address))) throw new HttpError(400, 'Destination address is blocked')
-  if (credential && !excepted && !resolved.every(({ address }) => privateAddress(address)) && url.protocol !== 'https:') throw new HttpError(400, 'Public credential destinations require HTTPS')
+  if (!excepted && resolved.some(({ address }) => forbidden(address))) return yield* Effect.fail(new HttpError(400, 'Destination address is blocked'))
+  if (credential && !excepted && !resolved.every(({ address }) => privateAddress(address)) && url.protocol !== 'https:') return yield* Effect.fail(new HttpError(400, 'Public credential destinations require HTTPS'))
   return { url, ...resolved[0]! }
+})
+
+export async function resolvePinnedDestination(input: string, credential = false): Promise<PinnedDestination> {
+  const result = await Effect.runPromise(Effect.result(resolvePinnedDestinationEffect(input, credential)))
+  if (result._tag === 'Failure') throw result.failure
+  return result.success
 }
 
 export function pinnedRequestEffect(destination: PinnedDestination, options: { method?: string; headers?: Record<string, string>; body?: string | Buffer; timeoutMs?: number; totalTimeoutMs?: number; maxResponseBytes?: number; truncateResponse?: boolean }): Effect.Effect<PinnedResponse, OutboundFailure> {
-  return Effect.async<PinnedResponse, OutboundFailure>((resume) => {
+  return Effect.callback<PinnedResponse, OutboundFailure>((resume) => {
     const body = options.body === undefined ? undefined : Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body)
     if (body && body.length > 64 * 1024) { resume(Effect.fail(new OutboundFailure('Outbound request body is too large', 400))); return }
     const maxBytes = options.maxResponseBytes ?? 8192, url = new URL(destination.url), address = destination.address, family = destination.family
     const lookup = ((_hostname: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => callback(null, address, family)) as LookupFunction
     const client = url.protocol === 'https:' ? https : http
     let settled = false, response: http.IncomingMessage | undefined
-    let request: http.ClientRequest, deadline: NodeJS.Timeout
+    let request: http.ClientRequest | undefined, deadline: NodeJS.Timeout | undefined
     let onData = (_chunk: Buffer) => {}, onEnd = () => {}
     const onResponseError = () => finish(Effect.fail(new OutboundFailure('Outbound response failed')), true)
     const onResponse = (incoming: http.IncomingMessage) => {
@@ -88,23 +102,30 @@ export function pinnedRequestEffect(destination: PinnedDestination, options: { m
     const onSocketTimeout = () => finish(Effect.fail(new OutboundFailure('Outbound request timed out')), true)
     const cleanup = () => {
       // Destruction can emit an asynchronous error; retain error handlers until close.
-      clearTimeout(deadline); request.setTimeout(0); request.removeListener('response', onResponse); request.removeListener('timeout', onSocketTimeout)
+      clearTimeout(deadline); request?.setTimeout(0); request?.removeListener('response', onResponse); request?.removeListener('timeout', onSocketTimeout)
       response?.removeListener('data', onData); response?.removeListener('end', onEnd)
     }
     function finish<A>(effect: Effect.Effect<A, OutboundFailure>, destroy = false) {
       if (settled) return
       settled = true; cleanup()
-      if (destroy) { response?.destroy(); request.destroy() }
+      if (destroy) { response?.destroy(); request?.destroy() }
       resume(effect as Effect.Effect<PinnedResponse, OutboundFailure>)
     }
     // One socket per pin; a pooled socket could belong to an earlier DNS resolution.
-    request = client.request(url, { method: options.method ?? 'GET', headers: options.headers, lookup, family, agent: false, ...(url.protocol === 'https:' ? { servername: url.hostname, checkServerIdentity } : {}) })
-    request.once('response', onResponse); request.setTimeout(options.timeoutMs ?? 15_000); request.once('timeout', onSocketTimeout); request.on('error', onRequestError)
-    request.once('close', () => request.removeListener('error', onRequestError))
-    deadline = setTimeout(() => finish(Effect.fail(new OutboundFailure('Outbound request timed out')), true), options.totalTimeoutMs ?? options.timeoutMs ?? 15_000)
-    if (body) request.write(body)
-    request.end()
-    return Effect.sync(() => { if (!settled) { settled = true; cleanup(); response?.destroy(); request.destroy() } })
+    try {
+      request = client.request(url, { method: options.method ?? 'GET', headers: options.headers, lookup, family, agent: false, ...(url.protocol === 'https:' ? { servername: url.hostname, checkServerIdentity } : {}) })
+      request.once('response', onResponse); request.on('error', onRequestError)
+      request.once('close', () => request?.removeListener('error', onRequestError))
+      request.setTimeout(options.timeoutMs ?? 15_000); request.once('timeout', onSocketTimeout)
+      deadline = setTimeout(() => finish(Effect.fail(new OutboundFailure('Outbound request timed out')), true), options.totalTimeoutMs ?? options.timeoutMs ?? 15_000)
+      if (body) request.write(body)
+      request.end()
+    } catch {
+      // Invalid header names/values throw synchronously and can include secrets
+      // in native errors. Keep them in the sanitized, typed failure channel.
+      finish(Effect.fail(new OutboundFailure('Outbound request configuration is invalid', 400)), true)
+    }
+    return Effect.sync(() => { if (!settled) { settled = true; cleanup(); response?.destroy(); request?.destroy() } })
   })
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Editor, Extension } from "@tiptap/core";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -11,10 +11,15 @@ import {
   markdownToHtml,
   plainText,
   selectionAnchor,
+  bodyImages,
 } from "../lib/rich-text";
 import type { CommentAnchor } from "../lib/api";
 import Select from "./Select";
 import SolidIcon from "./SolidIcon";
+import { RichTextImage } from './RichTextImage';
+import { IMAGE_ACCEPT, imageMarkdown, type ImageUploadTarget } from '../lib/images';
+import { imageQueue, type ImageJob } from '../lib/image-upload-queue';
+import '../styles/body-images.css';
 
 type Props = {
   value: string;
@@ -28,6 +33,10 @@ type Props = {
   commentRevision?: number;
   annotations?: TextAnnotation[];
   onAnnotationActivate?: (commentId: string) => void;
+  maxLength?: number;
+  imageTarget?: ImageUploadTarget;
+  draftKey?: string;
+  onImagePendingChange?: (pending: boolean) => void;
 };
 
 export type TextSelection = {
@@ -54,6 +63,7 @@ export type MentionTarget = {
 };
 type MentionMenu = { from: number; to: number; trigger: string; query: string };
 const noAnnotations: TextAnnotation[] = [];
+const noImageJobs: ImageJob[] = [];
 
 // Product content subset: StarterKit pared down to the marks and nodes the
 // markdown contract supports (bold, italic, strike, code, headings 2-3,
@@ -63,6 +73,7 @@ const noAnnotations: TextAnnotation[] = [];
 // content types (hardBreak parses the <br> our markdown emits; undoRedo,
 // listKeymap, dropcursor, gapcursor, trailingNode) stays at defaults.
 const extensions = [
+  RichTextImage,
   StarterKit.configure({
     heading: { levels: [2, 3] },
     horizontalRule: false,
@@ -102,7 +113,16 @@ export default function RichTextEditor({
   commentRevision = 1,
   annotations = noAnnotations,
   onAnnotationActivate,
+  maxLength = RICH_TEXT_MAX,
+  imageTarget,
+  draftKey,
+  onImagePendingChange,
 }: Props) {
+  const fallbackDraftKey = useId();
+  const queue = imageQueue(draftKey ?? fallbackDraftKey);
+  const imageJobs = useSyncExternalStore(queue.subscribe, queue.getSnapshot, () => noImageJobs);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const [imageNotice, setImageNotice] = useState('');
   const mountRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -122,11 +142,38 @@ export default function RichTextEditor({
   const pendingAnnotationId = useRef<string | null>(null);
   const mentionMenuRef = useRef<MentionMenu | null>(null);
   const mentionIndex = useRef(0);
-  const latest = useRef({ value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations });
+  const latest = useRef({ value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations, maxLength, imageTarget, queue });
 
   useLayoutEffect(() => {
-    latest.current = { value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations };
+    latest.current = { value, onChange, readOnly, onActivate, ariaLabel, placeholder, mentionTargets, onCommentSelection, commentRevision, annotations, maxLength, imageTarget, queue };
   });
+
+  function addImages(files: File[]) {
+    const current = latest.current;
+    if (!current.imageTarget) { setImageNotice('Image upload is unavailable in this editor. The pasted image was not added.'); return; }
+    try { current.queue.add(files, current.imageTarget); setImageNotice(''); }
+    catch (error) { setImageNotice(error instanceof Error ? error.message : 'Images could not be added.'); }
+  }
+  useEffect(() => { onImagePendingChange?.(imageJobs.length > 0); }, [imageJobs, onImagePendingChange]);
+  useEffect(() => {
+    if (!imageJobs.length) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [imageJobs.length]);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || readOnly) return;
+    for (const job of imageJobs) {
+      // Preserve file/clipboard order even when later uploads finish first.
+      if (job.state !== 'ready' || !job.image) break;
+      const image = { src: job.image!.url, alt: job.file.name || 'Pasted image' };
+      if (serialize(editor).length + imageMarkdown(image).length + 2 > maxLength) { queue.insertionFailed(job.id); break; }
+      // Never replace text selected while an asynchronous upload was in flight.
+      const inserted = editor.commands.insertContentAt(editor.state.selection.to, { type: 'image', attrs: image });
+      if (inserted && bodyImages(serialize(editor)).some(value => value.src === image.src)) queue.remove(job.id);
+      else { queue.insertionFailed(job.id); break; }
+    }
+  }, [editor, imageJobs, queue, readOnly, maxLength]);
 
   function matchingTargets(menu: MentionMenu | null) {
     if (!menu) return [];
@@ -240,6 +287,28 @@ export default function RichTextEditor({
       content: markdownToHtml(initial.value ?? ""),
       editable: !initial.readOnly,
       editorProps: {
+        handlePaste: (_view, event) => {
+          if (latest.current.readOnly) return false;
+          const files = Array.from(event.clipboardData?.files ?? []);
+          if (!files.length) return false;
+          event.preventDefault();
+          addImages(files);
+          const text = event.clipboardData?.getData('text/plain');
+          if (text) next.commands.insertContent({ type: 'text', text });
+          return true;
+        },
+        handleDrop: (_view, event) => {
+          const files = Array.from(event.dataTransfer?.files ?? []);
+          if (latest.current.readOnly || !files.length) return false;
+          event.preventDefault(); addImages(files); return true;
+        },
+        transformPastedHTML: html => {
+          const imageTags = html.match(/<img\b[^>]*>/gi) ?? [];
+          if (imageTags.some(tag => !/<img\s/i.test(markdownToHtml(htmlToMarkdown(tag))))) {
+            setImageNotice('An external or embedded image was not imported. Paste the image file or use Add image to upload it privately.');
+          }
+          return markdownToHtml(htmlToMarkdown(html));
+        },
         attributes: {
           role: "textbox",
           "aria-multiline": "true",
@@ -285,7 +354,7 @@ export default function RichTextEditor({
         if (!transaction.docChanged || latest.current.readOnly) return;
         markEmpty(updated);
         const markdown = serialize(updated);
-        if (markdown.length > RICH_TEXT_MAX) {
+        if (markdown.length > latest.current.maxLength) {
           const accepted = lastMarkdown.current ?? "";
           updated.commands.setContent(markdownToHtml(accepted), { emitUpdate: false });
           markEmpty(updated);
@@ -606,8 +675,25 @@ export default function RichTextEditor({
             () => editor?.chain().toggleCodeBlock().run(),
           )}
           {toolbarButton("Link", <SolidIcon name="link" />, editor?.isActive("link") ?? false, openLinkRow)}
+          {imageTarget && toolbarButton('Add image', 'Image', false, () => imageInput.current?.click())}
           </>}
         </div>}
+      {imageTarget && !readOnly && <input ref={imageInput} type="file" accept={IMAGE_ACCEPT} multiple hidden aria-label="Upload body images"
+        onChange={event => { addImages(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }} />}
+      {!readOnly && editor?.isActive('image') && <div className="rich-image-description">
+        <label>Image description<input value={String(editor.getAttributes('image').alt ?? '')} maxLength={500}
+          onChange={event => editor.commands.updateAttributes('image', { alt: event.target.value })} /></label>
+        <button type="button" onClick={() => editor.chain().focus().deleteSelection().run()}>Remove image</button>
+      </div>}
+      {imageJobs.length > 0 && <div className="rich-image-uploads" aria-label="Pending images">
+        <p role="status">Finish or remove pending images before saving. Files are kept in this tab for retry.</p>
+        {imageJobs.map(job => <div key={job.id} className="rich-image-upload">
+          <span>{job.file.name || 'Pasted image'} — {job.state === 'uploading' ? 'Uploading…' : job.error || 'Ready to insert'}</span>
+          {job.state === 'failed' && imageTarget && <button type="button" onClick={() => void queue.upload(job, imageTarget)}>Retry image</button>}
+          <button type="button" onClick={() => queue.remove(job.id)} aria-label={`Remove pending image ${job.file.name}`}>Remove</button>
+        </div>)}
+      </div>}
+      {imageNotice && <p className="rich-image-notice" role="status">{imageNotice}<button type="button" onClick={() => setImageNotice('')}>Dismiss</button></p>}
       {!readOnly && linkOpen && (
         <div className="rich-editor-linkrow">
           <label>
@@ -682,7 +768,7 @@ export default function RichTextEditor({
           ))}
         </div>
       )}
-      {limitReached && <p className="rich-editor-limit" role="status">Body is limited to {RICH_TEXT_MAX.toLocaleString()} characters. The last edit was not applied.</p>}
+      {limitReached && <p className="rich-editor-limit" role="status">Body is limited to {maxLength.toLocaleString()} characters. The last edit was not applied.</p>}
     </div>
   );
 }

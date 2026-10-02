@@ -71,6 +71,24 @@ export default function SiteSettingsSection() {
       setBusy(false);
     }
   }
+  async function toggleAttribution() {
+    if (!settings || busy) return;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const updated = await api<{ showSidebarAttribution: boolean }>("/site/settings", "PATCH", {
+        showSidebarAttribution: !settings.showSidebarAttribution,
+      });
+      setSettings(current => current ? { ...current, showSidebarAttribution: updated.showSidebarAttribution } : current);
+      window.dispatchEvent(new Event("hopya:site-settings-changed"));
+      setSuccess(updated.showSidebarAttribution ? "Sidebar attribution shown for all workspaces." : "Sidebar attribution hidden for all workspaces.");
+    } catch (cause) {
+      setError(message(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function uploadLogo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -171,6 +189,19 @@ export default function SiteSettingsSection() {
                   : settings.landingDisabled
                     ? "Enable landing page"
                     : "Disable landing page"}
+              </button>
+            </div>
+            <div className="setting-row">
+              <div>
+                <strong>By WNZN attribution</strong>
+                <small className="muted" id="sidebar-attribution-description">
+                  Show the sidebar attribution across all workspaces and accounts on this instance. Visible by default.
+                </small>
+              </div>
+              <button type="button" role="switch" aria-checked={settings.showSidebarAttribution}
+                aria-label="Show By WNZN sidebar attribution" aria-describedby="sidebar-attribution-description"
+                disabled={busy} onClick={() => void toggleAttribution()}>
+                {settings.showSidebarAttribution ? "Shown" : "Hidden"}
               </button>
             </div>
             <div className="setting-row">

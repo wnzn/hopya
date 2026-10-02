@@ -32,8 +32,8 @@ const applyOpenCors = (ctx: HttpContext): Effect.Effect<boolean> =>
 
 // Origin admission reuses the public security boundary (typed Effect pipeline
 // mapped to HttpError there), so browser/bearer semantics stay identical.
-const enforceOrigin = (ctx: HttpContext): Effect.Effect<void> =>
-  Effect.promise(() => checkOrigin(ctx))
+const enforceOrigin = (ctx: HttpContext): Effect.Effect<void, unknown> =>
+  Effect.tryPromise({ try: () => checkOrigin(ctx), catch: (error) => error })
 
 export default class BoundaryMiddleware {
   async handle(ctx: HttpContext, next: NextFn) {

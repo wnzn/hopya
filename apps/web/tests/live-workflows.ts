@@ -368,7 +368,7 @@ export async function runLiveWorkflows(browser: Browser, admin: Page, origin: st
     console.log("Live workflow passed: UI uploads, attachment delete cancellation/confirmation and reload absence, task Keep/cancel then permanent delete, task and remaining attachment return 404.");
 
     // Secret values stay in memory: no traces, screenshots or response-body logging.
-    await page.goto(`${origin}/settings`);
+    await page.goto(`${origin}/account`);
     await page.getByLabel("Display name").fill("Renamed disposable owner");
     changing = responseFor(page, "/auth/profile", "PATCH");
     await page.getByRole("button", { name: "Save account", exact: true }).click();

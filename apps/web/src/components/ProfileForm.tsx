@@ -1,23 +1,29 @@
 import { useState, type SubmitEvent } from "react";
 import { api, message, type User } from "../lib/api";
 import { ErrorNotice } from "./Shared";
+import ProfilePhoto from "./ProfilePhoto";
 
-export default function ProfileForm({ user, setUser, onCredentialsChanged }: {
+export default function ProfileForm({ user, setUser, onCredentialsChanged, disabled = false, onBusyChange }: {
   user: User;
   setUser: (user: User) => void;
   onCredentialsChanged?: () => void;
+  disabled?: boolean;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   async function submit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || photoBusy || disabled) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const email = String(data.get("email") || "").trim();
     const password = String(data.get("password") || "");
     const credentialsChanged = password !== "" || email.toLowerCase() !== user.email;
     setBusy(true);
+    onBusyChange?.(true);
     setError("");
     setSuccess("");
     try {
@@ -38,6 +44,7 @@ export default function ProfileForm({ user, setUser, onCredentialsChanged }: {
       setError(message(cause));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
   return (
@@ -47,6 +54,8 @@ export default function ProfileForm({ user, setUser, onCredentialsChanged }: {
         <p>Your name, sign-in email, and local password.</p>
       </div>
       <div className="stack">
+        <ProfilePhoto user={user} disabled={busy || disabled} onBusyChange={setPhotoBusy}
+          onChanged={photoUrl => setUser({ ...user, photoUrl })} />
         <ErrorNotice error={error} />
         {success && <p className="notice success" role="status">{success}</p>}
         <form className="stack" onSubmit={submit}>
@@ -71,7 +80,7 @@ export default function ProfileForm({ user, setUser, onCredentialsChanged }: {
           <small className="muted">
             Your current password is required to change your email or password. Leave password fields empty to keep your password.
           </small>
-          <div><button className="primary" disabled={busy}>{busy ? "Saving..." : "Save account"}</button></div>
+          <div><button className="primary" disabled={busy || photoBusy || disabled}>{busy ? "Saving..." : "Save account"}</button></div>
         </form>
       </div>
     </section>

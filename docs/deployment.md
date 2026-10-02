@@ -44,6 +44,9 @@ Open `http://localhost:8888` and create the first administrator with `SETUP_TOKE
 | `SETUP_TOKEN` | Secret accepted only while creating the first account |
 | `AUTOMATION_KEYRING` | API-only JSON keyring for encrypted automation credentials |
 | `AUTOMATION_NETWORK_EXCEPTIONS` | Optional comma-separated exact origins exempted from automation address/HTTPS blocks |
+| `SQL_ALLOWED_HOSTS` | Optional comma-separated exact `host:port` destinations for live Tables |
+| `SQL_SQLITE_ROOT` | Optional existing directory containing external SQLite databases |
+| `SQL_CONNECTION_KEY` | Optional stable encryption secret of at least 32 characters; defaults to persistent `APP_KEY` |
 | `BIND_ADDRESS`, `HTTP_PORT` | Proxy listener, default `127.0.0.1:8888` |
 | `LANDING_ENABLED` | Enable the optional public landing page; defaults to `false` |
 | `REGISTRATION_ENABLED` | Allow public local-account registration |
@@ -86,6 +89,21 @@ DB_CONNECTION=pg
 ```
 
 The generated `DATABASE_URL` points to the bundled `postgres` service. For an external PostgreSQL server, leave `COMPOSE_PROFILES` empty and set `DATABASE_URL` to that server instead. Treat switching engines as a data migration; changing the variables does not copy an existing SQLite or PostgreSQL database.
+
+### Live Table Databases
+
+Live Table sources are independent of Hopya's own `DB_CONNECTION`. Enable only the source destinations you use, for example:
+
+```dotenv
+SQL_ALLOWED_HOSTS=postgres.internal:5432,mysql.internal:3306
+SQL_SQLITE_ROOT=/data/external-tables
+```
+
+Create the SQLite directory and put existing external databases there, readable/writable by the API's non-root user. Under the standard Compose bind mount, `/data/external-tables` corresponds to `./data/external-tables` on the host; a separate directory can instead be mounted with a Compose override. Canonical paths must stay inside the configured root, and Hopya's own SQLite database is rejected. SQLite files remain local to the API server, not the browser; this feature does not upload files or create a default database. For concurrent source readers/writers, configure the external SQLite database's journal mode appropriately (WAL on local storage).
+
+Recreate the API after setting the environment. In **Import & export → Live SQL databases**, enter a database account with SELECT/UPDATE privileges for the desired tables. PostgreSQL and MySQL default to certificate-verified TLS; the connection form can disable TLS for an intentionally private source. For a private CA, supply the API's normal Node trust configuration. MySQL tables used for write-back must use a transactional engine such as InnoDB. Every linked source needs a text/numeric primary key; composite keys work. Source views and tables without a primary key are not live-editable.
+
+SQL configuration is encrypted with AES-256-GCM under `SQL_CONNECTION_KEY`, or the persistent `APP_KEY` when no SQL-specific key is set. Back up the selected key together with Hopya's database. Changing it does not re-encrypt existing connections. The workspace export omits credentials and external rows; back up source databases independently, or export individual live Tables as CSV/JSON. An audit intent is durable before a remote write; because commits span two databases, an interrupted operation must be reconciled by reloading the source rather than automatically replayed.
 
 ## Customize The Landing Page
 

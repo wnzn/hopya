@@ -7,6 +7,7 @@ import { authenticate } from './security.js'
 import { requirePermission, decodeField, nodeColumns } from './service.js'
 import { HttpError } from './types.js'
 import { decodeItem, encodeRecord, itemColumns, itemQuery, type ItemRow } from './task_reads.js'
+import { decodeTableColumn, decodeTableRecord } from './tables.js'
 
 export const STREAM_DEADLINE_MS = 30_000
 export const STREAM_CHUNK_BYTES = 64 * 1024
@@ -51,14 +52,15 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
   const wid: string = ctx.params.wid
   const membership = await requirePermission(userId, wid, 'items:read')
   const canReadDocuments = membership.permissions.includes('documents:read')
+  const canReadTables = membership.permissions.includes('tables:read')
   const query = await itemQuery(db, wid, exporting ? { archived: 'include' } : ctx.request.qs())
   ctx.response.type('application/json')
   if (ctx.request.method() === 'HEAD') { ctx.response.status(200).send(''); return }
 
-  const admission = Effect.runSync(Effect.either(acquireSlotEffect(userId)))
-  if (admission._tag === 'Left') {
+  const admission = Effect.runSync(Effect.result(acquireSlotEffect(userId)))
+  if (admission._tag === 'Failure') {
     ctx.response.header('Retry-After', '1')
-    throw bulkReadHttpError(admission.left)
+    throw bulkReadHttpError(admission.failure)
   }
 
   let snapshot: SnapshotTransaction | undefined
@@ -103,6 +105,7 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
     if (current.id !== userId) throw bulkReadHttpError(new BulkReadAuth())
     await requirePermission(current.id, wid, 'items:read')
     if (exporting && canReadDocuments) await requirePermission(current.id, wid, 'documents:read')
+    if (exporting && canReadTables) await requirePermission(current.id, wid, 'tables:read')
     if (closed || request.aborted || response.destroyed) throw bulkReadHttpError(new BulkReadClosed())
     if (Date.now() >= deadline) throw bulkReadHttpError(new BulkReadDeadline())
   }
@@ -148,15 +151,26 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
 
   async function* parts(workspace: unknown): AsyncGenerator<string> {
     if (exporting) {
-      yield `{"version":5,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
+      yield `{"version":8,"exportedAt":${JSON.stringify(new Date().toISOString())},"workspace":${encodeRecord(workspace)},"nodes":[`
       yield* records(`SELECT ${nodeColumns}`,
         'FROM nodes WHERE workspaceId=?', [wid], ['createdAt', 'id'])
       yield '],"documents":['
-      if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,body,bodyRevision,createdAt,updatedAt,createdById,updatedById', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+      if (canReadDocuments) yield* records('SELECT id,workspaceId,parentId,title,icon,color,body,bodyRevision,createdAt,updatedAt,createdById,updatedById', 'FROM documents WHERE workspaceId=?', [wid], ['createdAt', 'id'])
       yield '],"documentPages":['
       if (canReadDocuments) yield* records('SELECT documentId,itemId,position,createdAt', 'FROM document_pages WHERE workspaceId=?', [wid], ['documentId', 'position', 'createdAt', 'itemId'])
       yield '],"documentSubpages":['
       if (canReadDocuments) yield* records('SELECT documentId,pageDocumentId,position,placement,createdAt', 'FROM document_subpages WHERE workspaceId=?', [wid], ['documentId', 'position', 'createdAt', 'pageDocumentId'])
+      yield '],"tables":['
+      if (canReadTables) yield* records('SELECT id,workspaceId,parentId,name,icon,color,createdAt,updatedAt', 'FROM tables WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+      yield '],"tableColumns":['
+      if (canReadTables) yield* records('SELECT id,workspaceId,tableId,name,type,options,position,createdAt,updatedAt', 'FROM table_columns WHERE workspaceId=?', [wid], ['tableId', 'position', 'id'],
+        (row) => decodeTableColumn(row as Parameters<typeof decodeTableColumn>[0]))
+      yield '],"tableRecords":['
+      if (canReadTables) yield* records('SELECT id,workspaceId,tableId,data,createdAt,updatedAt', 'FROM table_records WHERE workspaceId=?', [wid], ['tableId', 'createdAt', 'id'],
+        (row) => decodeTableRecord(row as Parameters<typeof decodeTableRecord>[0]))
+      yield '],"tableSources":['
+      if (canReadTables) yield* records('SELECT l.tableId,c.dialect,l.sourceSchema,l.sourceTable',
+        'FROM table_links l JOIN table_connections c ON c.workspaceId=l.workspaceId AND c.id=l.connectionId WHERE l.workspaceId=?', [wid], [{ sql: 'l.tableId', value: 'tableId' }])
       yield '],"items":['
     } else yield '['
 
@@ -224,6 +238,9 @@ export async function streamTasks(ctx: HttpContext, exporting: boolean): Promise
     if (canReadDocuments) yield* records('SELECT documentId,commentId,userId,emoji,createdAt', 'FROM document_comment_reactions WHERE workspaceId=?', [wid], ['createdAt', 'commentId', 'userId', 'emoji'])
     yield '],"attachments":['
     yield* records('SELECT id,itemId,name,size,contentType,createdAt', 'FROM attachments WHERE workspaceId=?', [wid], ['createdAt', 'id'])
+    yield '],"images":['
+    yield* records('SELECT id,kind,itemId,documentId,commentId,documentCommentId,attachmentId,name,size,contentType,createdAt,committedAt',
+      `FROM rich_text_images WHERE workspaceId=? AND committedAt IS NOT NULL ${canReadDocuments ? '' : "AND kind!='document-comment'"}`, [wid], ['createdAt', 'id'])
     yield ']}'
   }
 
