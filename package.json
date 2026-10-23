@@ -23,5 +23,5 @@
     "test:deployment": "tsx ops/deployment-check.ts",
     "check": "npm run typecheck && npm test && npm run build"
   },
-  "devDependencies": { "concurrently": "^9.2.1", "typescript": "~5.9.3", "tsx": "^4.20.0", "@types/node": "^24.0.0" }
+  "devDependencies": { "concurrently": "^9.2.5", "typescript": "~5.9.3", "tsx": "^4.23.15", "@types/node": "^24.19.2" }
 }
